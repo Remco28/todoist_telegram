@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "todoist_mcp": {
+      "httpUrl": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "timeout": 30000,
+      "trust": true,
+      "includeTools": ["get_active_tasks", "create_task", "get_task", "update_task", "close_task", "reopen_task", "delete_task", "get_all_labels", "create_label", "update_label", "delete_label"]
+    }
+  }
+}

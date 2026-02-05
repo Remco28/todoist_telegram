@@ -1,0 +1,30 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Logs and runtime data
+*.log
+logs/
+tmp/
+.DS_Store
+
+# Local tooling state
+.codex/
+.claude/
+
+# Build artifacts
+dist/
+build/

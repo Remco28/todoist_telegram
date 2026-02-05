@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://todoist-mcp.local/contracts/plan_response.schema.json",
+  "title": "PlanResponseV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_window",
+    "generated_at",
+    "today_plan",
+    "next_actions",
+    "blocked_items"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "plan.v1"
+    },
+    "plan_window": {
+      "type": "string",
+      "enum": [
+        "today",
+        "this_week"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "today_plan": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/planItem"
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/planItem"
+      }
+    },
+    "blocked_items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/blockedItem"
+      }
+    },
+    "why_this_order": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/orderReason"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "maxLength": 240
+      }
+    }
+  },
+  "$defs": {
+    "planItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "rank",
+        "title"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "score": {
+          "type": "number"
+        },
+        "estimated_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1440
+        }
+      }
+    },
+    "blockedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "title",
+        "blocked_by"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "blocked_by": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "orderReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "factors"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "factors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "enum": [
+              "overdue",
+              "due_soon",
+              "high_impact",
+              "goal_alignment",
+              "dependency_ready",
+              "stale",
+              "quick_win"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
