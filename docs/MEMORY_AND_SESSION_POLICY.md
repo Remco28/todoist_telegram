@@ -43,3 +43,8 @@
 - Query mode is read-only by default.
 - Any detected write intent must route to action mode.
 - Ambiguous intents can return a clarification prompt or low-risk default behavior.
+
+## Recent Context Cache (Optional)
+- On read-only answers, store a short list of surfaced entity ids for quick follow-ups.
+- Limit retention to a short window.
+- Do not treat this cache as canonical memory; it only helps reference resolution.

@@ -33,6 +33,7 @@
 - `sync_state`: Todoist mapping + watermark/version info.
 - `sessions`: app-level conversation windows keyed by user/chat.
 - `prompt_runs`: record prompt version, model, token usage, latency, and outcome.
+- `recent_context_items`: short-lived list of recently shown entity ids for follow-up resolution.
 
 ## Memory Engine
 ### Purpose
@@ -135,6 +136,12 @@ Abstract provider-specific APIs behind one interface:
 - `memory/refresh`
 - `plan/refresh`, `plan/get_today`
 - `sync/todoist/run`
+
+## Recent Context Items (Optional but Recommended)
+- Store ids of entities shown in recent query responses (for example, last 20).
+- Keep short retention (for example, 24-72 hours).
+- Use for follow-up references like "those", "the second one", or "show me more on that task".
+- Keep database records as source of truth; this cache is only a convenience layer.
 
 ## Reliability and Security
 - API auth required (token/JWT).

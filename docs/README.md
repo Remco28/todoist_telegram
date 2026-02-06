@@ -1,5 +1,10 @@
 # Documentation Index
 
+## Build Workflow
+- Active Architect task specs live in `comms/tasks/`.
+- Completed task specs are archived in `comms/tasks/archive/`.
+- Phase 1 task specifications and revisions are archived under `comms/tasks/archive/`.
+
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.
 - `docs/ARCHITECTURE_V1.md`: technical architecture, engines, runtime model.

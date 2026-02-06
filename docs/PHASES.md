@@ -1,5 +1,10 @@
 # Phased Plan
 
+## Current Status (2026-02-06)
+- Phase 0: Completed
+- Phase 1: Completed
+- Phase 2: Next active phase
+
 ## Phase 0: Foundation and Contracts
 ### Goals
 - Freeze v1 scope and data contracts.

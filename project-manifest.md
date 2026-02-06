@@ -20,4 +20,13 @@ This file is the high-level map of canonical project assets.
 ## Operational Context
 - Repo overview: `README.md`
 - Project communication logs/roles: `comms/`
+- Active Architect task specs: `comms/tasks/`
+- Completed Architect task specs: `comms/tasks/archive/`
 - Project-scoped Gemini configuration: `.gemini/settings.json`
+
+## Backend Source Code
+- API Service: `backend/api/`
+- Worker Service: `backend/worker/`
+- Common Library: `backend/common/`
+- DB Migrations: `backend/migrations/`
+- Requirements: `backend/requirements.txt`
