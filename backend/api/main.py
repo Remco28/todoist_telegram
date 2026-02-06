@@ -119,7 +119,26 @@ async def save_idempotency(user_id: str, idempotency_key: str, request_hash: str
         db.add(ik)
         await db.commit()
 
+from common.memory import assemble_context
+
 # --- Endpoints ---
+
+@app.get("/v1/memory/context", dependencies=[Depends(get_authenticated_user)])
+async def get_memory_context(
+    chat_id: str,
+    query: str,
+    max_tokens: Optional[int] = None,
+    user_id: str = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db)
+):
+    context_data = await assemble_context(
+        db=db,
+        user_id=user_id,
+        chat_id=chat_id,
+        query=query,
+        max_tokens=max_tokens
+    )
+    return context_data
 
 @app.get("/health/live")
 async def health_live():
