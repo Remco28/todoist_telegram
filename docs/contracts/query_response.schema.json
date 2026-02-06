@@ -51,6 +51,15 @@
         "$ref": "#/$defs/suggestedAction"
       }
     },
+    "surfaced_entity_ids": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional convenience list for short-lived recent-context cache."
+    },
     "follow_up_question": {
       "type": "string",
       "maxLength": 240

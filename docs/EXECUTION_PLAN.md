@@ -1,5 +1,9 @@
 # Execution Plan
 
+## Current Execution Status (2026-02-06)
+- Phase 1 implementation and revision cycle completed.
+- Active work should now begin from Phase 2 (memory summarization engine hardening and retrieval/context assembly).
+
 ## Implementation Tracks
 - Track A: Data + migrations
 - Track B: API endpoints and auth
@@ -8,18 +12,16 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Create initial schema and migrations for core entities.
-2. Implement `capture/thought` with auto-structuring.
-3. Implement tasks/problems/goals list and update endpoints.
-4. Implement query mode versus action mode intent routing.
-5. Add queue and worker skeleton for async jobs.
-6. Implement memory summarization job.
-7. Implement planning refresh job.
-8. Add Telegram bot webhook endpoint and `/today` flow.
-9. Add Todoist mapping tables and initial push sync.
-10. Add auth, rate limiting, and idempotency keys.
-11. Add health checks, logs, metrics, and backups.
-12. Add token usage and cost tracking by provider/model/prompt version.
+1. Harden memory summarization quality and provenance fields for Phase 2.
+2. Implement retrieval/context builder with strict token budgeting.
+3. Add transcript retention and compaction jobs.
+4. Add query mode response path using retrieval context (read-only behavior).
+5. Add planning refresh engine baseline for Phase 3 handoff.
+6. Add Telegram bot webhook endpoint and `/today` flow.
+7. Add Todoist mapping tables and initial push sync.
+8. Add auth/rate-limit hardening and production guardrails.
+9. Add health checks, logs, metrics, and backups.
+10. Add token usage and cost tracking by provider/model/prompt version.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -45,9 +47,7 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Confirm initial schema fields and status enums.
-2. Choose first provider for adapter (Grok or alternative).
-3. Scaffold monorepo layout (`api`, `worker`, `migrations`).
-4. Create and version prompt templates (`extract`, `query`, `plan`, `summarize`).
-5. Implement `capture/thought` vertical slice end-to-end.
-6. Deploy first staging version through Coolify.
+1. Create a Phase 2 task spec in `comms/tasks/` for memory retrieval + summarization hardening.
+2. Define acceptance tests for context assembly budgets and provenance.
+3. Implement retrieval builder and retention/compaction jobs.
+4. Validate Phase 2 behavior in staging.
