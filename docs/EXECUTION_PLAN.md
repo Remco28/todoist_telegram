@@ -2,7 +2,8 @@
 
 ## Current Execution Status (2026-02-06)
 - Phase 1 implementation and revision cycle completed.
-- Active work should now begin from Phase 2 (memory summarization engine hardening and retrieval/context assembly).
+- Phase 2 memory engine implementation and revision cycle completed.
+- Active work should now begin from Phase 3 (planning refresh engine).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -12,11 +13,11 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Harden memory summarization quality and provenance fields for Phase 2.
-2. Implement retrieval/context builder with strict token budgeting.
-3. Add transcript retention and compaction jobs.
-4. Add query mode response path using retrieval context (read-only behavior).
-5. Add planning refresh engine baseline for Phase 3 handoff.
+1. Implement planning refresh engine baseline (`plan.refresh`, `plan.get_today`).
+2. Add deterministic scoring inputs (urgency, impact, goal alignment, blocker status).
+3. Add LLM rewrite/explanation stage for plan rationale.
+4. Add read-only query response integration with Phase 2 context builder.
+5. Add regression tests for no unintended writes in query mode.
 6. Add Telegram bot webhook endpoint and `/today` flow.
 7. Add Todoist mapping tables and initial push sync.
 8. Add auth/rate-limit hardening and production guardrails.
@@ -47,7 +48,7 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Create a Phase 2 task spec in `comms/tasks/` for memory retrieval + summarization hardening.
-2. Define acceptance tests for context assembly budgets and provenance.
-3. Implement retrieval builder and retention/compaction jobs.
-4. Validate Phase 2 behavior in staging.
+1. Create a Phase 3 task spec in `comms/tasks/` for planning refresh engine.
+2. Define acceptance tests for ordering determinism and rationale output.
+3. Implement scoring + explanation pipeline and API endpoints.
+4. Validate Phase 3 behavior in staging.

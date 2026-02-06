@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     PROMPT_VERSION_PLAN: str = "v1"
     PROMPT_VERSION_SUMMARIZE: str = "v1"
 
-    # Feature Flags
-    FEATURE_PLAN_REFRESH: bool = False
-    FEATURE_TODOIST_SYNC: bool = False
+    # Phase 2 Memory Settings
+    MEMORY_CONTEXT_MAX_TOKENS: int = 3000
+    MEMORY_HOT_TURNS_LIMIT: int = 8
+    MEMORY_RELATED_ENTITIES_LIMIT: int = 25
+    TRANSCRIPT_RETENTION_DAYS: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
