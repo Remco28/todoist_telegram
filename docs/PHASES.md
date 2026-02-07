@@ -4,7 +4,8 @@
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
-- Phase 3: Next active phase
+- Phase 3: Completed
+- Phase 4: Next active phase
 
 ## Phase 0: Foundation and Contracts
 ### Goals

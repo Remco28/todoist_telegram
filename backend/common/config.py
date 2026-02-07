@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     MEMORY_RELATED_ENTITIES_LIMIT: int = 25
     TRANSCRIPT_RETENTION_DAYS: int = 30
 
+    # Phase 3 Planning and Query Settings
+    PLAN_TOP_N_TODAY: int = 6
+    PLAN_TOP_N_NEXT: int = 8
+    PLAN_WEIGHT_URGENCY: float = 4.0
+    PLAN_WEIGHT_IMPACT: float = 3.0
+    PLAN_WEIGHT_GOAL_ALIGNMENT: float = 2.0
+    PLAN_WEIGHT_STALENESS: float = 1.0
+    PLAN_WEIGHT_BLOCKER_PENALTY: float = 6.0
+    QUERY_MAX_TOKENS: int = 2000
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property

@@ -31,6 +31,8 @@ DEFAULT_QUEUE = "default_queue"
 DLQ = "dead_letter_queue"
 MAX_ATTEMPTS = 5
 
+from common.planner import collect_planning_state, build_plan_payload, render_fallback_plan_explanation
+
 async def process_job(job_data: dict):
     topic = job_data.get("topic")
     payload = job_data.get("payload", {})
@@ -45,7 +47,7 @@ async def process_job(job_data: dict):
         elif topic == "memory.compact":
             await handle_memory_compact(job_id, payload)
         elif topic == "plan.refresh":
-            logger.info("Plan refresh placeholder")
+            await handle_plan_refresh(job_id, payload)
         elif topic == "sync.todoist":
             logger.info("Todoist sync placeholder")
         else:
@@ -62,6 +64,78 @@ async def process_job(job_data: dict):
         else:
             logger.error(f"Job exceeded max attempts, moving to DLQ: {job_id}")
             await redis_client.rpush(DLQ, json.dumps(job_data))
+
+async def handle_plan_refresh(job_id: str, payload: dict):
+    user_id = payload.get("user_id")
+    chat_id = payload.get("chat_id")
+    logger.info(f"Refreshing plan for user {user_id}...")
+    
+    async with AsyncSessionLocal() as db:
+        # 1. Collect state
+        state = await collect_planning_state(db, user_id)
+        
+        # 2. Build deterministic payload
+        now = datetime.utcnow()
+        plan_payload = build_plan_payload(state, now)
+        
+        # 3. Call adapter rewrite
+        start_time = time.time()
+        try:
+            plan_payload = await adapter.rewrite_plan(plan_payload)
+            latency = int((time.time() - start_time) * 1000)
+            
+            db.add(PromptRun(
+                id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+                operation="plan", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_PLAN,
+                prompt_version=settings.PROMPT_VERSION_PLAN, latency_ms=latency, status="success",
+                created_at=datetime.utcnow()
+            ))
+        except Exception as e:
+            logger.error(f"Plan rewrite failed in worker: {e}")
+            plan_payload = render_fallback_plan_explanation(plan_payload)
+            
+            # Requirement 4: Observability for failure
+            db.add(PromptRun(
+                id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+                operation="plan", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_PLAN,
+                prompt_version=settings.PROMPT_VERSION_PLAN, status="error", error_code=type(e).__name__,
+                created_at=datetime.utcnow()
+            ))
+            db.add(EventLog(
+                id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+                event_type="plan_rewrite_fallback", payload_json={"error": str(e)}
+            ))
+            
+        # 4. Cache in Redis (Requirement 4: Strict Validation)
+        try:
+            from api.schemas import PlanResponseV1
+            validated_payload = PlanResponseV1(**plan_payload)
+            cache_key = f"plan:today:{user_id}:{chat_id}"
+            await redis_client.setex(cache_key, 86400, validated_payload.json())
+        except Exception as e:
+            logger.error(f"Generated plan failed validation: {e}")
+            db.add(EventLog(
+                id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+                event_type="plan_rewrite_fallback", payload_json={"error": str(e), "context": "worker_refresh"}
+            ))
+            # Fallback: cache a minimal valid deterministic version if rewrite was the cause
+            try:
+                # Re-build deterministic to be safe
+                state_fb = await collect_planning_state(db, user_id)
+                payload_fb = build_plan_payload(state_fb, datetime.utcnow())
+                validated_fb = PlanResponseV1(**payload_fb)
+                await redis_client.setex(f"plan:today:{user_id}:{chat_id}", 86400, validated_fb.json())
+            except Exception as e2:
+                logger.error(f"Worker fallback validation failed: {e2}")
+        
+        # 5. Log event
+        db.add(EventLog(
+            id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+            event_type="plan_refresh_completed", payload_json={"job_id": job_id}
+        ))
+        
+        await db.commit()
+        logger.info(f"Plan refresh complete for user {user_id}")
 
 async def handle_memory_summarize(job_id, payload):
     user_id = payload.get("user_id")

@@ -3,7 +3,8 @@
 ## Current Execution Status (2026-02-06)
 - Phase 1 implementation and revision cycle completed.
 - Phase 2 memory engine implementation and revision cycle completed.
-- Active work should now begin from Phase 3 (planning refresh engine).
+- Phase 3 planning engine implementation and revision cycle completed.
+- Active work should now begin from Phase 4 (Telegram product interface).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -13,16 +14,15 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Implement planning refresh engine baseline (`plan.refresh`, `plan.get_today`).
-2. Add deterministic scoring inputs (urgency, impact, goal alignment, blocker status).
-3. Add LLM rewrite/explanation stage for plan rationale.
-4. Add read-only query response integration with Phase 2 context builder.
-5. Add regression tests for no unintended writes in query mode.
-6. Add Telegram bot webhook endpoint and `/today` flow.
-7. Add Todoist mapping tables and initial push sync.
-8. Add auth/rate-limit hardening and production guardrails.
-9. Add health checks, logs, metrics, and backups.
-10. Add token usage and cost tracking by provider/model/prompt version.
+1. Build Telegram bot webhook endpoint and signature verification flow.
+2. Implement `/today`, `/plan`, `/focus`, `/done` Telegram commands against Phase 3 endpoints.
+3. Add chat/session mapping for Telegram `chat_id` to backend user scope.
+4. Add user-friendly error and retry messages for provider/API failures.
+5. Add regression tests for Telegram-to-backend end-to-end flows.
+6. Add Todoist mapping tables and initial push sync worker baseline.
+7. Add auth/rate-limit hardening and production guardrails.
+8. Add health checks, logs, metrics, and backups.
+9. Add token usage and cost tracking by provider/model/prompt version.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -48,7 +48,7 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Create a Phase 3 task spec in `comms/tasks/` for planning refresh engine.
-2. Define acceptance tests for ordering determinism and rationale output.
-3. Implement scoring + explanation pipeline and API endpoints.
-4. Validate Phase 3 behavior in staging.
+1. Create a Phase 4 task spec in `comms/tasks/` for Telegram product interface.
+2. Implement webhook handling and `/today` command flow.
+3. Add command routing for `/plan`, `/focus`, and `/done`.
+4. Validate end-to-end Telegram behavior in staging.
