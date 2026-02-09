@@ -199,3 +199,4 @@
 [2026-02-09 16:10] [ARCHITECT]: REVIEW PASS: Phase 4 Telegram test spec validated with stable mocked-boundary test design; webhook suite (10) and formatting suite (3) pass. Archived `comms/tasks/2026-02-07-phase-4-telegram-test-spec.md`.
 [2026-02-09 16:20] [ARCHITECT]: CLEANUP: Updated roadmap docs to mark Phase 4 complete and Phase 5 as next active phase (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
 [2026-02-09 16:21] [ARCHITECT]: SPEC READY: Published Phase 5 implementation spec at `comms/tasks/2026-02-09-phase-5-todoist-sync-spec.md` (mapping model, sync worker topic, Todoist adapter, trigger/status endpoints).
+[2026-02-09 16:35] [ARCHITECT]: TRANSITION: Created branch `architect/phase-5-todoist-sync` to begin Phase 5 implementation cycle.
