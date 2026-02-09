@@ -112,12 +112,41 @@ class QueryAskRequest(BaseModel):
     max_tokens: Optional[int] = None
 
 class QueryResponseV1(BaseModel):
+
     schema_version: str = "query.v1"
+
     mode: str = "query"
+
     answer: str = Field(..., min_length=1, max_length=4000)
+
     confidence: float = Field(..., ge=0, le=1)
+
     highlights: Optional[List[str]] = Field(None, max_items=8)
+
     citations: Optional[List[Citation]] = Field(None, max_items=30)
+
     suggested_actions: Optional[List[SuggestedAction]] = Field(None, max_items=6)
+
     surfaced_entity_ids: Optional[List[str]] = Field(None, max_items=30)
+
     follow_up_question: Optional[str] = Field(None, max_length=240)
+
+
+
+# --- Telegram Webhook ---
+
+
+
+class TelegramUpdateEnvelope(BaseModel):
+
+    update_id: int
+
+    message: Optional[Dict[str, Any]] = None
+
+    edited_message: Optional[Dict[str, Any]] = None
+
+
+
+class TelegramWebhookResponse(BaseModel):
+
+    status: str = "ok"

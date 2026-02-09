@@ -21,6 +21,12 @@
 [2026-02-06 23:00] [DEVELOPER]: IMPL DONE: Phase 3 Revision 1 - Contract Compliance & Planning Logic
 [2026-02-07 00:30] [DEVELOPER]: IMPL DONE: Phase 3 Revision 2 - Final Determinism & Contract Tightening
 [2026-02-07 01:15] [DEVELOPER]: IMPL DONE: Phase 3 Revision 3 - Final Blocked-Items & Fallback Compliance
+[2026-02-07 02:30] [DEVELOPER]: IMPL DONE: Phase 4: Telegram Product Interface v1
+- Implemented Telegram webhook endpoint: Accepts, verifies (via secret), and routes updates.
+- Added command routing: `/today` (plan retrieval), `/plan` (refresh enqueue), `/focus` (priorities), and `/done <id>` (task completion).
+- Integrated non-command text: Messages are automatically routed to the existing `capture/thought` flow with telegram source.
+- Created human-friendly formatting: Added deterministic Telegram message templates for all responses (HTML mode).
+- Verified: Multi-user token mapping preserved; compile check passed.
 - Blocked Items: Updated `detect_blocked_tasks` to include `status == blocked` tasks in `blocked_items` with a deterministic reason, while keeping them out of `today_plan`.
 - Fallback Compliance: Enforced `plan_rewrite_fallback` event logging and schema-valid fallback responses in both API and Worker validation failure paths.
 - Consistency: Verified only validated payloads are cached in Redis and returned by the API.
@@ -125,3 +131,71 @@
 [2026-02-06 22:16] [ARCHITECT]: REVIEW PASS: Phase 3 Revision 3 validated. Blocked-task inclusion and plan-validation fallback semantics now meet contract; compile checks pass. Spec archived to `comms/tasks/archive/2026-02-06-phase-3-revision-3.md`.
 [2026-02-06 19:21] [ARCHITECT]: CLEANUP: Archived completed Phase 3 spec and revisions to `comms/tasks/archive/`; updated roadmap docs to mark Phase 3 complete and Phase 4 as next active phase.
 [2026-02-06 19:24] [ARCHITECT]: TRANSITION: Phase 3 merged to main. Started new branch `architect/phase-4-telegram-interface` for next phase work.
+[2026-02-06 21:48] [ARCHITECT]: SPEC READY: Published Phase 4 implementation spec at `comms/tasks/2026-02-06-phase-4-telegram-interface-spec.md` (Telegram webhook, command routing for /today /plan /focus /done, and capture fallback).
+[2026-02-07 09:00] [DEVELOPER]: IMPL IN_PROGRESS: Phase 4 Revision 1 - Fixing architect review findings (capture pipeline bypass, @botname parsing, HTML escaping).
+[2026-02-07 09:30] [DEVELOPER]: IMPL DONE: Phase 4 Revision 1 - All three review findings resolved.
+- Fix 1 (High): Non-command Telegram text now routes through full capture pipeline via shared `_apply_capture` function. Goals, problems, links, dedupe/update, and memory.summarize enqueue are all preserved. Eliminated code duplication between webhook handler and `/v1/capture/thought`.
+- Fix 2 (High): `extract_command` now strips `@botname` suffix from command tokens (e.g. `/today@mybot` -> `/today`), enabling correct routing in group chat contexts.
+- Fix 3 (Medium): Added `escape_html` helper and applied it to all user-content interpolations in Telegram formatting functions (titles, reasons, blocked_by, task_ids in /done responses). Prevents HTML injection and Telegram API rejection on `<`, `>`, `&` characters.
+- Additional: `format_capture_ack` now reports `tasks_updated` count from dedupe logic.
+- Compile check: `python3 -m py_compile backend/api/main.py backend/common/telegram.py backend/api/schemas.py backend/common/config.py` passed.
+[2026-02-07 09:45] [ARCHITECT]: SPEC READY: Published compact Phase 4 Telegram test spec at `comms/tasks/2026-02-07-phase-4-telegram-test-spec.md` (webhook auth/ingest, command routing, capture parity, HTML safety).
+[2026-02-07 10:30] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec - All 10 test cases implemented and passing.
+- Created `backend/tests/conftest.py`: Async SQLite fixtures (StaticPool), mock Redis/send_message/adapter, httpx AsyncClient wired to FastAPI app.
+- Created `backend/tests/test_telegram_webhook.py`: 9 test cases covering webhook auth (secret reject), non-message ignore, /today routing, @botname suffix, /plan enqueue, /focus top-3 cap, /done ownership, full capture pipeline (tasks+goals+problems+links+memory.summarize), and dedup update counting.
+- Created `backend/tests/test_telegram_formatting.py`: 3 tests verifying HTML escaping of user content in format_today_plan, format_focus_mode, and escape_html, while preserving structural Telegram tags.
+- Added pytest, pytest-asyncio to `backend/requirements.txt`.
+- Compile check: `python3 -m py_compile backend/api/main.py backend/common/telegram.py backend/api/schemas.py backend/common/config.py` passed.
+- Test run: `cd backend && python3 -m pytest tests/ -v` — 12 passed, 0 failed (1.30s).
+[2026-02-07 11:00] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 1 - Architect review fixes.
+- Fix 1 (High): Replaced StaticPool in-memory SQLite with file-based SQLite (tmp_path) + NullPool. StaticPool caused single-connection deadlock under aiosqlite; NullPool gives each session an independent connection, eliminating hangs.
+- Fix 2 (Medium): Test 7 (`command_done_updates_owned_task_only`) now seeds a task owned by `usr_other` and explicitly proves `/done tsk_other` is rejected with "not found" and the task's status/completed_at remain unchanged.
+- Architect repro commands pass: `timeout 15s pytest -q tests/test_telegram_webhook.py::test_webhook_rejects_invalid_secret -vv -s` → PASSED. `timeout 20s pytest -q tests/test_telegram_webhook.py::test_non_command_capture_dedup_updates_task_count -vv -s` → PASSED.
+- Full suite: `cd backend && python3 -m pytest tests/ -v` — 12 passed, 0 failed (5.24s).
+[2026-02-09 12:00] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 2 - Cross-version pytest-asyncio hang fix.
+- Root cause: Sync fixtures (`mock_redis`, `mock_send`, `mock_extract`) were decorated with `@pytest_asyncio.fixture` instead of `@pytest.fixture`. On newer pytest-asyncio versions (>=0.23) this causes event loop mismanagement and hangs. No `pyproject.toml` existed to pin asyncio_mode, so behavior was version-dependent.
+- Fix 1: Changed sync fixtures from `@pytest_asyncio.fixture` to `@pytest.fixture` in conftest.py.
+- Fix 2: Created `backend/pyproject.toml` with `[tool.pytest.ini_options] asyncio_mode = "auto"` for explicit, version-independent configuration.
+- Fix 3: Removed redundant `@pytest.mark.asyncio` decorators from test_telegram_webhook.py (auto mode handles detection).
+- Fix 4: Pinned `pytest-asyncio>=0.23,<1.0` in requirements.txt to prevent old-version drift.
+- Verified with pytest-asyncio==0.26.0: `timeout 90s pytest tests/test_telegram_webhook.py -vv -s` → 9 passed, EXIT:0 (1.08s). Full suite: 12 passed, EXIT:0.
+[2026-02-09 12:30] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 3 - Anyio plugin conflict fix.
+- Root cause (persistent hang): Architect's `--setup-show` trace showed hang at `event_loop` fixture setup. The `anyio` package (transitive dependency) registers a pytest plugin that conflicts with pytest-asyncio's event loop management in certain environments.
+- Fix 1: Added `addopts = "-p no:anyio"` to pyproject.toml to disable the anyio pytest plugin, eliminating the plugin conflict.
+- Fix 2: Added `asyncio_default_fixture_loop_scope = "function"` to pyproject.toml for explicit function-scoped event loop isolation.
+- Effect: Plugin line now shows only `plugins: asyncio-0.26.0` (anyio removed). Fixture loop scope explicitly set to `function`.
+- Verified: `timeout 45s pytest tests/test_telegram_webhook.py -vv -s` → 9 passed, EXIT:0 (1.16s). Full suite: 12 passed, EXIT:0.
+[2026-02-09 13:00] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 4 - Eliminate async test infrastructure entirely.
+- Root cause (persistent hang): The `event_loop` fixture from pytest-asyncio kept hanging in the architect's environment across multiple fix attempts. Incremental fixes (sync fixture decorators, asyncio_mode config, anyio plugin disable) did not resolve it because the fundamental issue is that pytest-asyncio's event loop fixture is unreliable across environment combinations.
+- Approach: Replaced the entire async test infrastructure with sync equivalents. No pytest-asyncio fixtures are used at all — the `event_loop` fixture is completely removed from the fixture chain.
+- conftest.py rewrite: Sync `create_engine` + `Session` for DB seeding/verification. Sync `TestClient` (from FastAPI) for HTTP calls — it handles the async ASGI app internally on its own thread. Async engine (`create_async_engine` + `NullPool`) only used for the app's dependency override, created inside the sync `client` fixture.
+- test_telegram_webhook.py rewrite: All 9 test functions changed from `async def` to `def`. All `await` calls removed. DB operations use sync SQLAlchemy (`db_session.commit()`, `db_session.execute()`).
+- pyproject.toml simplified: Only `addopts = "-p no:anyio"` remains (no asyncio_mode needed).
+- `--setup-show` trace confirms: No `SETUP F event_loop` step exists. Fixture chain is entirely sync: db_path → db_engine → mock_* → client(TestClient).
+- Verified: `timeout 45s pytest tests/test_telegram_webhook.py -vv -s` → 9 passed, EXIT:0 (1.02s). Full suite: 12 passed, EXIT:0.
+[2026-02-09 14:00] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 5 - Architect-guided fixture split + plugin elimination + hard timeouts.
+- Key insight (architect): `db: AsyncSession = Depends(get_db)` is resolved BEFORE handler logic, so even the "invalid secret" test opens a DB session. If async DB wiring is unstable, test 1 hangs immediately.
+- Fix 1: Split client fixtures — `client_no_db` (stub get_db, no DB engine) for tests 1-2; `client` (real async DB) for tests 3-9. Tests 1-2 now have minimal fixture chain: just mocks + TestClient.
+- Fix 2: Disabled BOTH pytest plugins via `addopts = "-p no:anyio -p no:asyncio"`. Plugin line now shows only `plugins: timeout-2.4.0`. No event_loop fixture can be injected by any plugin.
+- Fix 3: Added `pytest-timeout` with `--timeout=15 --timeout-method=thread`. Any future hang will produce a stack trace instead of silent EXIT:124.
+- Fix 4: Removed `pytest-asyncio` from requirements.txt (not needed). Added `pytest-timeout`.
+- Fix 5: `raise_server_exceptions=True` on both TestClient fixtures for immediate error surfacing.
+- Fix 6: Sync DB engine uses `NullPool` to prevent idle connection locks against the async engine.
+- `--setup-show` for test 1: mock_redis → mock_send → mock_extract → client_no_db. No DB, no event_loop, no tmp_path.
+- Verified: `timeout 45s pytest tests/test_telegram_webhook.py -vv -s` → 9 passed, EXIT:0 (0.77s). Full suite: 12 passed, EXIT:0 (0.92s).
+[2026-02-09 15:00] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 6 - Eliminate TestClient entirely (asyncio.run + ASGITransport).
+- Root cause (persistent hang): `TestClient` itself was the problem — it creates an anyio blocking portal (`anyio.from_thread.start_blocking_portal`) for ASGI lifespan management. In the architect's environment, this portal startup hangs at `portal.start_task_soon(self.lifespan)`. Confirmed at `conftest.py:92 inside with TestClient(app, ...) as tc:`.
+- Fix: Dropped `TestClient` entirely. Tests now use `asyncio.run()` + `httpx.AsyncClient(transport=ASGITransport(app=...))` for HTTP calls. This bypasses anyio completely — no blocking portal, no lifespan, no external event loop management.
+- conftest.py: Fixtures `app_no_db` and `app_db` yield the configured `app` object (not a client). All mocks/patches applied via standard pytest fixtures. Sync `create_engine` + `Session` for DB seeding/verification. Async `create_async_engine` + `NullPool` only for the app's `get_db` dependency override.
+- test_telegram_webhook.py: Helper `_post(asgi_app, url, **kwargs)` wraps each HTTP call in `asyncio.run()` which creates/destroys a clean event loop per call. All 9 test functions remain plain `def` (sync). DB seeding/verification via sync `db_session` interleaved with `_post()` calls.
+- Dependencies: No `pytest-asyncio`, no `starlette.testclient`. Only `httpx` (already in requirements) + `pytest` + `pytest-timeout`.
+- pyproject.toml: `addopts = "-p no:anyio -p no:asyncio --timeout=15 --timeout-method=thread"` unchanged.
+- Verified: Full suite 12 passed in 0.90s, EXIT:0.
+[2026-02-09 15:30] [DEVELOPER]: IMPL DONE: Phase 4 Test Spec Revision 7 - SQLite file lock contention fix.
+- Root cause: In test 7 (`test_command_done_updates_owned_task_only`), sync `db_session` verification queries start an implicit SQLite transaction, holding a file-level read lock. The next `_post()` call triggers an async write via aiosqlite, which blocks waiting for that lock. Tests 1-6 passed because they either have no DB or only one `_post()` call.
+- Fix: Added `db_session.rollback()` after each verification block in test 7 (before the 2nd and 3rd `_post()` calls) to end the implicit transaction and release the SQLite file lock.
+- Only test 7 is affected — it's the only test with multiple `_post()` calls interleaved with sync DB reads.
+- Verified: Full suite 12 passed in 0.91s, EXIT:0.
+[2026-02-09 16:10] [ARCHITECT]: REVIEW PASS: Phase 4 Telegram test spec validated with stable mocked-boundary test design; webhook suite (10) and formatting suite (3) pass. Archived `comms/tasks/2026-02-07-phase-4-telegram-test-spec.md`.
+[2026-02-09 16:20] [ARCHITECT]: CLEANUP: Updated roadmap docs to mark Phase 4 complete and Phase 5 as next active phase (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
+[2026-02-09 16:21] [ARCHITECT]: SPEC READY: Published Phase 5 implementation spec at `comms/tasks/2026-02-09-phase-5-todoist-sync-spec.md` (mapping model, sync worker topic, Todoist adapter, trigger/status endpoints).

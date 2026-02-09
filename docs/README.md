@@ -5,6 +5,7 @@
 - Completed task specs are archived in `comms/tasks/archive/`.
 - Phase 1 task specifications and revisions are archived under `comms/tasks/archive/`.
 - Phase 2 and Phase 3 task specifications and revisions are archived under `comms/tasks/archive/`.
+- Phase 4 test specification is archived under `comms/tasks/archive/`.
 
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.

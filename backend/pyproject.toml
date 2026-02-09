@@ -1,0 +1,2 @@
+[tool.pytest.ini_options]
+addopts = "-p no:anyio -p no:asyncio --timeout=15 --timeout-method=thread"
