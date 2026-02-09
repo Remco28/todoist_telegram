@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     PLAN_WEIGHT_BLOCKER_PENALTY: float = 6.0
     QUERY_MAX_TOKENS: int = 2000
 
+    # Phase 4 Telegram Settings
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_WEBHOOK_SECRET: Optional[str] = None
+    TELEGRAM_API_BASE: str = "https://api.telegram.org"
+    TELEGRAM_COMMAND_TIMEOUT_SECONDS: int = 20
+    TELEGRAM_DEFAULT_SOURCE: str = "telegram"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property

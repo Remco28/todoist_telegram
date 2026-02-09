@@ -1,10 +1,11 @@
 # Execution Plan
 
-## Current Execution Status (2026-02-06)
+## Current Execution Status (2026-02-09)
 - Phase 1 implementation and revision cycle completed.
 - Phase 2 memory engine implementation and revision cycle completed.
 - Phase 3 planning engine implementation and revision cycle completed.
-- Active work should now begin from Phase 4 (Telegram product interface).
+- Phase 4 Telegram interface and regression test cycle completed.
+- Active work should now begin from Phase 5 (Todoist downstream sync).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -14,12 +15,12 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Build Telegram bot webhook endpoint and signature verification flow.
-2. Implement `/today`, `/plan`, `/focus`, `/done` Telegram commands against Phase 3 endpoints.
-3. Add chat/session mapping for Telegram `chat_id` to backend user scope.
-4. Add user-friendly error and retry messages for provider/API failures.
-5. Add regression tests for Telegram-to-backend end-to-end flows.
-6. Add Todoist mapping tables and initial push sync worker baseline.
+1. Implement Todoist mapping table between local tasks and Todoist task IDs.
+2. Add worker topic and handler for push sync (`sync.todoist`) with retries and DLQ behavior.
+3. Add Todoist adapter with strict request/response validation and timeout controls.
+4. Define source-of-truth and conflict policy for title/status/priority/due-date updates.
+5. Add API endpoint to trigger sync runs and inspect sync status/errors.
+6. Add regression tests for sync create/update/no-op/error paths.
 7. Add auth/rate-limit hardening and production guardrails.
 8. Add health checks, logs, metrics, and backups.
 9. Add token usage and cost tracking by provider/model/prompt version.
@@ -48,7 +49,7 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Create a Phase 4 task spec in `comms/tasks/` for Telegram product interface.
-2. Implement webhook handling and `/today` command flow.
-3. Add command routing for `/plan`, `/focus`, and `/done`.
-4. Validate end-to-end Telegram behavior in staging.
+1. Publish a Phase 5 implementation spec for Todoist downstream sync.
+2. Implement mapping schema and `sync.todoist` worker baseline.
+3. Add conflict policy enforcement and observability events.
+4. Run sync-focused regression suite and document evidence.

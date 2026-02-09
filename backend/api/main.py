@@ -26,8 +26,139 @@ from api.schemas import (
     ThoughtCaptureRequest, ThoughtCaptureResponse, AppliedChanges,
     TaskUpdate, GoalUpdate, ProblemUpdate, LinkCreate,
     PlanRefreshRequest, PlanRefreshResponse, PlanResponseV1,
-    QueryAskRequest, QueryResponseV1
+    QueryAskRequest, QueryResponseV1,
+    TelegramUpdateEnvelope, TelegramWebhookResponse
 )
+from common.telegram import (
+    verify_telegram_secret, parse_update, extract_command, send_message,
+    format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
+    escape_html
+)
+
+# --- Shared Capture Pipeline ---
+
+async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
+                         message: str, extraction: dict, request_id: str,
+                         client_msg_id: Optional[str] = None) -> tuple:
+    """Core capture pipeline used by both API and Telegram paths.
+    Returns (inbox_item_id, applied: AppliedChanges)."""
+    applied = AppliedChanges()
+    inbox_item_id = f"inb_{uuid.uuid4().hex[:12]}"
+    db.add(InboxItem(
+        id=inbox_item_id, user_id=user_id, chat_id=chat_id, source=source,
+        client_msg_id=client_msg_id, message_raw=message, message_norm=message.strip(),
+        received_at=datetime.utcnow()
+    ))
+
+    entity_map = {}
+    for t_data in extraction.get("tasks", []):
+        title_norm = t_data["title"].lower().strip()
+        stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
+        existing = (await db.execute(stmt)).scalar_one_or_none()
+        if existing:
+            entity_map[(EntityType.task, title_norm)] = existing.id
+            applied.tasks_updated += 1
+        else:
+            task_id = f"tsk_{uuid.uuid4().hex[:12]}"
+            db.add(Task(
+                id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
+                status=t_data.get("status", TaskStatus.open), priority=t_data.get("priority"),
+                source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
+            ))
+            entity_map[(EntityType.task, title_norm)] = task_id
+            applied.tasks_created += 1
+
+    for g_data in extraction.get("goals", []):
+        title_norm = g_data["title"].lower().strip()
+        stmt = select(Goal).where(Goal.user_id == user_id, Goal.title_norm == title_norm)
+        existing = (await db.execute(stmt)).scalar_one_or_none()
+        if existing: entity_map[(EntityType.goal, title_norm)] = existing.id
+        else:
+            goal_id = f"gol_{uuid.uuid4().hex[:12]}"
+            db.add(Goal(id=goal_id, user_id=user_id, title=g_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+            entity_map[(EntityType.goal, title_norm)] = goal_id
+            applied.goals_created += 1
+
+    for p_data in extraction.get("problems", []):
+        title_norm = p_data["title"].lower().strip()
+        stmt = select(Problem).where(Problem.user_id == user_id, Problem.title_norm == title_norm)
+        existing = (await db.execute(stmt)).scalar_one_or_none()
+        if existing: entity_map[(EntityType.problem, title_norm)] = existing.id
+        else:
+            prob_id = f"prb_{uuid.uuid4().hex[:12]}"
+            db.add(Problem(id=prob_id, user_id=user_id, title=p_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+            entity_map[(EntityType.problem, title_norm)] = prob_id
+            applied.problems_created += 1
+
+    for l_data in extraction.get("links", []):
+        try:
+            from_type = EntityType(l_data["from_type"])
+            to_type = EntityType(l_data["to_type"])
+            link_type = LinkType(l_data["link_type"])
+            from_id = entity_map.get((from_type, l_data["from_title"].lower().strip()))
+            to_id = entity_map.get((to_type, l_data["to_title"].lower().strip()))
+            if from_id and to_id:
+                db.add(EntityLink(id=f"lnk_{uuid.uuid4().hex[:12]}", user_id=user_id, from_entity_type=from_type, from_entity_id=from_id, to_entity_type=to_type, to_entity_id=to_id, link_type=link_type, created_at=datetime.utcnow()))
+                applied.links_created += 1
+        except Exception as e:
+            db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
+
+    await db.commit()
+    job_payload = {"job_id": str(uuid.uuid4()), "topic": "memory.summarize", "payload": {"user_id": user_id, "chat_id": chat_id, "inbox_item_id": inbox_item_id}}
+    await redis_client.rpush("default_queue", json.dumps(job_payload))
+    return inbox_item_id, applied
+
+# --- Internal Helpers for Integration Routing ---
+
+async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, db: AsyncSession):
+    user_id = "usr_dev" # Phase 4 default
+
+    if command == "/today":
+        # Simulate GET /v1/plan/get_today logic
+        cache_key = f"plan:today:{user_id}:{chat_id}"
+        cached = await redis_client.get(cache_key)
+        if cached:
+            payload = json.loads(cached)
+        else:
+            state = await collect_planning_state(db, user_id)
+            payload = build_plan_payload(state, datetime.utcnow())
+            payload = render_fallback_plan_explanation(payload)
+        
+        await send_message(chat_id, format_today_plan(payload))
+
+    elif command == "/plan":
+        job_id = str(uuid.uuid4())
+        await redis_client.rpush("default_queue", json.dumps({"job_id": job_id, "topic": "plan.refresh", "payload": {"user_id": user_id, "chat_id": chat_id}}))
+        await send_message(chat_id, format_plan_refresh_ack(job_id))
+
+    elif command == "/focus":
+        cache_key = f"plan:today:{user_id}:{chat_id}"
+        cached = await redis_client.get(cache_key)
+        if cached:
+            payload = json.loads(cached)
+        else:
+            state = await collect_planning_state(db, user_id)
+            payload = build_plan_payload(state, datetime.utcnow())
+        
+        await send_message(chat_id, format_focus_mode(payload))
+
+    elif command == "/done":
+        if not args:
+            await send_message(chat_id, "Please provide a task ID. Example: <code>/done tsk_123</code>")
+            return
+        
+        task_id = args.strip()
+        stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(status=TaskStatus.done, completed_at=datetime.utcnow())
+        res = await db.execute(stmt)
+        if res.rowcount > 0:
+            await db.commit()
+            await send_message(chat_id, f"Task <code>{escape_html(task_id)}</code> marked as done.")
+        else:
+            await send_message(chat_id, f"Task <code>{escape_html(task_id)}</code> not found or not owned by you.")
+
+    else:
+        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done"
+        await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Todoist MCP API")
@@ -115,6 +246,51 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Infrastructure unreachable")
     return {"status": "ready"}
 
+# --- Telegram Integration ---
+
+@app.post("/v1/integrations/telegram/webhook", response_model=TelegramWebhookResponse)
+async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    # 1. Validate secret
+    if not verify_telegram_secret(request.headers):
+        raise HTTPException(status_code=403, detail="Unauthorized webhook source")
+    
+    # 2. Parse update
+    try:
+        update_json = await request.json()
+    except Exception:
+        return {"status": "ignored"}
+        
+    data = parse_update(update_json)
+    if not data:
+        return {"status": "ignored"}
+    
+    chat_id = data["chat_id"]
+    text = data["text"]
+    
+    # 3. Command Routing
+    command, args = extract_command(text)
+    if command:
+        await handle_telegram_command(command, args, chat_id, db)
+    else:
+        # 4. Non-command text -> Full Capture Flow
+        user_id = "usr_dev"
+        request_id = f"tg_{uuid.uuid4().hex[:8]}"
+        try:
+            extraction = await adapter.extract_structured_updates(text)
+            if not all(k in extraction for k in ["tasks", "goals", "problems", "links"]):
+                raise ValueError("Invalid extraction shape")
+            _, applied = await _apply_capture(
+                db=db, user_id=user_id, chat_id=chat_id,
+                source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
+                extraction=extraction, request_id=request_id
+            )
+            await send_message(chat_id, format_capture_ack(applied.dict()))
+        except Exception as e:
+            logger.error(f"Telegram capture failed: {e}")
+            await send_message(chat_id, "Sorry, I had trouble processing that thought. Please try again later.")
+
+    return {"status": "ok"}
+
 # --- Capture Endpoints ---
 
 @app.post("/v1/capture/thought", response_model=ThoughtCaptureResponse, dependencies=[Depends(check_idempotency)])
@@ -146,70 +322,11 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
                 await db.commit()
                 raise HTTPException(status_code=422, detail="Extraction failed after retries")
 
-    applied = AppliedChanges()
-    inbox_item_id = f"inb_{uuid.uuid4().hex[:12]}"
-    db.add(InboxItem(
-        id=inbox_item_id, user_id=user_id, chat_id=payload.chat_id, source=payload.source,
-        client_msg_id=payload.client_msg_id, message_raw=payload.message, message_norm=payload.message.strip(),
-        received_at=datetime.utcnow()
-    ))
-    
-    entity_map = {}
-    for t_data in extraction.get("tasks", []):
-        title_norm = t_data["title"].lower().strip()
-        stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
-        existing = (await db.execute(stmt)).scalar_one_or_none()
-        if existing:
-            entity_map[(EntityType.task, title_norm)] = existing.id
-            applied.tasks_updated += 1
-        else:
-            task_id = f"tsk_{uuid.uuid4().hex[:12]}"
-            db.add(Task(
-                id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
-                status=t_data.get("status", TaskStatus.open), priority=t_data.get("priority"),
-                source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
-            ))
-            entity_map[(EntityType.task, title_norm)] = task_id
-            applied.tasks_created += 1
-
-    for g_data in extraction.get("goals", []):
-        title_norm = g_data["title"].lower().strip()
-        stmt = select(Goal).where(Goal.user_id == user_id, Goal.title_norm == title_norm)
-        existing = (await db.execute(stmt)).scalar_one_or_none()
-        if existing: entity_map[(EntityType.goal, title_norm)] = existing.id
-        else:
-            goal_id = f"gol_{uuid.uuid4().hex[:12]}"
-            db.add(Goal(id=goal_id, user_id=user_id, title=g_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
-            entity_map[(EntityType.goal, title_norm)] = goal_id
-            applied.goals_created += 1
-
-    for p_data in extraction.get("problems", []):
-        title_norm = p_data["title"].lower().strip()
-        stmt = select(Problem).where(Problem.user_id == user_id, Problem.title_norm == title_norm)
-        existing = (await db.execute(stmt)).scalar_one_or_none()
-        if existing: entity_map[(EntityType.problem, title_norm)] = existing.id
-        else:
-            prob_id = f"prb_{uuid.uuid4().hex[:12]}"
-            db.add(Problem(id=prob_id, user_id=user_id, title=p_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
-            entity_map[(EntityType.problem, title_norm)] = prob_id
-            applied.problems_created += 1
-
-    for l_data in extraction.get("links", []):
-        try:
-            from_type = EntityType(l_data["from_type"])
-            to_type = EntityType(l_data["to_type"])
-            link_type = LinkType(l_data["link_type"])
-            from_id = entity_map.get((from_type, l_data["from_title"].lower().strip()))
-            to_id = entity_map.get((to_type, l_data["to_title"].lower().strip()))
-            if from_id and to_id:
-                db.add(EntityLink(id=f"lnk_{uuid.uuid4().hex[:12]}", user_id=user_id, from_entity_type=from_type, from_entity_id=from_id, to_entity_type=to_type, to_entity_id=to_id, link_type=link_type, created_at=datetime.utcnow()))
-                applied.links_created += 1
-        except Exception as e:
-            db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
-
-    await db.commit()
-    job_payload = {"job_id": str(uuid.uuid4()), "topic": "memory.summarize", "payload": {"user_id": user_id, "chat_id": payload.chat_id, "inbox_item_id": inbox_item_id}}
-    await redis_client.rpush("default_queue", json.dumps(job_payload))
+    inbox_item_id, applied = await _apply_capture(
+        db=db, user_id=user_id, chat_id=payload.chat_id, source=payload.source,
+        message=payload.message, extraction=extraction, request_id=request_id,
+        client_msg_id=payload.client_msg_id
+    )
     resp = ThoughtCaptureResponse(status="ok", inbox_item_id=inbox_item_id, applied=applied, summary_refresh_enqueued=True)
     await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp.dict())
     return resp
