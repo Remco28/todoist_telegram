@@ -215,6 +215,7 @@ class PromptRun(Base):
     model = Column(String, nullable=False)
     prompt_version = Column(String, nullable=False)
     input_tokens = Column(Integer, nullable=True)
+    cached_input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False)

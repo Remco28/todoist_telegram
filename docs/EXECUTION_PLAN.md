@@ -7,7 +7,8 @@
 - Phase 4 Telegram interface and regression test cycle completed.
 - Phase 5 Todoist downstream sync implementation and stabilization completed.
 - Phase 6 hardening and scale-readiness implementation completed.
-- Active work is now Phase 7 (auth, rate limits, and cost observability).
+- Phase 7 auth/rate-limit/cost observability implementation completed (including revision cycle).
+- Active work is now Phase 8 (production integration and deployment hardening).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -17,11 +18,11 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Add per-user auth foundations and explicit token-to-user mapping strategy.
-2. Implement API rate limits for write-heavy and query-heavy endpoints.
-3. Add prompt token usage and cost tracking by provider/model/prompt version.
-4. Add operational cost summary endpoint/report for daily monitoring.
-5. Add regression tests for auth denials, rate-limit boundaries, and cost aggregation.
+1. Add staging smoke tests against real Redis/Postgres services.
+2. Add migration safety checks and rollback guardrails for deploys.
+3. Add provider adapter contract tests for malformed/partial payloads.
+4. Add deployment checklist automation for API/worker health gating.
+5. Validate backup/restore and auth/rate-limit behavior in staging.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -47,6 +48,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Publish and implement Phase 7 spec for auth/rate-limit/cost observability.
-2. Validate Phase 7 behavior with regression coverage and compile checks.
+1. Publish and implement Phase 8 spec for staging integration + deployment hardening.
+2. Add integration-oriented validation alongside current unit/regression coverage.
 3. Review, merge to main, and prepare the next phase branch.

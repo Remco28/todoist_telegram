@@ -239,3 +239,22 @@
 [2026-02-10 02:12] [ARCHITECT]: CLOSEOUT: Phase 6 completed, spec archived to `comms/tasks/archive/2026-02-10-phase-6-hardening-scale-readiness-spec.md`, and roadmap docs updated (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
 [2026-02-10 02:12] [ARCHITECT]: SPEC READY: Published Phase 7 implementation spec at `comms/tasks/2026-02-10-phase-7-auth-rate-limit-cost-observability-spec.md` (auth mapping, rate limits, and daily cost observability).
 [2026-02-10 02:15] [ARCHITECT]: TRANSITION: Merged Phase 6 branch to main and created Phase 7 branch `architect/phase-7-auth-rate-limit-cost-observability` for implementation.
+[2026-02-10 02:21] [DEVELOPER]: IMPL IN_PROGRESS: Phase 7 auth mapping, rate limiting, and cost observability implementation.
+[2026-02-10 02:24] [DEVELOPER]: IMPL DONE: Phase 7 auth/rate-limit/cost observability implemented.
+- Added settings in `backend/common/config.py`: APP_AUTH_TOKEN_USER_MAP, RATE_LIMIT_* defaults, COST_* USD rates.
+- Added adapter usage normalization in `backend/common/adapter.py` so usage metadata is preserved when present.
+- Updated `backend/api/main.py`: token->user auth mapping with legacy fallback, Redis rate limiter for capture/query/plan endpoints, usage extraction into PromptRun token fields, and new authenticated `GET /health/costs/daily` cost summary endpoint.
+- Added tests in `backend/tests/test_phase7_auth_rate_limit_cost.py` for auth mapping + unknown token deny, per-endpoint 429 limiting, and daily cost aggregation output.
+- Updated status docs: `docs/PHASES.md` and `docs/EXECUTION_PLAN.md` to mark Phase 7 in progress.
+- Validation: `python3 -m py_compile backend/common/config.py backend/common/adapter.py backend/api/main.py`; `cd backend && pytest -q tests/test_phase7_auth_rate_limit_cost.py` (3 passed); `cd backend && pytest -q` (23 passed).
+[2026-02-10 03:12] [ARCHITECT]: SPEC READY: Published Phase 7 Revision 1 at `comms/tasks/2026-02-10-phase-7-revision-1.md` (cost isolation, mixed auth compatibility, cached-token persistence, and rate-limit reset coverage).
+[2026-02-10 03:12] [DEVELOPER]: IMPL IN_PROGRESS: Phase 7 Revision 1 implementation.
+[2026-02-10 03:14] [DEVELOPER]: IMPL DONE: Phase 7 Revision 1 implemented.
+- Added revision spec `comms/tasks/2026-02-10-phase-7-revision-1.md` and implemented all listed fixes.
+- Security: `GET /health/costs/daily` now scopes to authenticated `user_id` (`backend/api/main.py`).
+- Auth compatibility: token map now supports mixed-mode fallback to legacy token list when token is not mapped (`backend/api/main.py`).
+- Cost fidelity: added `PromptRun.cached_input_tokens` in `backend/common/models.py`, persisted usage in capture/query prompt runs (`backend/api/main.py`), and added migration `backend/migrations/versions/9c5f8f7f2a1b_add_cached_input_tokens_to_prompt_runs.py`.
+- Tests: expanded `backend/tests/test_phase7_auth_rate_limit_cost.py` for mixed-mode auth fallback, per-user cost isolation, cached-token totals, and rate-limit reset after simulated window expiry.
+- Validation: `python3 -m py_compile backend/api/main.py backend/common/models.py backend/common/config.py backend/migrations/versions/9c5f8f7f2a1b_add_cached_input_tokens_to_prompt_runs.py`; `cd backend && pytest -q tests/test_phase7_auth_rate_limit_cost.py` (5 passed); `cd backend && pytest -q` (25 passed).
+[2026-02-10 03:16] [ARCHITECT]: REVIEW PASS: Phase 7 Revision 1 accepted. Required fixes verified: per-user daily cost isolation, mixed-mode auth fallback, cached_input_tokens persistence + migration, and explicit rate-limit reset test coverage.
+[2026-02-10 03:20] [ARCHITECT]: CLOSEOUT: Phase 7 passed review, specs archived to `comms/tasks/archive/`, and roadmap docs updated to mark Phase 7 complete / Phase 8 next active (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).

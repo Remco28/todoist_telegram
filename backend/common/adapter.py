@@ -8,6 +8,17 @@ from common.models import EntityType, LinkType
 logger = logging.getLogger(__name__)
 
 class LLMAdapter:
+    @staticmethod
+    def _normalize_usage(candidate: Any) -> Optional[Dict[str, int]]:
+        if not isinstance(candidate, dict):
+            return None
+        usage = {}
+        for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value >= 0:
+                usage[key] = value
+        return usage or None
+
     async def extract_structured_updates(self, message: str) -> Dict[str, Any]:
         """
         Extracts structured entities from a message.
@@ -34,7 +45,11 @@ class LLMAdapter:
             if "problem" in msg_lower or "friction" in msg_lower:
                 problems.append({"title": message.split("problem")[-1].strip() or "Untitled Problem", "status": "active"})
 
-            return {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
+            result = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
+            usage = self._normalize_usage(None)
+            if usage:
+                result["usage"] = usage
+            return result
         except Exception as e:
             logger.error(f"Extraction logic error: {e}")
             return fallback
@@ -43,10 +58,14 @@ class LLMAdapter:
         """
         Summarizes session context.
         """
-        return {
+        result = {
             "summary_text": f"User discussed items in context: {context[:50]}...",
             "facts": ["Context processed."]
         }
+        usage = self._normalize_usage(None)
+        if usage:
+            result["usage"] = usage
+        return result
 
     async def rewrite_plan(self, plan_state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -57,6 +76,9 @@ class LLMAdapter:
             # Mock LLM rewrite - only update allowed fields
             for item in plan_state.get("today_plan", []):
                 item["reason"] = f"Top priority based on score {item.get('score', 0):.1f}."
+            usage = self._normalize_usage(plan_state.get("usage"))
+            if usage:
+                plan_state["usage"] = usage
             return plan_state
         except Exception as e:
             logger.error(f"Plan rewrite failed: {e}")
@@ -69,7 +91,7 @@ class LLMAdapter:
         """
         try:
             # Requirement 2: Query Response Contract Alignment
-            return {
+            result = {
                 "schema_version": "query.v1",
                 "mode": "query",
                 "answer": f"Based on your memory, you have {retrieved_context['sources']['entities']} entities related to your query '{query}'.",
@@ -81,6 +103,10 @@ class LLMAdapter:
                     {"kind": "refresh_plan", "description": "Would you like to refresh your daily plan?"}
                 ]
             }
+            usage = self._normalize_usage(retrieved_context.get("usage"))
+            if usage:
+                result["usage"] = usage
+            return result
         except Exception as e:
             logger.error(f"Query answer failed: {e}")
             raise # Let caller handle fallback
