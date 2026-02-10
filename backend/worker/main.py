@@ -3,7 +3,7 @@ import logging
 import json
 import uuid
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -84,6 +84,8 @@ async def process_job(job_data: dict):
             await handle_plan_refresh(job_id, payload)
         elif topic == "sync.todoist":
             await handle_todoist_sync(job_id, payload, job_data)
+        elif topic == "sync.todoist.reconcile":
+            await handle_todoist_reconcile(job_id, payload, job_data)
         else:
             logger.warning(f"Unknown topic: {topic}")
             return
@@ -258,6 +260,190 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
             raise RuntimeError("One or more tasks failed to sync. Triggering job retry.")
             
         logger.info(f"Todoist sync complete for user {user_id}")
+
+
+def _remote_to_local_priority(remote_priority: int | None) -> int | None:
+    if not isinstance(remote_priority, int):
+        return None
+    if remote_priority < 1 or remote_priority > 4:
+        return None
+    return 5 - remote_priority
+
+
+def _parse_remote_due_date(remote_due: object) -> date | None:
+    if not isinstance(remote_due, dict):
+        return None
+    due_date = remote_due.get("date")
+    if not isinstance(due_date, str) or not due_date.strip():
+        return None
+    try:
+        return date.fromisoformat(due_date.strip()[:10])
+    except ValueError:
+        return None
+
+
+async def handle_todoist_reconcile(job_id: str, payload: dict, job_data: dict):
+    user_id = payload.get("user_id")
+    attempt = job_data.get("attempt", 1)
+    max_attempts = MAX_ATTEMPTS
+    batch_size = max(settings.TODOIST_RECONCILE_BATCH_SIZE, 1)
+
+    logger.info(f"Starting Todoist reconcile for user {user_id} (attempt {attempt}/{max_attempts})...")
+
+    any_task_failed = False
+    applied_updates = 0
+    remote_missing = 0
+
+    async with AsyncSessionLocal() as db:
+        offset = 0
+        while True:
+            stmt_map = (
+                select(TodoistTaskMap)
+                .where(
+                    TodoistTaskMap.user_id == user_id,
+                    TodoistTaskMap.todoist_task_id.isnot(None),
+                )
+                .order_by(TodoistTaskMap.id)
+                .offset(offset)
+                .limit(batch_size)
+            )
+            mappings = (await db.execute(stmt_map)).scalars().all()
+            if not mappings:
+                break
+            offset += len(mappings)
+
+            for mapping in mappings:
+                mapping.last_attempt_at = datetime.utcnow()
+                try:
+                    remote_task = await todoist_adapter.get_task(mapping.todoist_task_id)
+                    if remote_task is None:
+                        remote_missing += 1
+                        mapping.sync_state = "error"
+                        mapping.last_error = "remote_task_missing"
+                        # Remote-missing is treated as terminal drift in v1 (no retry by itself).
+                        db.add(
+                            EventLog(
+                                id=str(uuid.uuid4()),
+                                request_id=f"job_{job_id}",
+                                user_id=user_id,
+                                event_type="todoist_reconcile_remote_missing",
+                                entity_type="task",
+                                entity_id=mapping.local_task_id,
+                                payload_json={
+                                    "job_id": job_id,
+                                    "todoist_task_id": mapping.todoist_task_id,
+                                },
+                            )
+                        )
+                        continue
+
+                    task_stmt = select(Task).where(
+                        Task.id == mapping.local_task_id,
+                        Task.user_id == user_id,
+                    )
+                    local_task = (await db.execute(task_stmt)).scalar_one_or_none()
+                    if local_task is None:
+                        raise RuntimeError("local_task_missing")
+
+                    changed_fields: list[str] = []
+                    now = datetime.utcnow()
+                    remote_completed = bool(remote_task.get("is_completed"))
+                    if remote_completed and local_task.status != TaskStatus.done:
+                        local_task.status = TaskStatus.done
+                        local_task.completed_at = now
+                        local_task.updated_at = now
+                        changed_fields.append("status")
+
+                    if local_task.status != TaskStatus.done:
+                        remote_title = remote_task.get("content")
+                        if isinstance(remote_title, str) and remote_title.strip() and remote_title != local_task.title:
+                            local_task.title = remote_title
+                            local_task.title_norm = remote_title.lower().strip()
+                            local_task.updated_at = now
+                            changed_fields.append("title")
+
+                        remote_notes = remote_task.get("description")
+                        if not isinstance(remote_notes, str):
+                            remote_notes = ""
+                        if (local_task.notes or "") != remote_notes:
+                            local_task.notes = remote_notes or None
+                            local_task.updated_at = now
+                            changed_fields.append("notes")
+
+                        local_priority = _remote_to_local_priority(remote_task.get("priority"))
+                        if local_priority != local_task.priority:
+                            local_task.priority = local_priority
+                            local_task.updated_at = now
+                            changed_fields.append("priority")
+
+                        remote_due_date = _parse_remote_due_date(remote_task.get("due"))
+                        if remote_due_date != local_task.due_date:
+                            local_task.due_date = remote_due_date
+                            local_task.updated_at = now
+                            changed_fields.append("due_date")
+
+                    mapping.sync_state = "synced"
+                    mapping.last_synced_at = datetime.utcnow()
+                    mapping.last_error = None
+
+                    if changed_fields:
+                        applied_updates += 1
+                        db.add(
+                            EventLog(
+                                id=str(uuid.uuid4()),
+                                request_id=f"job_{job_id}",
+                                user_id=user_id,
+                                event_type="todoist_reconcile_applied",
+                                entity_type="task",
+                                entity_id=local_task.id,
+                                payload_json={
+                                    "job_id": job_id,
+                                    "todoist_task_id": mapping.todoist_task_id,
+                                    "changed_fields": changed_fields,
+                                },
+                            )
+                        )
+                except Exception as e:
+                    any_task_failed = True
+                    mapping.sync_state = "error"
+                    mapping.last_error = str(e)
+                    db.add(
+                        EventLog(
+                            id=str(uuid.uuid4()),
+                            request_id=f"job_{job_id}",
+                            user_id=user_id,
+                            event_type="todoist_reconcile_task_failed",
+                            entity_type="task",
+                            entity_id=mapping.local_task_id,
+                            payload_json={
+                                "job_id": job_id,
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "todoist_task_id": mapping.todoist_task_id,
+                                "error": str(e),
+                            },
+                        )
+                    )
+
+        db.add(
+            EventLog(
+                id=str(uuid.uuid4()),
+                request_id=f"job_{job_id}",
+                user_id=user_id,
+                event_type="todoist_reconcile_completed",
+                payload_json={
+                    "job_id": job_id,
+                    "applied_updates": applied_updates,
+                    "remote_missing": remote_missing,
+                    "any_task_failed": any_task_failed,
+                },
+            )
+        )
+        await db.commit()
+
+    if any_task_failed:
+        raise RuntimeError("One or more mapped tasks failed to reconcile. Triggering job retry.")
+    logger.info(f"Todoist reconcile complete for user {user_id}")
 
 async def handle_plan_refresh(job_id: str, payload: dict):
     user_id = payload.get("user_id")

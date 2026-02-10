@@ -27,6 +27,7 @@ Use mapping table (`todoist_task_map`) as join key.
 
 2. Archived/deleted remote tasks:
 - If remote task is not found for a mapped `todoist_task_id`, mark mapping `sync_state="error"` and emit drift event.
+- Treat this as terminal drift in v1 (no retry escalation by itself).
 - Do not auto-delete local task in v1.
 
 3. Mutable fields for open tasks (`title`, `notes`, `priority`, `due_date`):
@@ -75,6 +76,8 @@ Required behavior:
 - `todoist_reconcile_task_failed`
 - `todoist_reconcile_completed`
 6. If any row fails, raise at end to preserve existing worker retry semantics.
+Note:
+- `todoist_reconcile_remote_missing` is terminal drift and should not by itself trigger retry escalation.
 
 ### `backend/api/main.py`
 Add endpoint:
@@ -89,7 +92,7 @@ Extend existing status endpoint:
 - `GET /v1/sync/todoist/status`
 - Include reconciliation metadata fields:
   - `last_reconcile_at`
-  - `reconcile_error_count`
+  - `reconcile_error_count` (windowed by `TODOIST_RECONCILE_WINDOW_MINUTES`)
 
 ### `backend/api/schemas.py`
 Extend `TodoistSyncStatusResponse` to include:
