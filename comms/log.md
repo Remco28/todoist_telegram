@@ -258,3 +258,4 @@
 - Validation: `python3 -m py_compile backend/api/main.py backend/common/models.py backend/common/config.py backend/migrations/versions/9c5f8f7f2a1b_add_cached_input_tokens_to_prompt_runs.py`; `cd backend && pytest -q tests/test_phase7_auth_rate_limit_cost.py` (5 passed); `cd backend && pytest -q` (25 passed).
 [2026-02-10 03:16] [ARCHITECT]: REVIEW PASS: Phase 7 Revision 1 accepted. Required fixes verified: per-user daily cost isolation, mixed-mode auth fallback, cached_input_tokens persistence + migration, and explicit rate-limit reset test coverage.
 [2026-02-10 03:20] [ARCHITECT]: CLOSEOUT: Phase 7 passed review, specs archived to `comms/tasks/archive/`, and roadmap docs updated to mark Phase 7 complete / Phase 8 next active (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
+[2026-02-10 03:21] [ARCHITECT]: TRANSITION: Phase 7 merged to main; new Phase 8 branch created: `architect/phase-8-production-integration-hardening`.
