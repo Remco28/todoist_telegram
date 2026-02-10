@@ -238,3 +238,4 @@
 - Re-validated: `cd backend && pytest -q` => 20 passed; `bash -n ops/backup_db.sh` passed; backup run with `sqlite+aiosqlite://` URL produced timestamped artifact.
 [2026-02-10 02:12] [ARCHITECT]: CLOSEOUT: Phase 6 completed, spec archived to `comms/tasks/archive/2026-02-10-phase-6-hardening-scale-readiness-spec.md`, and roadmap docs updated (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
 [2026-02-10 02:12] [ARCHITECT]: SPEC READY: Published Phase 7 implementation spec at `comms/tasks/2026-02-10-phase-7-auth-rate-limit-cost-observability-spec.md` (auth mapping, rate limits, and daily cost observability).
+[2026-02-10 02:15] [ARCHITECT]: TRANSITION: Merged Phase 6 branch to main and created Phase 7 branch `architect/phase-7-auth-rate-limit-cost-observability` for implementation.
