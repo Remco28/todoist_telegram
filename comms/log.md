@@ -339,3 +339,5 @@
 [2026-02-10 14:08] [ARCHITECT]: REVIEW PASS (with minor fix): Phase 11 accepted after policy alignment and observability correction (remote-missing terminal drift semantics + windowed reconcile error metric).
 [2026-02-10 14:14] [ARCHITECT]: CLOSEOUT: Phase 11 passed review and spec archived to `comms/tasks/archive/2026-02-10-phase-11-bidirectional-todoist-reconciliation-spec.md`.
 [2026-02-10 14:14] [ARCHITECT]: DOC UPDATE: Marked Phase 11 complete and updated next-session priorities in `docs/PHASES.md` and `docs/EXECUTION_PLAN.md`.
+[2026-02-10 14:19] [ARCHITECT]: TRANSITION: Merged `architect/phase-11-todoist-reconciliation` into `main` after Phase 11 pass.
+[2026-02-10 14:20] [ARCHITECT]: REMOTE UPDATED: Pushed Phase 11 branch and merged `main` to GitHub.
