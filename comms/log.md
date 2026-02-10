@@ -296,3 +296,5 @@
 [2026-02-10 13:14] [ARCHITECT]: CLOSEOUT: Archived completed specs to `comms/tasks/archive/` for Phase 8, Phase 9, and Phase 10.
 [2026-02-10 13:18] [ARCHITECT]: TRANSITION: Merged branch `architect/phase-8-production-integration-hardening` into `main` locally after Phase 10 pass and archival.
 [2026-02-10 13:19] [ARCHITECT]: NOTE: Remote push pending; `git push origin main` failed in this environment due DNS/network resolution failure to github.com.
+[2026-02-10 13:44] [ARCHITECT]: TRANSITION: Created branch `architect/phase-11-todoist-reconciliation` for next phase work.
+[2026-02-10 13:46] [ARCHITECT]: SPEC READY: Published Phase 11 implementation spec at `comms/tasks/2026-02-10-phase-11-bidirectional-todoist-reconciliation-spec.md` (mapped-task pull reconciliation, deterministic conflict policy, and reconciliation observability).

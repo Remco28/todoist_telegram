@@ -11,7 +11,8 @@
 - Phase 7: Completed
 - Phase 8: Completed
 - Phase 9: Completed
-- Phase 10: In progress
+- Phase 10: Completed
+- Phase 11: In progress
 
 ## Phase 0: Foundation and Contracts
 ### Goals

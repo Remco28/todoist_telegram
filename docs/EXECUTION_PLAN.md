@@ -9,8 +9,9 @@
 - Phase 6 hardening and scale-readiness implementation completed.
 - Phase 7 auth/rate-limit/cost observability implementation completed (including revision cycle).
 - Phase 8 production integration and deployment hardening completed (review pass).
-- Phase 9 provider realization completed (pending branch closeout/merge).
-- Phase 10 Telegram identity unification is in progress.
+- Phase 9 provider realization completed.
+- Phase 10 Telegram identity unification completed.
+- Phase 11 Todoist bidirectional reconciliation is in progress.
 - Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
 
 ## Implementation Tracks
@@ -21,10 +22,10 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Remove Telegram hardcoded identity and ship chat-to-user secure linking flow.
-2. Unify policy enforcement across API and Telegram interfaces.
-3. Add Todoist pull/reconcile path to prevent local/remote drift.
-4. Validate phase hardening controls in staging after identity rollout.
+1. Add Todoist pull/reconcile path to prevent local/remote drift.
+2. Add deterministic conflict policy and drift observability for mapped tasks.
+3. Validate reconciliation behavior in staging after implementation.
+4. Prepare post-Phase-11 roadmap update.
 
 ## Priority Backlog (Next After Phase 8)
 1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.
@@ -56,6 +57,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Implement Phase 10 Telegram identity unification spec.
-2. Run identity/linking test suite and full backend regression tests.
-3. Prepare branch closeout and merge after architect pass.
+1. Implement Phase 11 bidirectional Todoist reconciliation spec.
+2. Run reconciliation test suite and full backend regression tests.
+3. Perform architect review and closeout after pass.
