@@ -34,11 +34,44 @@ MAX_ATTEMPTS = 5
 
 from common.planner import collect_planning_state, build_plan_payload, render_fallback_plan_explanation
 
+async def _emit_worker_event(
+    event_type: str,
+    topic: str,
+    job_id: str,
+    attempt: int,
+    queue: str,
+    user_id: str = "system",
+    max_attempts: int = MAX_ATTEMPTS,
+    extra: dict | None = None,
+):
+    payload = {
+        "topic": topic,
+        "job_id": job_id,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "queue": queue,
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(EventLog(
+                id=str(uuid.uuid4()),
+                request_id=f"job_{job_id}",
+                user_id=user_id,
+                event_type=event_type,
+                payload_json=payload,
+            ))
+            await db.commit()
+    except Exception as log_error:
+        logger.error(f"Failed to emit worker event {event_type} for {job_id}: {log_error}")
+
 async def process_job(job_data: dict):
     topic = job_data.get("topic")
     payload = job_data.get("payload", {})
     job_id = job_data.get("job_id")
     attempt = job_data.get("attempt", 1)
+    user_id = payload.get("user_id", "system")
     
     logger.info(f"Processing job: {topic} (id: {job_id}, attempt: {attempt})")
     
@@ -53,6 +86,16 @@ async def process_job(job_data: dict):
             await handle_todoist_sync(job_id, payload, job_data)
         else:
             logger.warning(f"Unknown topic: {topic}")
+            return
+        await _emit_worker_event(
+            event_type="worker_topic_completed",
+            topic=topic,
+            job_id=job_id,
+            attempt=attempt,
+            max_attempts=MAX_ATTEMPTS,
+            queue=DEFAULT_QUEUE,
+            user_id=user_id,
+        )
             
     except Exception as e:
         logger.error(f"Job failed (attempt {attempt}): {e}")
@@ -60,10 +103,30 @@ async def process_job(job_data: dict):
             job_data["attempt"] = attempt + 1
             wait_time = min(2 ** attempt, 60)
             logger.info(f"Retrying in {wait_time}s...")
+            await _emit_worker_event(
+                event_type="worker_retry_scheduled",
+                topic=topic,
+                job_id=job_id,
+                attempt=attempt,
+                max_attempts=MAX_ATTEMPTS,
+                queue=DEFAULT_QUEUE,
+                user_id=user_id,
+                extra={"delay_seconds": wait_time, "error": str(e)},
+            )
             await asyncio.sleep(wait_time)
             await redis_client.rpush(DEFAULT_QUEUE, json.dumps(job_data))
         else:
             logger.error(f"Job exceeded max attempts, moving to DLQ: {job_id}")
+            await _emit_worker_event(
+                event_type="worker_moved_to_dlq",
+                topic=topic,
+                job_id=job_id,
+                attempt=attempt,
+                max_attempts=MAX_ATTEMPTS,
+                queue=DLQ,
+                user_id=user_id,
+                extra={"error": str(e)},
+            )
             await redis_client.rpush(DLQ, json.dumps(job_data))
 
 async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):

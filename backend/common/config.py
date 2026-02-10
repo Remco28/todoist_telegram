@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     TODOIST_TOKEN: Optional[str] = None
     TODOIST_API_BASE: str = "https://api.todoist.com/rest/v2"
 
+    # Phase 6 Hardening Settings
+    OPERATIONS_METRICS_WINDOW_HOURS: int = 24
+    WORKER_ALERT_FAILURE_THRESHOLD: int = 5
+    BACKUP_RETENTION_DAYS: int = 14
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property

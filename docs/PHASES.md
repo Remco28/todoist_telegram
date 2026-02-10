@@ -1,12 +1,14 @@
 # Phased Plan
 
-## Current Status (2026-02-09)
+## Current Status (2026-02-10)
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
 - Phase 3: Completed
 - Phase 4: Completed
-- Phase 5: Next active phase
+- Phase 5: Completed
+- Phase 6: Completed
+- Phase 7: Next active phase
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -92,3 +94,14 @@
 - Restore drill succeeds from backup.
 - Alerts fire for failed jobs and API health regressions.
 - Client adapters are optional and do not affect core operations.
+
+## Phase 7: Auth, Rate Limits, and Cost Observability
+### Goals
+- Add per-user auth model foundations and strict token handling.
+- Add API rate-limit guardrails for write and query endpoints.
+- Add prompt token/cost tracking summaries for operational visibility.
+
+### Exit Criteria
+- Auth path supports clear user mapping and denies unknown principals.
+- Rate limits protect backend from burst abuse without blocking normal usage.
+- Cost tracking exposes daily and model-level token/cost summaries.

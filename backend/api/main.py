@@ -247,6 +247,63 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Infrastructure unreachable")
     return {"status": "ready"}
 
+@app.get("/health/metrics", dependencies=[Depends(get_authenticated_user)])
+async def health_metrics(db: AsyncSession = Depends(get_db)):
+    window_hours = settings.OPERATIONS_METRICS_WINDOW_HOURS
+    window_cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+
+    queue_depth = {
+        "default_queue": await redis_client.llen("default_queue"),
+        "dead_letter_queue": await redis_client.llen("dead_letter_queue"),
+    }
+
+    failure_events = (await db.execute(
+        select(EventLog).where(
+            EventLog.created_at >= window_cutoff,
+            EventLog.event_type.in_(["worker_retry_scheduled", "worker_moved_to_dlq"])
+        )
+    )).scalars().all()
+
+    retry_count = 0
+    dlq_count = 0
+    for event in failure_events:
+        if event.event_type == "worker_retry_scheduled":
+            retry_count += 1
+        elif event.event_type == "worker_moved_to_dlq":
+            dlq_count += 1
+
+    tracked_topics = ("memory.summarize", "plan.refresh", "sync.todoist")
+    last_success_by_topic: Dict[str, Optional[str]] = {topic: None for topic in tracked_topics}
+    completed_events = (await db.execute(
+        select(EventLog).where(
+            EventLog.event_type == "worker_topic_completed"
+        ).order_by(EventLog.created_at.desc()).limit(1000)
+    )).scalars().all()
+    for event in completed_events:
+        payload = event.payload_json or {}
+        topic = payload.get("topic")
+        if topic not in last_success_by_topic or last_success_by_topic[topic] is not None:
+            continue
+        if event.created_at:
+            last_success_by_topic[topic] = event.created_at.isoformat()
+        if all(last_success_by_topic.values()):
+            break
+
+    total_failures = retry_count + dlq_count
+    return {
+        "window_hours": window_hours,
+        "window_started_at": window_cutoff.isoformat(),
+        "queue_depth": queue_depth,
+        "failure_counters": {
+            "retry_scheduled": retry_count,
+            "moved_to_dlq": dlq_count,
+            "total": total_failures,
+            "alert_threshold": settings.WORKER_ALERT_FAILURE_THRESHOLD,
+            "alert_triggered": total_failures >= settings.WORKER_ALERT_FAILURE_THRESHOLD,
+        },
+        "last_success_by_topic": last_success_by_topic,
+    }
+
 # --- Telegram Integration ---
 
 @app.post("/v1/integrations/telegram/webhook", response_model=TelegramWebhookResponse)
