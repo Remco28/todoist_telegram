@@ -294,3 +294,5 @@
   - `cd backend && pytest -q` => 45 passed, 1 skipped
 [2026-02-10 13:13] [ARCHITECT]: REVIEW PASS: Phase 10 implementation accepted. Verified secure one-time Telegram link token flow, chat-to-user identity mapping enforcement, removal of Telegram hardcoded user path, and regression coverage for linked/unlinked behavior.
 [2026-02-10 13:14] [ARCHITECT]: CLOSEOUT: Archived completed specs to `comms/tasks/archive/` for Phase 8, Phase 9, and Phase 10.
+[2026-02-10 13:18] [ARCHITECT]: TRANSITION: Merged branch `architect/phase-8-production-integration-hardening` into `main` locally after Phase 10 pass and archival.
+[2026-02-10 13:19] [ARCHITECT]: NOTE: Remote push pending; `git push origin main` failed in this environment due DNS/network resolution failure to github.com.
