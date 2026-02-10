@@ -23,6 +23,7 @@ This file is the high-level map of canonical project assets.
 - Active Architect task specs: `comms/tasks/`
 - Completed Architect task specs: `comms/tasks/archive/`
 - Project-scoped Gemini configuration: `.gemini/settings.json`
+- Operations scripts and runbooks: `ops/`
 
 ## Backend Source Code
 - API Service: `backend/api/`

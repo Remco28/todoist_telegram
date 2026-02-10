@@ -1,11 +1,12 @@
 # Execution Plan
 
-## Current Execution Status (2026-02-09)
+## Current Execution Status (2026-02-10)
 - Phase 1 implementation and revision cycle completed.
 - Phase 2 memory engine implementation and revision cycle completed.
 - Phase 3 planning engine implementation and revision cycle completed.
 - Phase 4 Telegram interface and regression test cycle completed.
-- Active work should now begin from Phase 5 (Todoist downstream sync).
+- Phase 5 Todoist downstream sync implementation and stabilization completed.
+- Active work is now Phase 6 (hardening and scale readiness).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -49,7 +50,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Publish a Phase 5 implementation spec for Todoist downstream sync.
-2. Implement mapping schema and `sync.todoist` worker baseline.
-3. Add conflict policy enforcement and observability events.
-4. Run sync-focused regression suite and document evidence.
+1. Complete Phase 6 hardening implementation (`/health/metrics`, worker retry/DLQ observability, backup/restore runbook).
+2. Validate hardening behavior with regression tests and compile checks.
+3. Archive Phase 6 spec after review pass and prepare the next phase branch.

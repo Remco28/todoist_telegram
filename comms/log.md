@@ -222,3 +222,13 @@
 - Verified: `cd backend && pytest -q tests/test_todoist_sync.py` => 4 passed; `cd backend && pytest -q` => 17 passed.
 [2026-02-10 10:35] [ARCHITECT]: TRANSITION: Created branch `architect/phase-6-hardening-scale-readiness` for next phase work.
 [2026-02-10 10:36] [ARCHITECT]: SPEC READY: Published Phase 6 implementation spec at `comms/tasks/2026-02-10-phase-6-hardening-scale-readiness-spec.md` (metrics endpoint, worker retry/DLQ observability, project-local backup script, and restore runbook).
+[2026-02-10 00:16] [DEVELOPER]: IMPL IN_PROGRESS: Phase 6 hardening implementation (metrics endpoint, worker retry/DLQ observability, backup+restore ops docs).
+[2026-02-10 00:19] [DEVELOPER]: IMPL DONE: Phase 6 hardening implementation complete.
+- Added config settings in `backend/common/config.py`: OPERATIONS_METRICS_WINDOW_HOURS (24), WORKER_ALERT_FAILURE_THRESHOLD (5), BACKUP_RETENTION_DAYS (14).
+- Added authenticated `GET /health/metrics` in `backend/api/main.py` (queue depth, windowed retry/DLQ counters, last-success by topic for memory.summarize/plan.refresh/sync.todoist).
+- Added deterministic worker operational events in `backend/worker/main.py`: `worker_topic_completed`, `worker_retry_scheduled`, `worker_moved_to_dlq` with metadata (`topic`, `job_id`, `attempt`, `max_attempts`, `queue`).
+- Added project-local backup script `ops/backup_db.sh` (safe shell flags, sqlite copy/postgres pg_dump, retention cleanup) and restore runbook `ops/RESTORE_RUNBOOK.md`.
+- Added Phase 6 tests in `backend/tests/test_phase6_hardening.py` for metrics shape and retry/DLQ event emission.
+- Updated docs: `docs/README.md`, `docs/EXECUTION_PLAN.md`; updated `project-manifest.md` to include `ops/`.
+- Validation: `python3 -m py_compile backend/api/main.py backend/worker/main.py backend/common/config.py` passed; `cd backend && pytest -q tests/test_phase6_hardening.py` passed (3); `cd backend && pytest -q` passed (20).
+- Backup script validation: `DATABASE_URL=sqlite:////tmp/todoist_mcp_phase6_backup_test.db ./ops/backup_db.sh` created timestamped artifact in `ops/backups/`.
