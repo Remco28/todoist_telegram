@@ -296,3 +296,46 @@
 [2026-02-10 13:14] [ARCHITECT]: CLOSEOUT: Archived completed specs to `comms/tasks/archive/` for Phase 8, Phase 9, and Phase 10.
 [2026-02-10 13:18] [ARCHITECT]: TRANSITION: Merged branch `architect/phase-8-production-integration-hardening` into `main` locally after Phase 10 pass and archival.
 [2026-02-10 13:19] [ARCHITECT]: NOTE: Remote push pending; `git push origin main` failed in this environment due DNS/network resolution failure to github.com.
+[2026-02-10 13:44] [ARCHITECT]: TRANSITION: Created branch `architect/phase-11-todoist-reconciliation` for next phase work.
+[2026-02-10 13:46] [ARCHITECT]: SPEC READY: Published Phase 11 implementation spec at `comms/tasks/2026-02-10-phase-11-bidirectional-todoist-reconciliation-spec.md` (mapped-task pull reconciliation, deterministic conflict policy, and reconciliation observability).
+[2026-02-10 13:50] [CLAUDE]: IMPL IN_PROGRESS: Phase 11 bidirectional Todoist reconciliation (adapter read methods, worker reconcile topic/handler, API reconcile trigger/status fields, tests, and architecture docs).
+[2026-02-10 13:56] [CLAUDE]: IMPL DONE: Phase 11 bidirectional Todoist reconciliation implemented.
+- Added Todoist adapter pull methods in `backend/common/todoist.py`:
+  - `get_task(todoist_task_id)` with 404->None behavior.
+  - `list_tasks()` for remote listing support.
+- Added reconciliation settings in `backend/common/config.py`:
+  - `TODOIST_RECONCILE_BATCH_SIZE` (default 200)
+  - `TODOIST_RECONCILE_WINDOW_MINUTES` (default 60)
+- Extended worker routing and implementation in `backend/worker/main.py`:
+  - New topic `sync.todoist.reconcile` in `process_job`.
+  - New handler `handle_todoist_reconcile(job_id, payload, job_data)`.
+  - Deterministic reconcile rules implemented for completion, mutable open-task fields, and remote-missing mappings.
+  - Reconcile event logging implemented: `todoist_reconcile_applied`, `todoist_reconcile_remote_missing`, `todoist_reconcile_task_failed`, `todoist_reconcile_completed`.
+  - Mapping metadata updates implemented (`last_attempt_at`, `last_synced_at`, `sync_state`, `last_error`).
+- Added API reconcile trigger and status extensions in `backend/api/main.py`:
+  - New endpoint `POST /v1/sync/todoist/reconcile` (auth + idempotency).
+  - Extended `/v1/sync/todoist/status` to include `last_reconcile_at` and `reconcile_error_count`.
+- Extended schema in `backend/api/schemas.py`:
+  - `TodoistSyncStatusResponse` now includes `last_reconcile_at` and `reconcile_error_count`.
+- Extended tests in `backend/tests/test_todoist_sync.py`:
+  - Reconcile endpoint enqueue behavior.
+  - Reconcile completion propagation (`done`).
+  - Reconcile mutable-field updates for open tasks.
+  - Remote-missing mapping error/event behavior.
+  - Status response includes reconciliation fields.
+- Updated architecture docs in `docs/ARCHITECTURE_V1.md` with pull/reconcile loop and deterministic conflict policy.
+- Validation:
+  - `python3 -m py_compile backend/common/todoist.py backend/common/config.py backend/worker/main.py backend/api/main.py backend/api/schemas.py backend/tests/test_todoist_sync.py`
+  - `cd backend && pytest -q tests/test_todoist_sync.py` => 8 passed
+  - `cd backend && pytest -q` => 49 passed, 1 skipped
+[2026-02-10 14:03] [ARCHITECT]: REVIEW FAIL: Phase 11 implementation is close but requires one functional revision and one observability correction.
+- Functional gap: `handle_todoist_reconcile` marks remote-missing mappings as `sync_state="error"` but does not treat that row as a failed reconcile for job retry semantics; this conflicts with spec requirement to raise when any row fails (`backend/worker/main.py`).
+- Observability gap: `TODOIST_RECONCILE_WINDOW_MINUTES` is added but unused; `/v1/sync/todoist/status` computes `reconcile_error_count` as all-time event count, which is unbounded and weak as an operational signal (`backend/api/main.py`).
+- Revision requested: (1) count remote-missing as reconcile failure for retry flow OR explicitly amend policy + tests if remote-missing should be terminal/non-retry; (2) use `TODOIST_RECONCILE_WINDOW_MINUTES` to scope reconcile error counts (or remove the setting if intentionally not used).
+[2026-02-10 14:07] [CLAUDE]: IMPL DONE: Phase 11 revision applied per architect follow-up.
+- Clarified remote-missing reconcile behavior as terminal drift (non-retry) in spec/docs and worker comment.
+- Updated `/v1/sync/todoist/status` reconcile error metric to use `TODOIST_RECONCILE_WINDOW_MINUTES` window in `backend/api/main.py`.
+- Validation: `cd backend && pytest -q tests/test_todoist_sync.py` (8 passed); `cd backend && pytest -q` (49 passed, 1 skipped).
+[2026-02-10 14:08] [ARCHITECT]: REVIEW PASS (with minor fix): Phase 11 accepted after policy alignment and observability correction (remote-missing terminal drift semantics + windowed reconcile error metric).
+[2026-02-10 14:14] [ARCHITECT]: CLOSEOUT: Phase 11 passed review and spec archived to `comms/tasks/archive/2026-02-10-phase-11-bidirectional-todoist-reconciliation-spec.md`.
+[2026-02-10 14:14] [ARCHITECT]: DOC UPDATE: Marked Phase 11 complete and updated next-session priorities in `docs/PHASES.md` and `docs/EXECUTION_PLAN.md`.

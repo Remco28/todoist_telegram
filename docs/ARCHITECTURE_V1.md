@@ -21,6 +21,15 @@
 - `redis` container (optional): queue + idempotency/cache.
 - `caddy/nginx` (or Coolify edge): TLS termination and routing.
 
+## Todoist Synchronization
+- Downstream sync (`sync.todoist`): pushes local task changes to Todoist.
+- Reconciliation sync (`sync.todoist.reconcile`): pulls mapped remote task state back into local tasks.
+- Reconcile applies deterministic rules:
+- Remote completion sets local task to `done`.
+- For open local tasks, remote `content/description/priority/due` updates local fields.
+- Missing remote mapped tasks are marked as terminal drift errors and logged; local tasks are not deleted in v1.
+- Every reconcile run emits explicit audit events for applied updates, remote-missing drift, per-task failures, and run completion.
+
 ## Core Data Model
 - `inbox_items`: raw captured user messages and metadata.
 - `tasks`: actionable items; status, due, priority, impact.

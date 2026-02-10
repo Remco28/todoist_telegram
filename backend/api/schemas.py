@@ -214,7 +214,8 @@ class TodoistSyncStatusResponse(BaseModel):
 
 
     last_attempt_at: Optional[str] = None
-
+    last_reconcile_at: Optional[str] = None
+    reconcile_error_count: int = 0
 
 
 

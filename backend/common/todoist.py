@@ -1,6 +1,6 @@
 import logging
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from common.config import settings
 
 logger = logging.getLogger(__name__)
@@ -49,5 +49,29 @@ class TodoistAdapter:
             resp = await client.post(url, headers=self._get_headers())
             resp.raise_for_status()
             return True
+
+    async def get_task(self, todoist_task_id: str) -> Optional[Dict[str, Any]]:
+        """Fetches a single Todoist task by id.
+
+        Returns None when the remote task is not found.
+        """
+        url = f"{self.base_url}/tasks/{todoist_task_id}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=self._get_headers())
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list_tasks(self) -> List[Dict[str, Any]]:
+        """Lists active Todoist tasks for the configured token."""
+        url = f"{self.base_url}/tasks"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=self._get_headers())
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, list):
+                return payload
+            return []
 
 todoist_adapter = TodoistAdapter()

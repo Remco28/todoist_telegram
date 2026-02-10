@@ -9,8 +9,9 @@
 - Phase 6 hardening and scale-readiness implementation completed.
 - Phase 7 auth/rate-limit/cost observability implementation completed (including revision cycle).
 - Phase 8 production integration and deployment hardening completed (review pass).
-- Phase 9 provider realization completed (pending branch closeout/merge).
-- Phase 10 Telegram identity unification is in progress.
+- Phase 9 provider realization completed.
+- Phase 10 Telegram identity unification completed.
+- Phase 11 Todoist bidirectional reconciliation completed.
 - Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
 
 ## Implementation Tracks
@@ -21,10 +22,10 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Remove Telegram hardcoded identity and ship chat-to-user secure linking flow.
-2. Unify policy enforcement across API and Telegram interfaces.
-3. Add Todoist pull/reconcile path to prevent local/remote drift.
-4. Validate phase hardening controls in staging after identity rollout.
+1. Validate Phase 11 reconciliation behavior against staging data.
+2. Reduce deprecation warnings (`datetime.utcnow`, pydantic v2 field deprecations) in core modules/tests.
+3. Prepare v1 release checklist and deployment notes.
+4. Draft next-phase roadmap beyond v1 completion.
 
 ## Priority Backlog (Next After Phase 8)
 1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.
@@ -56,6 +57,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Implement Phase 10 Telegram identity unification spec.
-2. Run identity/linking test suite and full backend regression tests.
-3. Prepare branch closeout and merge after architect pass.
+1. Run staging validation for Todoist reconcile behavior and drift metrics.
+2. Triage and schedule technical-debt cleanup for warning reductions.
+3. Decide next feature phase based on production feedback.
