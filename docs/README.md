@@ -8,7 +8,8 @@
 - Phase 4 test specification is archived under `comms/tasks/archive/`.
 - Phase 5 specification and revisions are archived under `comms/tasks/archive/`.
 - Phase 6 hardening specification is archived under `comms/tasks/archive/`.
-- Phase 7 implementation specification is active in `comms/tasks/`.
+- Phase 7 specification and revision are archived under `comms/tasks/archive/`.
+- Phase 8 implementation specification is active in `comms/tasks/`.
 
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.

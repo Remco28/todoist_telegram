@@ -193,11 +193,42 @@ async def get_authenticated_user(request: Request):
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid authorization header")
     token = auth_header.split(" ")[1]
+    token_map = settings.token_user_map
+    if token_map:
+        mapped_user = token_map.get(token)
+        if mapped_user:
+            return mapped_user
     if token not in settings.auth_tokens:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    # Restore mapping (Requirement 3)
-    if token == "test_user_2": return "usr_2"
+    if token == "test_user_2":
+        return "usr_2"
     return "usr_dev"
+
+async def enforce_rate_limit(user_id: str, endpoint_class: str, limit: int):
+    key = f"rate_limit:{endpoint_class}:{user_id}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, settings.RATE_LIMIT_WINDOW_SECONDS)
+    if current > limit:
+        ttl = await redis_client.ttl(key)
+        if ttl is None or ttl < 0:
+            ttl = settings.RATE_LIMIT_WINDOW_SECONDS
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded for {endpoint_class}. Retry in {ttl}s.",
+        )
+
+def _extract_usage(metadata: Any) -> Dict[str, int]:
+    if not isinstance(metadata, dict):
+        return {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0}
+    usage = metadata.get("usage", metadata)
+    if not isinstance(usage, dict):
+        return {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0}
+    return {
+        "input_tokens": usage.get("input_tokens", 0) if isinstance(usage.get("input_tokens", 0), int) else 0,
+        "output_tokens": usage.get("output_tokens", 0) if isinstance(usage.get("output_tokens", 0), int) else 0,
+        "cached_input_tokens": usage.get("cached_input_tokens", 0) if isinstance(usage.get("cached_input_tokens", 0), int) else 0,
+    }
 
 async def check_idempotency(request: Request, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if request.method not in ["POST", "PATCH", "PUT", "DELETE"]:
@@ -304,6 +335,76 @@ async def health_metrics(db: AsyncSession = Depends(get_db)):
         "last_success_by_topic": last_success_by_topic,
     }
 
+@app.get("/health/costs/daily", dependencies=[Depends(get_authenticated_user)])
+async def health_costs_daily(user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    rows = (await db.execute(
+        select(PromptRun).where(
+            PromptRun.user_id == user_id,
+            PromptRun.created_at >= day_start,
+            PromptRun.created_at < day_end
+        )
+    )).scalars().all()
+
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cached_input_tokens = 0
+    by_operation_model: Dict[str, Dict[str, Any]] = {}
+
+    for row in rows:
+        input_tokens = row.input_tokens or 0
+        output_tokens = row.output_tokens or 0
+        cached_input_tokens = row.cached_input_tokens or 0
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+        total_cached_input_tokens += cached_input_tokens
+        key = f"{row.operation}|{row.model}"
+        entry = by_operation_model.setdefault(
+            key,
+            {
+                "operation": row.operation,
+                "model": row.model,
+                "runs": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_input_tokens": 0,
+            },
+        )
+        entry["runs"] += 1
+        entry["input_tokens"] += input_tokens
+        entry["output_tokens"] += output_tokens
+        entry["cached_input_tokens"] += cached_input_tokens
+
+    def _estimate(input_t: int, output_t: int, cached_t: int) -> float:
+        usd = (
+            ((input_t - cached_t) / 1_000_000.0) * settings.COST_INPUT_PER_MILLION_USD
+            + (cached_t / 1_000_000.0) * settings.COST_CACHED_INPUT_PER_MILLION_USD
+            + (output_t / 1_000_000.0) * settings.COST_OUTPUT_PER_MILLION_USD
+        )
+        return round(max(usd, 0.0), 8)
+
+    breakdown = []
+    for entry in by_operation_model.values():
+        entry["estimated_usd"] = _estimate(
+            entry["input_tokens"],
+            entry["output_tokens"],
+            entry["cached_input_tokens"],
+        )
+        breakdown.append(entry)
+    breakdown.sort(key=lambda item: (item["operation"], item["model"]))
+
+    return {
+        "day_utc": day_start.date().isoformat(),
+        "totals": {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "cached_input_tokens": total_cached_input_tokens,
+            "estimated_usd": _estimate(total_input_tokens, total_output_tokens, total_cached_input_tokens),
+        },
+        "breakdown": breakdown,
+    }
+
 # --- Telegram Integration ---
 
 @app.post("/v1/integrations/telegram/webhook", response_model=TelegramWebhookResponse)
@@ -354,6 +455,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
 @app.post("/v1/capture/thought", response_model=ThoughtCaptureResponse, dependencies=[Depends(check_idempotency)])
 async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
+    await enforce_rate_limit(user_id, "capture", settings.RATE_LIMIT_CAPTURE_PER_WINDOW)
     request_id = request.state.request_id
     
     extraction = None
@@ -361,13 +463,17 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
         start_time = time.time()
         try:
             extraction = await adapter.extract_structured_updates(payload.message)
+            usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             if not all(k in extraction for k in ["tasks", "goals", "problems", "links"]):
                 raise ValueError("Invalid extraction shape")
             db.add(PromptRun(
                 id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="extract",
                 provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_EXTRACT,
-                prompt_version=settings.PROMPT_VERSION_EXTRACT, latency_ms=latency, status="success", created_at=datetime.utcnow()
+                prompt_version=settings.PROMPT_VERSION_EXTRACT, latency_ms=latency, status="success",
+                input_tokens=usage["input_tokens"], cached_input_tokens=usage["cached_input_tokens"],
+                output_tokens=usage["output_tokens"],
+                created_at=datetime.utcnow()
             ))
             break
         except Exception as e:
@@ -465,6 +571,7 @@ async def delete_link(request: Request, link_id: str, user_id: str = Depends(get
 @app.post("/v1/plan/refresh", response_model=PlanRefreshResponse, dependencies=[Depends(check_idempotency)])
 async def plan_refresh(request: Request, payload: PlanRefreshRequest, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
+    await enforce_rate_limit(user_id, "plan", settings.RATE_LIMIT_PLAN_PER_WINDOW)
     job_id = str(uuid.uuid4())
     await redis_client.rpush("default_queue", json.dumps({"job_id": job_id, "topic": "plan.refresh", "payload": {"user_id": user_id, "chat_id": payload.chat_id}}))
     resp = PlanRefreshResponse(status="ok", enqueued=True, job_id=job_id)
@@ -502,13 +609,22 @@ async def get_today_plan(chat_id: str, user_id: str = Depends(get_authenticated_
 
 @app.post("/v1/query/ask", response_model=QueryResponseV1, dependencies=[Depends(get_authenticated_user)])
 async def query_ask(payload: QueryAskRequest, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
+    await enforce_rate_limit(user_id, "query", settings.RATE_LIMIT_QUERY_PER_WINDOW)
     ctx = await assemble_context(db=db, user_id=user_id, chat_id=payload.chat_id, query=payload.query, max_tokens=payload.max_tokens or settings.QUERY_MAX_TOKENS)
     start_time = time.time()
     request_id = str(uuid.uuid4())
     try:
         raw_resp = await adapter.answer_query(payload.query, ctx)
+        usage = _extract_usage(raw_resp)
         query_response = QueryResponseV1(**raw_resp) # Requirement 2: Strict Validation
-        db.add(PromptRun(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="query", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_QUERY, prompt_version=settings.PROMPT_VERSION_QUERY, latency_ms=int((time.time()-start_time)*1000), status="success", created_at=datetime.utcnow()))
+        db.add(PromptRun(
+            id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="query",
+            provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_QUERY,
+            prompt_version=settings.PROMPT_VERSION_QUERY, latency_ms=int((time.time()-start_time)*1000),
+            input_tokens=usage["input_tokens"], cached_input_tokens=usage["cached_input_tokens"],
+            output_tokens=usage["output_tokens"],
+            status="success", created_at=datetime.utcnow()
+        ))
     except Exception as e:
         logger.error(f"Query failure: {e}")
         db.add(PromptRun(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="query", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_QUERY, prompt_version=settings.PROMPT_VERSION_QUERY, status="error", error_code=type(e).__name__, created_at=datetime.utcnow()))

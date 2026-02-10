@@ -8,7 +8,8 @@
 - Phase 4: Completed
 - Phase 5: Completed
 - Phase 6: Completed
-- Phase 7: Next active phase
+- Phase 7: Completed
+- Phase 8: Next active phase
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -105,3 +106,14 @@
 - Auth path supports clear user mapping and denies unknown principals.
 - Rate limits protect backend from burst abuse without blocking normal usage.
 - Cost tracking exposes daily and model-level token/cost summaries.
+
+## Phase 8: Production Integration and Deployment Hardening
+### Goals
+- Run end-to-end integration checks against real Redis/Postgres in staging.
+- Add migration/deploy safety checks and rollback notes for database changes.
+- Harden provider adapter boundaries with failure-mode contract tests.
+
+### Exit Criteria
+- Staging smoke suite validates capture, query, plan, and sync paths.
+- Deployment checklist includes migration safety verification and rollback.
+- Adapter contract tests catch malformed provider payloads before release.

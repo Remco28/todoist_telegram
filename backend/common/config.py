@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
     APP_AUTH_BEARER_TOKENS: str  # Comma-separated
+    APP_AUTH_TOKEN_USER_MAP: Optional[str] = None  # token:user_id pairs, comma-separated
     SESSION_INACTIVITY_MINUTES: int = 120
     IDEMPOTENCY_TTL_HOURS: int = 24
     RECENT_CONTEXT_TTL_HOURS: int = 48
@@ -56,10 +57,35 @@ class Settings(BaseSettings):
     WORKER_ALERT_FAILURE_THRESHOLD: int = 5
     BACKUP_RETENTION_DAYS: int = 14
 
+    # Phase 7 Auth, Rate Limit, Cost Settings
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_CAPTURE_PER_WINDOW: int = 20
+    RATE_LIMIT_QUERY_PER_WINDOW: int = 30
+    RATE_LIMIT_PLAN_PER_WINDOW: int = 15
+    COST_INPUT_PER_MILLION_USD: float = 0.20
+    COST_CACHED_INPUT_PER_MILLION_USD: float = 0.05
+    COST_OUTPUT_PER_MILLION_USD: float = 0.50
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def auth_tokens(self) -> List[str]:
         return [t.strip() for t in self.APP_AUTH_BEARER_TOKENS.split(",") if t.strip()]
+
+    @property
+    def token_user_map(self) -> dict:
+        if not self.APP_AUTH_TOKEN_USER_MAP:
+            return {}
+        mapping = {}
+        for pair in self.APP_AUTH_TOKEN_USER_MAP.split(","):
+            pair = pair.strip()
+            if not pair or ":" not in pair:
+                continue
+            token, user_id = pair.split(":", 1)
+            token = token.strip()
+            user_id = user_id.strip()
+            if token and user_id:
+                mapping[token] = user_id
+        return mapping
 
 settings = Settings()
