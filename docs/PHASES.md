@@ -9,7 +9,9 @@
 - Phase 5: Completed
 - Phase 6: Completed
 - Phase 7: Completed
-- Phase 8: Next active phase
+- Phase 8: Completed
+- Phase 9: Completed
+- Phase 10: In progress
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -117,3 +119,36 @@
 - Staging smoke suite validates capture, query, plan, and sync paths.
 - Deployment checklist includes migration safety verification and rollback.
 - Adapter contract tests catch malformed provider payloads before release.
+
+## Phase 9: Provider Realization (LLM API Integration)
+### Goals
+- Replace mock adapter logic with real provider-backed implementations for extract, summarize, plan rewrite, and query answer.
+- Keep provider-agnostic adapter boundary and strict schema validation.
+- Add retry/timeout/fallback behavior for real upstream failures.
+
+### Exit Criteria
+- `LLMAdapter` operations call a configured real provider in non-test environments.
+- Extract/query/plan/summarize flows remain schema-compliant under malformed or partial provider responses.
+- Cost/usage telemetry remains populated from provider metadata when available.
+
+## Phase 10: Telegram Identity Unification
+### Goals
+- Remove hardcoded Telegram user path and map `chat_id` to real app `user_id`.
+- Add secure Telegram onboarding/link flow (token-based link).
+- Enforce consistent policy controls for Telegram and API (identity, limits, audit semantics).
+
+### Exit Criteria
+- Telegram actions resolve via stored identity mapping, not `usr_dev` fallback.
+- Unlinked chats receive guided link flow and cannot write into arbitrary data scope.
+- Telegram requests preserve user isolation comparable to bearer-token API paths.
+
+## Phase 11: Bidirectional Todoist Reconciliation
+### Goals
+- Add pull/reconcile path from Todoist to local source-of-truth model with explicit policy.
+- Detect and resolve state drift for done/updated tasks.
+- Add observability for reconciliation outcomes and conflicts.
+
+### Exit Criteria
+- Tasks changed in Todoist are reconciled locally on schedule or trigger.
+- Drift is measurable (metrics/events) and reduced in normal operation.
+- Reconciliation behavior is deterministic and auditable.

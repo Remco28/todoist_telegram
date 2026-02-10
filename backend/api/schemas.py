@@ -154,6 +154,12 @@ class TelegramWebhookResponse(BaseModel):
     status: str = "ok"
 
 
+class TelegramLinkTokenCreateResponse(BaseModel):
+    link_token: str
+    expires_at: datetime
+    deep_link: Optional[str] = None
+
+
 
 
 
@@ -208,7 +214,6 @@ class TodoistSyncStatusResponse(BaseModel):
 
 
     last_attempt_at: Optional[str] = None
-
 
 
 

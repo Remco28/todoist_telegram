@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 import logging
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -17,7 +18,8 @@ from common.config import settings
 from common.models import (
     Base, IdempotencyKey, InboxItem, Task, Goal, Problem, 
     EntityLink, EventLog, PromptRun, TaskStatus, GoalStatus, 
-    ProblemStatus, LinkType, EntityType, TodoistTaskMap
+    ProblemStatus, LinkType, EntityType, TodoistTaskMap,
+    TelegramUserMap, TelegramLinkToken
 )
 from common.adapter import adapter
 from common.memory import assemble_context
@@ -28,7 +30,7 @@ from api.schemas import (
     PlanRefreshRequest, PlanRefreshResponse, PlanResponseV1,
     QueryAskRequest, QueryResponseV1,
     TelegramUpdateEnvelope, TelegramWebhookResponse,
-    TodoistSyncStatusResponse
+    TodoistSyncStatusResponse, TelegramLinkTokenCreateResponse
 )
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message,
@@ -111,8 +113,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
 
 # --- Internal Helpers for Integration Routing ---
 
-async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, db: AsyncSession):
-    user_id = "usr_dev" # Phase 4 default
+async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, user_id: str, db: AsyncSession):
 
     if command == "/today":
         # Simulate GET /v1/plan/get_today logic
@@ -160,6 +161,83 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
     else:
         supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done"
         await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
+
+
+def _hash_link_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _build_telegram_deep_link(raw_token: str) -> Optional[str]:
+    if settings.TELEGRAM_DEEP_LINK_BASE_URL:
+        return f"{settings.TELEGRAM_DEEP_LINK_BASE_URL}{raw_token}"
+    if settings.TELEGRAM_BOT_USERNAME:
+        return f"https://t.me/{settings.TELEGRAM_BOT_USERNAME}?start={raw_token}"
+    return None
+
+
+async def _issue_telegram_link_token(user_id: str, db: AsyncSession) -> TelegramLinkTokenCreateResponse:
+    raw_token = secrets.token_urlsafe(24)
+    expires_at = datetime.utcnow() + timedelta(seconds=settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS)
+    record = TelegramLinkToken(
+        id=f"tlt_{uuid.uuid4().hex[:12]}",
+        token_hash=_hash_link_token(raw_token),
+        user_id=user_id,
+        expires_at=expires_at,
+        consumed_at=None,
+        created_at=datetime.utcnow(),
+    )
+    db.add(record)
+    await db.commit()
+    return TelegramLinkTokenCreateResponse(
+        link_token=raw_token,
+        expires_at=expires_at,
+        deep_link=_build_telegram_deep_link(raw_token),
+    )
+
+
+async def _resolve_telegram_user(chat_id: str, db: AsyncSession) -> Optional[str]:
+    stmt = select(TelegramUserMap).where(TelegramUserMap.chat_id == chat_id)
+    mapping = (await db.execute(stmt)).scalar_one_or_none()
+    if not mapping:
+        return None
+    mapping.last_seen_at = datetime.utcnow()
+    await db.commit()
+    return mapping.user_id
+
+
+async def _consume_telegram_link_token(chat_id: str, username: Optional[str], raw_token: str, db: AsyncSession) -> bool:
+    token_hash = _hash_link_token(raw_token.strip())
+    stmt = select(TelegramLinkToken).where(TelegramLinkToken.token_hash == token_hash)
+    token_row = (await db.execute(stmt)).scalar_one_or_none()
+    if not token_row:
+        return False
+    if token_row.consumed_at is not None:
+        return False
+    if token_row.expires_at < datetime.utcnow():
+        return False
+
+    mapping_stmt = select(TelegramUserMap).where(TelegramUserMap.chat_id == chat_id)
+    mapping = (await db.execute(mapping_stmt)).scalar_one_or_none()
+    now = datetime.utcnow()
+    if mapping:
+        mapping.user_id = token_row.user_id
+        mapping.telegram_username = username
+        mapping.linked_at = now
+        mapping.last_seen_at = now
+    else:
+        db.add(
+            TelegramUserMap(
+                id=f"tgm_{uuid.uuid4().hex[:12]}",
+                chat_id=chat_id,
+                user_id=token_row.user_id,
+                telegram_username=username,
+                linked_at=now,
+                last_seen_at=now,
+            )
+        )
+    token_row.consumed_at = now
+    await db.commit()
+    return True
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Todoist MCP API")
@@ -229,6 +307,45 @@ def _extract_usage(metadata: Any) -> Dict[str, int]:
         "output_tokens": usage.get("output_tokens", 0) if isinstance(usage.get("output_tokens", 0), int) else 0,
         "cached_input_tokens": usage.get("cached_input_tokens", 0) if isinstance(usage.get("cached_input_tokens", 0), int) else 0,
     }
+
+
+def _validate_extraction_payload(extraction: Any) -> None:
+    if not isinstance(extraction, dict):
+        raise ValueError("Invalid extraction payload type")
+
+    required = ("tasks", "goals", "problems", "links")
+    for key in required:
+        value = extraction.get(key)
+        if not isinstance(value, list):
+            raise ValueError(f"Invalid extraction list for key: {key}")
+
+    for task in extraction["tasks"]:
+        if not isinstance(task, dict):
+            raise ValueError("Invalid task entry type")
+        if not isinstance(task.get("title"), str) or not task.get("title").strip():
+            raise ValueError("Invalid task title")
+        if "priority" in task and task.get("priority") is not None and not isinstance(task.get("priority"), int):
+            raise ValueError("Invalid task priority")
+
+    for goal in extraction["goals"]:
+        if not isinstance(goal, dict):
+            raise ValueError("Invalid goal entry type")
+        if not isinstance(goal.get("title"), str) or not goal.get("title").strip():
+            raise ValueError("Invalid goal title")
+
+    for problem in extraction["problems"]:
+        if not isinstance(problem, dict):
+            raise ValueError("Invalid problem entry type")
+        if not isinstance(problem.get("title"), str) or not problem.get("title").strip():
+            raise ValueError("Invalid problem title")
+
+    link_keys = ("from_type", "from_title", "to_type", "to_title", "link_type")
+    for link in extraction["links"]:
+        if not isinstance(link, dict):
+            raise ValueError("Invalid link entry type")
+        for key in link_keys:
+            if not isinstance(link.get(key), str) or not link.get(key).strip():
+                raise ValueError(f"Invalid link field: {key}")
 
 async def check_idempotency(request: Request, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if request.method not in ["POST", "PATCH", "PUT", "DELETE"]:
@@ -407,6 +524,14 @@ async def health_costs_daily(user_id: str = Depends(get_authenticated_user), db:
 
 # --- Telegram Integration ---
 
+@app.post("/v1/integrations/telegram/link_token", response_model=TelegramLinkTokenCreateResponse)
+async def create_telegram_link_token(
+    user_id: str = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _issue_telegram_link_token(user_id, db)
+
+
 @app.post("/v1/integrations/telegram/webhook", response_model=TelegramWebhookResponse)
 async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     # 1. Validate secret
@@ -425,19 +550,34 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     
     chat_id = data["chat_id"]
     text = data["text"]
+    username = data.get("username")
     
     # 3. Command Routing
     command, args = extract_command(text)
     if command:
-        await handle_telegram_command(command, args, chat_id, db)
+        if command == "/start":
+            if args and await _consume_telegram_link_token(chat_id, username, args, db):
+                await send_message(chat_id, "Telegram linked successfully. You can now send thoughts and commands.")
+            else:
+                await send_message(chat_id, "Link failed. Request a new link token from the API and try again.")
+            return {"status": "ok"}
+
+        user_id = await _resolve_telegram_user(chat_id, db)
+        if not user_id:
+            await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
+            return {"status": "ok"}
+        await handle_telegram_command(command, args, chat_id, user_id, db)
     else:
+        user_id = await _resolve_telegram_user(chat_id, db)
+        if not user_id:
+            await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
+            return {"status": "ok"}
+
         # 4. Non-command text -> Full Capture Flow
-        user_id = "usr_dev"
         request_id = f"tg_{uuid.uuid4().hex[:8]}"
         try:
             extraction = await adapter.extract_structured_updates(text)
-            if not all(k in extraction for k in ["tasks", "goals", "problems", "links"]):
-                raise ValueError("Invalid extraction shape")
+            _validate_extraction_payload(extraction)
             _, applied = await _apply_capture(
                 db=db, user_id=user_id, chat_id=chat_id,
                 source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
@@ -465,8 +605,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
             extraction = await adapter.extract_structured_updates(payload.message)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
-            if not all(k in extraction for k in ["tasks", "goals", "problems", "links"]):
-                raise ValueError("Invalid extraction shape")
+            _validate_extraction_payload(extraction)
             db.add(PromptRun(
                 id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="extract",
                 provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_EXTRACT,

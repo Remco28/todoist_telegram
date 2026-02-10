@@ -9,13 +9,14 @@
 - Phase 5 specification and revisions are archived under `comms/tasks/archive/`.
 - Phase 6 hardening specification is archived under `comms/tasks/archive/`.
 - Phase 7 specification and revision are archived under `comms/tasks/archive/`.
-- Phase 8 implementation specification is active in `comms/tasks/`.
+- Phase 8 and Phase 9 implementation specifications are active in `comms/tasks/`.
 
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.
 - `docs/ARCHITECTURE_V1.md`: technical architecture, engines, runtime model.
 - `docs/PHASES.md`: phased roadmap with exit criteria.
 - `docs/EXECUTION_PLAN.md`: actionable backlog, risks, and next-session plan.
+- `docs/ADVISORY_2026_02_10.md`: independent advisory review used to align next-phase priorities.
 - `docs/MEMORY_AND_SESSION_POLICY.md`: session semantics, retention, and memory assembly rules.
 - `docs/PROMPT_CONTRACT.md`: backend-owned prompt architecture and output contracts.
 - `docs/contracts/`: concrete v1 JSON Schemas for `extract`, `query`, and `plan`.

@@ -34,6 +34,8 @@
 - `sessions`: app-level conversation windows keyed by user/chat.
 - `prompt_runs`: record prompt version, model, token usage, latency, and outcome.
 - `recent_context_items`: short-lived list of recently shown entity ids for follow-up resolution.
+- `telegram_user_map`: maps Telegram `chat_id` to internal `user_id` after secure onboarding.
+- `telegram_link_tokens`: one-time short-lived token hashes used for Telegram account linking.
 
 ## Memory Engine
 ### Purpose
@@ -92,6 +94,13 @@ Produce ordered execution plans from structured state.
 6. Emit audit events and optional plan refresh.
 
 Rule: provider suggests, backend decides, backend writes.
+
+## Telegram Identity Flow
+1. API user requests one-time Telegram link token.
+2. Backend stores only token hash + TTL.
+3. User sends `/start <token>` to Telegram bot.
+4. Webhook validates token, consumes it, and stores `chat_id -> user_id`.
+5. Only linked chats can run Telegram commands or free-text capture writes.
 
 ## LLM Provider Adapter
 ### Design

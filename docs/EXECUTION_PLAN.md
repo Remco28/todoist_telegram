@@ -8,7 +8,10 @@
 - Phase 5 Todoist downstream sync implementation and stabilization completed.
 - Phase 6 hardening and scale-readiness implementation completed.
 - Phase 7 auth/rate-limit/cost observability implementation completed (including revision cycle).
-- Active work is now Phase 8 (production integration and deployment hardening).
+- Phase 8 production integration and deployment hardening completed (review pass).
+- Phase 9 provider realization completed (pending branch closeout/merge).
+- Phase 10 Telegram identity unification is in progress.
+- Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -18,11 +21,16 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Add staging smoke tests against real Redis/Postgres services.
-2. Add migration safety checks and rollback guardrails for deploys.
-3. Add provider adapter contract tests for malformed/partial payloads.
-4. Add deployment checklist automation for API/worker health gating.
-5. Validate backup/restore and auth/rate-limit behavior in staging.
+1. Remove Telegram hardcoded identity and ship chat-to-user secure linking flow.
+2. Unify policy enforcement across API and Telegram interfaces.
+3. Add Todoist pull/reconcile path to prevent local/remote drift.
+4. Validate phase hardening controls in staging after identity rollout.
+
+## Priority Backlog (Next After Phase 8)
+1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.
+2. Remove Telegram hardcoded identity and ship chat-to-user secure linking flow.
+3. Add Todoist pull/reconcile path to prevent local/remote drift.
+4. Unify policy enforcement across API and Telegram interfaces.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -48,6 +56,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Publish and implement Phase 8 spec for staging integration + deployment hardening.
-2. Add integration-oriented validation alongside current unit/regression coverage.
-3. Review, merge to main, and prepare the next phase branch.
+1. Implement Phase 10 Telegram identity unification spec.
+2. Run identity/linking test suite and full backend regression tests.
+3. Prepare branch closeout and merge after architect pass.
