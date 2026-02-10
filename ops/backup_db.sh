@@ -21,8 +21,9 @@ fi
 
 TS="$(date -u +"%Y%m%dT%H%M%SZ")"
 
-if [[ "${DATABASE_URL}" == sqlite://* ]]; then
-  DB_PATH="${DATABASE_URL#sqlite://}"
+if [[ "${DATABASE_URL}" == sqlite://* || "${DATABASE_URL}" == sqlite+aiosqlite://* ]]; then
+  DB_PATH="${DATABASE_URL#sqlite+aiosqlite://}"
+  DB_PATH="${DB_PATH#sqlite://}"
   DB_PATH="${DB_PATH#///}"
 
   if [[ "${DB_PATH}" != /* ]]; then

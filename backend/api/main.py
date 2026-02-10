@@ -272,21 +272,22 @@ async def health_metrics(db: AsyncSession = Depends(get_db)):
         elif event.event_type == "worker_moved_to_dlq":
             dlq_count += 1
 
-    completed_events = (await db.execute(
-        select(EventLog).where(EventLog.event_type == "worker_topic_completed")
-    )).scalars().all()
-
     tracked_topics = ("memory.summarize", "plan.refresh", "sync.todoist")
     last_success_by_topic: Dict[str, Optional[str]] = {topic: None for topic in tracked_topics}
+    completed_events = (await db.execute(
+        select(EventLog).where(
+            EventLog.event_type == "worker_topic_completed"
+        ).order_by(EventLog.created_at.desc()).limit(1000)
+    )).scalars().all()
     for event in completed_events:
         payload = event.payload_json or {}
         topic = payload.get("topic")
-        if topic not in last_success_by_topic:
+        if topic not in last_success_by_topic or last_success_by_topic[topic] is not None:
             continue
-        current = last_success_by_topic[topic]
-        created = event.created_at.isoformat() if event.created_at else None
-        if created and (current is None or created > current):
-            last_success_by_topic[topic] = created
+        if event.created_at:
+            last_success_by_topic[topic] = event.created_at.isoformat()
+        if all(last_success_by_topic.values()):
+            break
 
     total_failures = retry_count + dlq_count
     return {
