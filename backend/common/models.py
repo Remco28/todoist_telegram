@@ -258,3 +258,24 @@ class IdempotencyKey(Base):
         UniqueConstraint("user_id", "idempotency_key", name="uq_idempotency_user_key"),
         Index("idx_idempotency_keys_expires", "expires_at"),
     )
+
+class TodoistTaskMap(Base):
+    __tablename__ = "todoist_task_map"
+    
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+    local_task_id = Column(String, ForeignKey("tasks.id"), nullable=False)
+    todoist_task_id = Column(String, nullable=True)
+    sync_state = Column(String, nullable=False, default="pending") # pending|synced|error
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "local_task_id", name="uq_todoist_map_local"),
+        # We can't have a unique constraint on nullable todoist_task_id easily if multiple are null
+        # but for TodoistTaskMap we only ever want one mapping per local_task_id anyway.
+        # Actually, the spec said unique index on (user_id, todoist_task_id).
+        # In Postgres, unique index allows multiple nulls.
+        Index("idx_todoist_map_remote_lookup", "user_id", "todoist_task_id", unique=True),
+    )

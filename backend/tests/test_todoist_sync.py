@@ -1,0 +1,184 @@
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from httpx import ASGITransport, AsyncClient
+
+from api.main import app, get_db, get_todoist_sync_status
+from common.models import Task, TaskStatus, TodoistTaskMap
+from worker.main import handle_todoist_sync
+
+
+class _FakeResult:
+    def __init__(self, items=None, scalar=None, one_or_none=None):
+        self._items = items if items is not None else []
+        self._scalar = scalar
+        self._one_or_none = one_or_none
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._items
+
+    def scalar(self):
+        return self._scalar
+
+    def scalar_one_or_none(self):
+        return self._one_or_none
+
+
+def _session_factory(fake_db):
+    @asynccontextmanager
+    async def _ctx():
+        yield fake_db
+
+    return lambda: _ctx()
+
+
+def test_sync_recovery_from_failed_create():
+    async def _run():
+        task = Task(id="t1", user_id="usr_dev", title="T1", title_norm="t1", status=TaskStatus.open)
+        mapping = TodoistTaskMap(
+            id="m1",
+            user_id="usr_dev",
+            local_task_id="t1",
+            todoist_task_id=None,
+            sync_state="error",
+            last_error="create failed",
+        )
+
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            side_effect=[
+                _FakeResult(items=[task]),      # tasks query
+                _FakeResult(items=[mapping]),   # mappings query
+            ]
+        )
+        fake_db.commit = AsyncMock()
+        fake_db.add = MagicMock()
+
+        todoist = AsyncMock()
+        todoist.create_task.return_value = {"id": "td_1"}
+        todoist.update_task.return_value = {}
+        todoist.close_task.return_value = True
+
+        with patch("worker.main.AsyncSessionLocal", _session_factory(fake_db)), patch("worker.main.todoist_adapter", todoist):
+            await handle_todoist_sync("job_1", {"user_id": "usr_dev"}, {"attempt": 1})
+
+        assert mapping.todoist_task_id == "td_1"
+        assert mapping.sync_state == "synced"
+        assert mapping.last_error is None
+        todoist.create_task.assert_awaited_once()
+        todoist.update_task.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_sync_recovery_done_task_creates_then_closes():
+    async def _run():
+        task = Task(id="t2", user_id="usr_dev", title="T2", title_norm="t2", status=TaskStatus.done)
+        mapping = TodoistTaskMap(
+            id="m2",
+            user_id="usr_dev",
+            local_task_id="t2",
+            todoist_task_id=None,
+            sync_state="error",
+        )
+
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            side_effect=[
+                _FakeResult(items=[task]),
+                _FakeResult(items=[mapping]),
+            ]
+        )
+        fake_db.commit = AsyncMock()
+        fake_db.add = MagicMock()
+
+        todoist = AsyncMock()
+        todoist.create_task.return_value = {"id": "td_2"}
+        todoist.close_task.return_value = True
+        todoist.update_task.return_value = {}
+
+        with patch("worker.main.AsyncSessionLocal", _session_factory(fake_db)), patch("worker.main.todoist_adapter", todoist):
+            await handle_todoist_sync("job_2", {"user_id": "usr_dev"}, {"attempt": 1})
+
+        assert mapping.todoist_task_id == "td_2"
+        assert mapping.sync_state == "synced"
+        todoist.create_task.assert_awaited_once()
+        todoist.close_task.assert_awaited_once_with("td_2")
+
+    asyncio.run(_run())
+
+
+def test_trigger_endpoint_enqueues_sync_job(mock_redis):
+    async def _run():
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(return_value=_FakeResult(one_or_none=None))
+        fake_db.commit = AsyncMock()
+        fake_db.add = AsyncMock()
+
+        async def _override_get_db():
+            yield fake_db
+
+        app.dependency_overrides[get_db] = _override_get_db
+        try:
+            with patch("api.main.redis_client", mock_redis), patch("api.main.save_idempotency", new_callable=AsyncMock):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    resp = await client.post(
+                        "/v1/sync/todoist",
+                        headers={"Authorization": "Bearer test_token", "Idempotency-Key": "ik_todoist_sync"},
+                    )
+                    assert resp.status_code == 200
+                    assert resp.json()["status"] == "ok"
+                    assert "job_id" in resp.json()
+
+            mock_redis.rpush.assert_awaited_once()
+            _, raw = mock_redis.rpush.await_args.args
+            assert '"topic": "sync.todoist"' in raw
+        finally:
+            app.dependency_overrides.clear()
+
+    asyncio.run(_run())
+
+
+def test_status_endpoint_shape_and_transition_expectation():
+    async def _run():
+        fake_db = AsyncMock()
+        # total, pending, error, last_synced, last_attempt
+        fake_db.execute = AsyncMock(
+            side_effect=[
+                _FakeResult(scalar=1),
+                _FakeResult(scalar=0),
+                _FakeResult(scalar=1),
+                _FakeResult(scalar=None),
+                _FakeResult(scalar=datetime(2026, 2, 10, 1, 2, 3)),
+            ]
+        )
+
+        before = await get_todoist_sync_status(user_id="usr_dev", db=fake_db)
+        assert before.total_mapped == 1
+        assert before.error_count == 1
+        assert before.last_synced_at is None
+        assert before.last_attempt_at is not None
+
+        fake_db_2 = AsyncMock()
+        fake_db_2.execute = AsyncMock(
+            side_effect=[
+                _FakeResult(scalar=1),
+                _FakeResult(scalar=0),
+                _FakeResult(scalar=0),
+                _FakeResult(scalar=datetime(2026, 2, 10, 2, 3, 4)),
+                _FakeResult(scalar=datetime(2026, 2, 10, 2, 3, 4)),
+            ]
+        )
+        after = await get_todoist_sync_status(user_id="usr_dev", db=fake_db_2)
+        assert after.total_mapped == 1
+        assert after.error_count == 0
+        assert after.last_synced_at is not None
+        assert after.last_attempt_at is not None
+
+    asyncio.run(_run())

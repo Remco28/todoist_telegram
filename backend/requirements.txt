@@ -11,4 +11,5 @@ requests
 python-dotenv
 httpx
 pytest
+pytest-asyncio
 pytest-timeout

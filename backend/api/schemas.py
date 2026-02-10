@@ -149,4 +149,74 @@ class TelegramUpdateEnvelope(BaseModel):
 
 class TelegramWebhookResponse(BaseModel):
 
+
+
     status: str = "ok"
+
+
+
+
+
+
+
+# --- Phase 5 Todoist Sync ---
+
+
+
+
+
+
+
+class TodoistSyncStatusResponse(BaseModel):
+
+
+
+
+
+
+
+    total_mapped: int
+
+
+
+
+
+
+
+    pending_sync: int
+
+
+
+
+
+
+
+    error_count: int
+
+
+
+
+
+
+
+    last_synced_at: Optional[str] = None
+
+
+
+
+
+
+
+    last_attempt_at: Optional[str] = None
+
+
+
+
+
+
+
+
+
+
+
+
