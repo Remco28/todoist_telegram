@@ -220,3 +220,5 @@
 - Reworked Phase 5 tests to stable mock-boundary coverage (no sqlite/aiosqlite deadlock path), including recovery, done create+close, trigger enqueue, and status transition checks.
 - Restored shared test fixture baseline to the stable Phase 4 pattern and removed transient `backend/test.db` artifact.
 - Verified: `cd backend && pytest -q tests/test_todoist_sync.py` => 4 passed; `cd backend && pytest -q` => 17 passed.
+[2026-02-10 10:35] [ARCHITECT]: TRANSITION: Created branch `architect/phase-6-hardening-scale-readiness` for next phase work.
+[2026-02-10 10:36] [ARCHITECT]: SPEC READY: Published Phase 6 implementation spec at `comms/tasks/2026-02-10-phase-6-hardening-scale-readiness-spec.md` (metrics endpoint, worker retry/DLQ observability, project-local backup script, and restore runbook).
