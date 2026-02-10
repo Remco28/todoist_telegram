@@ -6,7 +6,8 @@
 - Phase 3 planning engine implementation and revision cycle completed.
 - Phase 4 Telegram interface and regression test cycle completed.
 - Phase 5 Todoist downstream sync implementation and stabilization completed.
-- Active work is now Phase 6 (hardening and scale readiness).
+- Phase 6 hardening and scale-readiness implementation completed.
+- Active work is now Phase 7 (auth, rate limits, and cost observability).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -16,15 +17,11 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Implement Todoist mapping table between local tasks and Todoist task IDs.
-2. Add worker topic and handler for push sync (`sync.todoist`) with retries and DLQ behavior.
-3. Add Todoist adapter with strict request/response validation and timeout controls.
-4. Define source-of-truth and conflict policy for title/status/priority/due-date updates.
-5. Add API endpoint to trigger sync runs and inspect sync status/errors.
-6. Add regression tests for sync create/update/no-op/error paths.
-7. Add auth/rate-limit hardening and production guardrails.
-8. Add health checks, logs, metrics, and backups.
-9. Add token usage and cost tracking by provider/model/prompt version.
+1. Add per-user auth foundations and explicit token-to-user mapping strategy.
+2. Implement API rate limits for write-heavy and query-heavy endpoints.
+3. Add prompt token usage and cost tracking by provider/model/prompt version.
+4. Add operational cost summary endpoint/report for daily monitoring.
+5. Add regression tests for auth denials, rate-limit boundaries, and cost aggregation.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -50,6 +47,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Complete Phase 6 hardening implementation (`/health/metrics`, worker retry/DLQ observability, backup/restore runbook).
-2. Validate hardening behavior with regression tests and compile checks.
-3. Archive Phase 6 spec after review pass and prepare the next phase branch.
+1. Publish and implement Phase 7 spec for auth/rate-limit/cost observability.
+2. Validate Phase 7 behavior with regression coverage and compile checks.
+3. Review, merge to main, and prepare the next phase branch.
