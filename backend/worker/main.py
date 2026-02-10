@@ -13,9 +13,10 @@ from sqlalchemy import select, delete, not_
 from common.config import settings
 from common.models import (
     Base, MemorySummary, EventLog, InboxItem, PromptRun, 
-    Task, Goal, Problem
+    Task, Goal, Problem, TodoistTaskMap, TaskStatus
 )
 from common.adapter import adapter
+from common.todoist import todoist_adapter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
@@ -49,7 +50,7 @@ async def process_job(job_data: dict):
         elif topic == "plan.refresh":
             await handle_plan_refresh(job_id, payload)
         elif topic == "sync.todoist":
-            logger.info("Todoist sync placeholder")
+            await handle_todoist_sync(job_id, payload, job_data)
         else:
             logger.warning(f"Unknown topic: {topic}")
             
@@ -64,6 +65,136 @@ async def process_job(job_data: dict):
         else:
             logger.error(f"Job exceeded max attempts, moving to DLQ: {job_id}")
             await redis_client.rpush(DLQ, json.dumps(job_data))
+
+async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
+    user_id = payload.get("user_id")
+    attempt = job_data.get("attempt", 1)
+    max_attempts = MAX_ATTEMPTS # Could be from job_data if passed
+    
+    logger.info(f"Starting Todoist sync for user {user_id} (attempt {attempt}/{max_attempts})...")
+    
+    any_task_failed = False
+    
+    async with AsyncSessionLocal() as db:
+        # 1. Fetch eligible tasks (non-archived)
+        stmt = select(Task).where(Task.user_id == user_id, Task.status != TaskStatus.archived)
+        tasks = (await db.execute(stmt)).scalars().all()
+        
+        # 2. Fetch existing mappings
+        stmt_map = select(TodoistTaskMap).where(TodoistTaskMap.user_id == user_id)
+        mappings = (await db.execute(stmt_map)).scalars().all()
+        task_map = {m.local_task_id: m for m in mappings}
+        
+        for task in tasks:
+            mapping = task_map.get(task.id)
+            
+            try:
+                # Common payload for create/update
+                todoist_payload = {
+                    "content": task.title,
+                    "description": task.notes or "",
+                    "priority": 5 - task.priority if task.priority else 1,
+                }
+                if task.due_date:
+                    todoist_payload["due_date"] = task.due_date.isoformat()
+
+                # Requirement 1: Recovery Path. Treat null/empty remote ID as "needs create"
+                if not mapping or not mapping.todoist_task_id:
+                    # Create in Todoist
+                    logger.info(f"Creating Todoist task for local task {task.id}")
+                    resp = await todoist_adapter.create_task(todoist_payload)
+                    todoist_id = resp["id"]
+                    
+                    if not mapping:
+                        # New mapping row
+                        mapping = TodoistTaskMap(
+                            id=str(uuid.uuid4()),
+                            user_id=user_id,
+                            local_task_id=task.id,
+                            todoist_task_id=todoist_id,
+                            sync_state="synced",
+                            last_synced_at=datetime.utcnow(),
+                            last_attempt_at=datetime.utcnow()
+                        )
+                        db.add(mapping)
+                    else:
+                        # Update existing error/placeholder mapping
+                        mapping.todoist_task_id = todoist_id
+                        mapping.sync_state = "synced"
+                        mapping.last_synced_at = datetime.utcnow()
+                        mapping.last_attempt_at = datetime.utcnow()
+                        mapping.last_error = None
+                    
+                    # If it's already done, close it now (create then close)
+                    if task.status == TaskStatus.done:
+                        logger.info(f"Immediately closing new Todoist task {todoist_id}")
+                        await todoist_adapter.close_task(todoist_id)
+                    
+                else:
+                    mapping.last_attempt_at = datetime.utcnow()
+                    # Check if status is done
+                    if task.status == TaskStatus.done:
+                        logger.info(f"Closing Todoist task {mapping.todoist_task_id}")
+                        await todoist_adapter.close_task(mapping.todoist_task_id)
+                    else:
+                        # Update Todoist
+                        logger.info(f"Updating Todoist task {mapping.todoist_task_id}")
+                        await todoist_adapter.update_task(mapping.todoist_task_id, todoist_payload)
+                    
+                    mapping.sync_state = "synced"
+                    mapping.last_synced_at = datetime.utcnow()
+                    mapping.last_error = None
+                        
+            except Exception as e:
+                any_task_failed = True
+                logger.error(f"Failed to sync task {task.id}: {e}")
+                
+                # Requirement 2: Upsert mapping error row
+                if not mapping:
+                    mapping = TodoistTaskMap(
+                        id=str(uuid.uuid4()),
+                        user_id=user_id,
+                        local_task_id=task.id,
+                        todoist_task_id=None, # Explicitly null for create failures
+                        sync_state="error",
+                        last_error=str(e),
+                        last_attempt_at=datetime.utcnow()
+                    )
+                    db.add(mapping)
+                else:
+                    mapping.sync_state = "error"
+                    mapping.last_error = str(e)
+                
+                # Requirement 4: Retry Metadata in EventLog
+                will_retry = attempt < max_attempts
+                next_delay = min(2 ** attempt, 60) if will_retry else None
+                
+                db.add(EventLog(
+                    id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+                    event_type="todoist_sync_task_failed", entity_type="task",
+                    entity_id=task.id, 
+                    payload_json={
+                        "error": str(e),
+                        "job_id": job_id,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "will_retry": will_retry,
+                        "next_retry_delay_seconds": next_delay
+                    }
+                ))
+
+        # 3. Log completion
+        db.add(EventLog(
+            id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
+            event_type="todoist_sync_completed", payload_json={"job_id": job_id, "any_task_failed": any_task_failed}
+        ))
+        
+        await db.commit()
+        
+        if any_task_failed:
+            raise RuntimeError("One or more tasks failed to sync. Triggering job retry.")
+            
+        logger.info(f"Todoist sync complete for user {user_id}")
 
 async def handle_plan_refresh(job_id: str, payload: dict):
     user_id = payload.get("user_id")

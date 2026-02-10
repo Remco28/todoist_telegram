@@ -17,7 +17,7 @@ from common.config import settings
 from common.models import (
     Base, IdempotencyKey, InboxItem, Task, Goal, Problem, 
     EntityLink, EventLog, PromptRun, TaskStatus, GoalStatus, 
-    ProblemStatus, LinkType, EntityType
+    ProblemStatus, LinkType, EntityType, TodoistTaskMap
 )
 from common.adapter import adapter
 from common.memory import assemble_context
@@ -27,7 +27,8 @@ from api.schemas import (
     TaskUpdate, GoalUpdate, ProblemUpdate, LinkCreate,
     PlanRefreshRequest, PlanRefreshResponse, PlanResponseV1,
     QueryAskRequest, QueryResponseV1,
-    TelegramUpdateEnvelope, TelegramWebhookResponse
+    TelegramUpdateEnvelope, TelegramWebhookResponse,
+    TodoistSyncStatusResponse
 )
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message,
@@ -460,5 +461,141 @@ async def query_ask(payload: QueryAskRequest, user_id: str = Depends(get_authent
     return query_response
 
 @app.get("/v1/memory/context", dependencies=[Depends(get_authenticated_user)])
+
 async def get_memory_context(chat_id: str, query: str, max_tokens: Optional[int] = None, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
+
     return await assemble_context(db=db, user_id=user_id, chat_id=chat_id, query=query, max_tokens=max_tokens)
+
+
+
+# --- Phase 5 Todoist Sync ---
+
+
+
+@app.post("/v1/sync/todoist", dependencies=[Depends(check_idempotency)])
+
+async def trigger_todoist_sync(request: Request, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
+
+    if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
+
+    job_id = str(uuid.uuid4())
+
+    await redis_client.rpush("default_queue", json.dumps({"job_id": job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}))
+
+    resp = {"status": "ok", "job_id": job_id}
+
+    await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp)
+
+    return resp
+
+
+
+@app.get("/v1/sync/todoist/status", response_model=TodoistSyncStatusResponse, dependencies=[Depends(get_authenticated_user)])
+
+
+
+async def get_todoist_sync_status(user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
+
+
+
+    from sqlalchemy import func
+
+
+
+    
+
+
+
+    # 1. Total mapped
+
+
+
+    total_mapped = (await db.execute(select(func.count(TodoistTaskMap.id)).where(TodoistTaskMap.user_id == user_id))).scalar()
+
+
+
+    
+
+
+
+    # 2. Pending sync
+
+
+
+    pending_sync = (await db.execute(select(func.count(TodoistTaskMap.id)).where(TodoistTaskMap.user_id == user_id, TodoistTaskMap.sync_state == "pending"))).scalar()
+
+
+
+    
+
+
+
+    # 3. Error count
+
+
+
+    error_count = (await db.execute(select(func.count(TodoistTaskMap.id)).where(TodoistTaskMap.user_id == user_id, TodoistTaskMap.sync_state == "error"))).scalar()
+
+
+
+    
+
+
+
+    # 4. Last synced at
+
+
+
+    last_synced = (await db.execute(select(func.max(TodoistTaskMap.last_synced_at)).where(TodoistTaskMap.user_id == user_id))).scalar()
+
+
+
+    
+
+
+
+    # 5. Last attempt at
+
+
+
+    last_attempt = (await db.execute(select(func.max(TodoistTaskMap.last_attempt_at)).where(TodoistTaskMap.user_id == user_id))).scalar()
+
+
+
+    
+
+
+
+    return TodoistSyncStatusResponse(
+
+
+
+        total_mapped=total_mapped or 0,
+
+
+
+        pending_sync=pending_sync or 0,
+
+
+
+        error_count=error_count or 0,
+
+
+
+        last_synced_at=last_synced.isoformat() if last_synced else None,
+
+
+
+        last_attempt_at=last_attempt.isoformat() if last_attempt else None
+
+
+
+    )
+
+
+
+
+
+    
+
+    

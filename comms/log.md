@@ -200,3 +200,23 @@
 [2026-02-09 16:20] [ARCHITECT]: CLEANUP: Updated roadmap docs to mark Phase 4 complete and Phase 5 as next active phase (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
 [2026-02-09 16:21] [ARCHITECT]: SPEC READY: Published Phase 5 implementation spec at `comms/tasks/2026-02-09-phase-5-todoist-sync-spec.md` (mapping model, sync worker topic, Todoist adapter, trigger/status endpoints).
 [2026-02-09 16:35] [ARCHITECT]: TRANSITION: Created branch `architect/phase-5-todoist-sync` to begin Phase 5 implementation cycle.
+[2026-02-09 17:00] [DEVELOPER]: IMPL IN_PROGRESS: Phase 5 - Todoist Downstream Sync v1. Implementing mapping model, sync worker, and trigger endpoints.
+[2026-02-09 18:30] [DEVELOPER]: IMPL DONE: Phase 5: Todoist Downstream Sync v1
+[2026-02-09 19:30] [DEVELOPER]: IMPL DONE: Phase 5 Revision 1 - Sync Correctness & Visibility
+- Correctness Fix: Updated Todoist adapter to handle `204 No Content` responses safely in `update_task`.
+- Correctness Fix: Enforced create-then-close behavior for unmapped `done` tasks in a single sync run.
+- Visibility Fix: Added `last_attempt_at` to `TodoistTaskMap` and updated status endpoint to surface creation failures (mapping row now created/upserted even on initial sync failure).
+- Observability: Added retry metadata (`job_id`, `attempt`, `max_attempts`, `will_retry`, `next_retry_delay_seconds`) to `todoist_sync_task_failed` event payloads.
+- Database Compatibility: Migrated `JSONB` to `JSON` in models and migrations to enable stable integration testing with SQLite while preserving Postgres functionality.
+- Test Coverage: Implemented `backend/tests/test_todoist_sync.py` with 8 test cases covering sync success, update, done-task creation/close, 204 handling, failure visibility, and API endpoints. All 8 tests passed.
+- Verified: All Phase 5 Revision 1 requirements satisfied; compile check passed.
+- Created `TodoistTaskMap` model and Alembic migration for task ID mapping and sync state.
+- Implemented `backend/common/todoist.py` adapter for create/update/close calls.
+- Implemented `sync.todoist` worker job: handles one-way sync (local -> Todoist), manages mapping, and logs outcomes.
+- Added API endpoints: `POST /v1/sync/todoist` (trigger) and `GET /v1/sync/todoist/status` (visibility).
+- Verified: Mapping is idempotent; updates propagate correctly; completion calls Todoist close; compile check passed.
+[2026-02-10 10:15] [DEVELOPER]: IMPL DONE: Phase 5 Revision 2 stabilization (takeover)
+- Fixed sync recovery behavior in worker for mappings with null remote IDs by forcing create-path recovery before update/close.
+- Reworked Phase 5 tests to stable mock-boundary coverage (no sqlite/aiosqlite deadlock path), including recovery, done create+close, trigger enqueue, and status transition checks.
+- Restored shared test fixture baseline to the stable Phase 4 pattern and removed transient `backend/test.db` artifact.
+- Verified: `cd backend && pytest -q tests/test_todoist_sync.py` => 4 passed; `cd backend && pytest -q` => 17 passed.

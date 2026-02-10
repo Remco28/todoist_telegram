@@ -1,6 +1,6 @@
-"""Stable fixtures for Phase 4 Telegram tests.
+"""Stable shared fixtures for tests.
 
-Design goal: test routing/behavior without brittle mixed sync+async DB IO.
+Design goal: avoid async fixture loop injection and keep test boundaries explicit.
 """
 import os
 from unittest.mock import AsyncMock, patch
@@ -27,6 +27,7 @@ def mock_redis():
     r = AsyncMock()
     r.rpush = AsyncMock(return_value=1)
     r.get = AsyncMock(return_value=None)
+    r.setex = AsyncMock(return_value=True)
     r.ping = AsyncMock(return_value=True)
     return r
 
@@ -41,16 +42,15 @@ def mock_send():
 @pytest.fixture
 def mock_extract():
     with patch("api.main.adapter") as m:
-        m.extract_structured_updates = AsyncMock(return_value={
-            "tasks": [], "goals": [], "problems": [], "links": []
-        })
+        m.extract_structured_updates = AsyncMock(
+            return_value={"tasks": [], "goals": [], "problems": [], "links": []}
+        )
         yield m
 
 
 @pytest.fixture
 def mock_db():
     db = AsyncMock()
-    # SQLAlchemy result-like object used by /done path.
     result = AsyncMock()
     result.rowcount = 1
     db.execute = AsyncMock(return_value=result)
@@ -60,7 +60,6 @@ def mock_db():
 
 @pytest.fixture
 def app_no_db(mock_redis, mock_send, mock_extract, mock_db):
-    """App with get_db overridden to an async mock session."""
     async def _stub_get_db():
         yield mock_db
 

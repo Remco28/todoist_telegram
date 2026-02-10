@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     TELEGRAM_COMMAND_TIMEOUT_SECONDS: int = 20
     TELEGRAM_DEFAULT_SOURCE: str = "telegram"
 
+    # Phase 5 Todoist Settings
+    TODOIST_TOKEN: Optional[str] = None
+    TODOIST_API_BASE: str = "https://api.todoist.com/rest/v2"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
