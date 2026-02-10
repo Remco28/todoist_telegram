@@ -33,3 +33,16 @@
 - If verification fails, stop services again and restore the pre-restore snapshot (Postgres) or previous SQLite copy.
 - Check `event_log` and worker logs before re-enabling traffic.
 - Record incident details and restore timestamp in `comms/log.md`.
+
+## Restore vs Roll Forward
+- Prefer roll forward when:
+  - API/worker app code is faulty but DB schema and data are intact.
+  - Migration succeeded and issue can be fixed with a compatible patch release.
+  - Health endpoints recover after app rollback with no data corruption signals.
+- Prefer restore when:
+  - Migration partially applied and left schema/data in inconsistent state.
+  - Critical tables are missing/corrupted after deploy.
+  - New release wrote invalid data that cannot be safely repaired in place.
+- Decision rule:
+  - If integrity is in question, stop writes and restore first.
+  - If integrity is intact, keep data and roll forward with a hotfix.

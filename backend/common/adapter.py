@@ -1,11 +1,16 @@
+import asyncio
 import json
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from copy import deepcopy
+from typing import Any, Dict, Optional
+
+import httpx
+
 from common.config import settings
-from common.models import EntityType, LinkType
+from common.planner import render_fallback_plan_explanation
 
 logger = logging.getLogger(__name__)
+
 
 class LLMAdapter:
     @staticmethod
@@ -13,102 +18,317 @@ class LLMAdapter:
         if not isinstance(candidate, dict):
             return None
         usage = {}
-        for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
-            value = candidate.get(key)
+        mapping = {
+            "input_tokens": ("input_tokens", "prompt_tokens"),
+            "output_tokens": ("output_tokens", "completion_tokens"),
+            "cached_input_tokens": ("cached_input_tokens", "prompt_tokens_details.cached_tokens"),
+        }
+        for normalized_key, provider_keys in mapping.items():
+            value = None
+            for key in provider_keys:
+                value = LLMAdapter._deep_get(candidate, key)
+                if isinstance(value, int) and value >= 0:
+                    break
+                value = None
             if isinstance(value, int) and value >= 0:
-                usage[key] = value
+                usage[normalized_key] = value
         return usage or None
 
-    async def extract_structured_updates(self, message: str) -> Dict[str, Any]:
-        """
-        Extracts structured entities from a message.
-        """
-        fallback = {"tasks": [], "goals": [], "problems": [], "links": []}
-        try:
-            tasks = []
-            goals = []
-            problems = []
-            links = []
-            msg_lower = message.lower()
-            
-            if "task" in msg_lower:
-                task_title = message.split("task")[-1].strip() or "Untitled Task"
-                tasks.append({"title": task_title, "status": "open", "priority": 3})
-                if "goal" in msg_lower:
-                    goal_title = message.split("goal")[-1].strip().split("task")[0].strip() or "Untitled Goal"
-                    goals.append({"title": goal_title, "status": "active"})
-                    links.append({
-                        "from_type": "task", "from_title": task_title,
-                        "to_type": "goal", "to_title": goal_title,
-                        "link_type": "supports_goal"
-                    })
-            if "problem" in msg_lower or "friction" in msg_lower:
-                problems.append({"title": message.split("problem")[-1].strip() or "Untitled Problem", "status": "active"})
+    @staticmethod
+    def _deep_get(payload: Any, path: str) -> Any:
+        cur = payload
+        for part in path.split("."):
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(part)
+        return cur
 
-            result = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
-            usage = self._normalize_usage(None)
+    def _model_for(self, operation: str) -> str:
+        if operation == "extract":
+            return settings.LLM_MODEL_EXTRACT
+        if operation == "query":
+            return settings.LLM_MODEL_QUERY
+        if operation == "plan":
+            return settings.LLM_MODEL_PLAN
+        if operation == "summarize":
+            return settings.LLM_MODEL_SUMMARIZE
+        raise ValueError(f"Unsupported operation: {operation}")
+
+    def _base_url(self) -> str:
+        base = settings.LLM_API_BASE_URL.strip()
+        if not base:
+            raise RuntimeError("LLM_API_BASE_URL is not configured")
+        return base.rstrip("/")
+
+    async def _post_with_retry(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        retries = max(0, settings.LLM_MAX_RETRIES)
+        for attempt in range(retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
+                    response = await client.post(
+                        f"{self._base_url()}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {settings.LLM_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        raise ValueError("Provider response is not a JSON object")
+                    return body
+            except (httpx.RequestError, httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                delay = max(0.0, settings.LLM_RETRY_BACKOFF_SECONDS) * (2 ** attempt)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
+
+    @staticmethod
+    def _extract_content(payload: Dict[str, Any]) -> Any:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("Provider response missing choices")
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise ValueError("Provider choice is invalid")
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Provider message is invalid")
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    text_value = part.get("text")
+                    if isinstance(text_value, str):
+                        parts.append(text_value)
+            content = "\n".join(parts).strip()
+        return content
+
+    @staticmethod
+    def _parse_content_object(content: Any) -> Dict[str, Any]:
+        if isinstance(content, dict):
+            return content
+        if not isinstance(content, str):
+            raise ValueError("Provider content is not JSON")
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("Parsed provider content is not an object")
+        return parsed
+
+    def _build_payload(self, operation: str, prompt: str, user_text: str) -> Dict[str, Any]:
+        return {
+            "model": self._model_for(operation),
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Return only valid JSON. Do not include markdown fences.",
+                },
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_text},
+            ],
+        }
+
+    async def _invoke_operation(self, operation: str, prompt: str, user_text: str) -> Dict[str, Any]:
+        response = await self._post_with_retry(self._build_payload(operation, prompt, user_text))
+        content_obj = self._parse_content_object(self._extract_content(response))
+        usage = self._normalize_usage(response.get("usage"))
+        if usage:
+            content_obj["usage"] = usage
+        return content_obj
+
+    @staticmethod
+    def _normalize_extract_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
+            normalized = {
+                "tasks": payload.get("tasks", []),
+                "goals": payload.get("goals", []),
+                "problems": payload.get("problems", []),
+                "links": payload.get("links", []),
+            }
+        else:
+            proposals = payload.get("proposals")
+            if not isinstance(proposals, dict):
+                raise ValueError("Missing extract proposals")
+            tasks = []
+            for task in proposals.get("tasks", []):
+                if not isinstance(task, dict):
+                    continue
+                if task.get("action") == "ignore":
+                    continue
+                title = task.get("content")
+                if not isinstance(title, str) or not title.strip():
+                    continue
+                raw_status = task.get("status")
+                status = "done" if raw_status == "closed" else "open"
+                item = {"title": title.strip(), "status": status}
+                priority = task.get("priority")
+                if isinstance(priority, int):
+                    item["priority"] = priority
+                tasks.append(item)
+            goals = []
+            for goal in proposals.get("goals", []):
+                if isinstance(goal, dict) and goal.get("action") != "ignore" and isinstance(goal.get("title"), str):
+                    goals.append({"title": goal["title"].strip(), "status": "active"})
+            problems = []
+            for problem in proposals.get("problems", []):
+                if isinstance(problem, dict) and problem.get("action") != "ignore" and isinstance(problem.get("title"), str):
+                    problems.append({"title": problem["title"].strip(), "status": "active"})
+            links = []
+            for link in proposals.get("links", []):
+                if not isinstance(link, dict):
+                    continue
+                from_ref = link.get("from") or {}
+                to_ref = link.get("to") or {}
+                from_key = from_ref.get("key")
+                to_key = to_ref.get("key")
+                relation = link.get("relation")
+                if not all(isinstance(v, str) and v.strip() for v in (from_key, to_key, relation)):
+                    continue
+                links.append(
+                    {
+                        "from_type": "task",
+                        "from_title": from_key.strip(),
+                        "to_type": "goal",
+                        "to_title": to_key.strip(),
+                        "link_type": relation.strip(),
+                    }
+                )
+            normalized = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
+
+        for key in ("tasks", "goals", "problems", "links"):
+            value = normalized.get(key, [])
+            if not isinstance(value, list):
+                raise ValueError(f"Extract field {key} is not a list")
+            normalized[key] = value
+        return normalized
+
+    @staticmethod
+    def _normalize_query_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        answer = payload.get("answer")
+        confidence = payload.get("confidence")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("Query payload missing answer")
+        if not isinstance(confidence, (int, float)):
+            raise ValueError("Query payload missing confidence")
+        normalized = {
+            "schema_version": "query.v1",
+            "mode": "query",
+            "answer": answer.strip(),
+            "confidence": float(confidence),
+        }
+        for key in ("highlights", "citations", "suggested_actions", "surfaced_entity_ids"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                normalized[key] = value
+        follow_up = payload.get("follow_up_question")
+        if isinstance(follow_up, str):
+            normalized["follow_up_question"] = follow_up
+        return normalized
+
+    async def extract_structured_updates(self, message: str) -> Dict[str, Any]:
+        fallback = {"tasks": [], "goals": [], "problems": [], "links": []}
+        prompt = (
+            "Operation: extract.\n"
+            "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
+            "Each task must include title and optional status/priority.\n"
+            "Return only JSON."
+        )
+        try:
+            raw = await self._invoke_operation("extract", prompt, message)
+            usage = self._normalize_usage(raw.get("usage"))
+            normalized = self._normalize_extract_payload(raw)
             if usage:
-                result["usage"] = usage
-            return result
-        except Exception as e:
-            logger.error(f"Extraction logic error: {e}")
+                normalized["usage"] = usage
+            return normalized
+        except Exception as exc:
+            logger.warning("extract_structured_updates fallback: %s", type(exc).__name__)
             return fallback
 
     async def summarize_memory(self, context: str) -> Dict[str, Any]:
-        """
-        Summarizes session context.
-        """
-        result = {
-            "summary_text": f"User discussed items in context: {context[:50]}...",
-            "facts": ["Context processed."]
-        }
-        usage = self._normalize_usage(None)
-        if usage:
-            result["usage"] = usage
-        return result
+        fallback = {"summary_text": "No summary available.", "facts": []}
+        prompt = (
+            "Operation: summarize.\n"
+            "Summarize context into JSON with keys summary_text (string) and facts (array of strings).\n"
+            "Return only JSON."
+        )
+        try:
+            raw = await self._invoke_operation("summarize", prompt, context)
+            summary_text = raw.get("summary_text")
+            facts = raw.get("facts")
+            if not isinstance(summary_text, str) or not summary_text.strip():
+                raise ValueError("Invalid summary_text")
+            if not isinstance(facts, list):
+                facts = []
+            normalized = {"summary_text": summary_text.strip(), "facts": [str(x) for x in facts][:20]}
+            usage = self._normalize_usage(raw.get("usage"))
+            if usage:
+                normalized["usage"] = usage
+            return normalized
+        except Exception as exc:
+            logger.warning("summarize_memory fallback: %s", type(exc).__name__)
+            return fallback
 
     async def rewrite_plan(self, plan_state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Adds natural language reasons to the deterministic plan.
-        LLM may update 'reason' field in plan items but must not add extra keys.
-        """
+        prompt = (
+            "Operation: plan.\n"
+            "Given plan JSON, improve natural-language reasons only.\n"
+            "Return full plan JSON with same structural fields."
+        )
+        baseline = deepcopy(plan_state)
         try:
-            # Mock LLM rewrite - only update allowed fields
-            for item in plan_state.get("today_plan", []):
-                item["reason"] = f"Top priority based on score {item.get('score', 0):.1f}."
-            usage = self._normalize_usage(plan_state.get("usage"))
+            raw = await self._invoke_operation("plan", prompt, json.dumps(plan_state))
+            if {"schema_version", "plan_window", "generated_at", "today_plan", "next_actions", "blocked_items"}.issubset(raw.keys()):
+                normalized = raw
+            else:
+                today_plan = raw.get("today_plan")
+                if not isinstance(today_plan, list):
+                    raise ValueError("Invalid plan payload")
+                reason_map = {}
+                for item in today_plan:
+                    if isinstance(item, dict) and isinstance(item.get("task_id"), str) and isinstance(item.get("reason"), str):
+                        reason_map[item["task_id"]] = item["reason"]
+                for item in baseline.get("today_plan", []):
+                    task_id = item.get("task_id")
+                    if isinstance(task_id, str) and task_id in reason_map:
+                        item["reason"] = reason_map[task_id]
+                normalized = baseline
+            usage = self._normalize_usage(raw.get("usage"))
             if usage:
-                plan_state["usage"] = usage
-            return plan_state
-        except Exception as e:
-            logger.error(f"Plan rewrite failed: {e}")
-            from common.planner import render_fallback_plan_explanation
-            return render_fallback_plan_explanation(plan_state)
+                normalized["usage"] = usage
+            return normalized
+        except Exception as exc:
+            logger.warning("rewrite_plan fallback: %s", type(exc).__name__)
+            return render_fallback_plan_explanation(baseline)
 
     async def answer_query(self, query: str, retrieved_context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Answers a user query using the retrieved context.
-        """
+        prompt = (
+            "Operation: query.\n"
+            "Answer based only on provided context.\n"
+            "Return JSON with schema_version=query.v1, mode=query, answer, confidence."
+        )
         try:
-            # Requirement 2: Query Response Contract Alignment
-            result = {
-                "schema_version": "query.v1",
-                "mode": "query",
-                "answer": f"Based on your memory, you have {retrieved_context['sources']['entities']} entities related to your query '{query}'.",
-                "confidence": 0.9,
-                "citations": [
-                    {"entity_type": "summary", "entity_id": "latest", "label": "Recent Summary"}
-                ],
-                "suggested_actions": [
-                    {"kind": "refresh_plan", "description": "Would you like to refresh your daily plan?"}
-                ]
-            }
-            usage = self._normalize_usage(retrieved_context.get("usage"))
+            raw = await self._invoke_operation(
+                "query",
+                prompt,
+                json.dumps({"query": query, "context": retrieved_context}, ensure_ascii=True),
+            )
+            usage = self._normalize_usage(raw.get("usage"))
+            normalized = self._normalize_query_payload(raw)
             if usage:
-                result["usage"] = usage
-            return result
-        except Exception as e:
-            logger.error(f"Query answer failed: {e}")
-            raise # Let caller handle fallback
-            
+                normalized["usage"] = usage
+            return normalized
+        except Exception as exc:
+            logger.error("answer_query failed: %s", type(exc).__name__)
+            raise
+
+
 adapter = LLMAdapter()

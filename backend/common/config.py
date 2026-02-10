@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # Provider
     LLM_PROVIDER: str = "grok"
     LLM_API_KEY: str
+    LLM_API_BASE_URL: str = ""
+    LLM_TIMEOUT_SECONDS: int = 30
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BACKOFF_SECONDS: float = 1.0
     LLM_MODEL_EXTRACT: str
     LLM_MODEL_QUERY: str
     LLM_MODEL_PLAN: str
@@ -47,6 +51,9 @@ class Settings(BaseSettings):
     TELEGRAM_API_BASE: str = "https://api.telegram.org"
     TELEGRAM_COMMAND_TIMEOUT_SECONDS: int = 20
     TELEGRAM_DEFAULT_SOURCE: str = "telegram"
+    TELEGRAM_LINK_TOKEN_TTL_SECONDS: int = 900
+    TELEGRAM_BOT_USERNAME: Optional[str] = None
+    TELEGRAM_DEEP_LINK_BASE_URL: Optional[str] = None
 
     # Phase 5 Todoist Settings
     TODOIST_TOKEN: Optional[str] = None

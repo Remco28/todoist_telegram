@@ -280,3 +280,36 @@ class TodoistTaskMap(Base):
         # In Postgres, unique index allows multiple nulls.
         Index("idx_todoist_map_remote_lookup", "user_id", "todoist_task_id", unique=True),
     )
+
+
+class TelegramUserMap(Base):
+    __tablename__ = "telegram_user_map"
+
+    id = Column(String, primary_key=True)
+    chat_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    telegram_username = Column(String, nullable=True)
+    linked_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_seen_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("chat_id", name="uq_telegram_user_map_chat"),
+        Index("idx_telegram_user_map_user", "user_id"),
+    )
+
+
+class TelegramLinkToken(Base):
+    __tablename__ = "telegram_link_tokens"
+
+    id = Column(String, primary_key=True)
+    token_hash = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_telegram_link_tokens_hash"),
+        Index("idx_telegram_link_tokens_user", "user_id"),
+        Index("idx_telegram_link_tokens_expires", "expires_at"),
+    )

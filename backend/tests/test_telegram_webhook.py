@@ -77,7 +77,9 @@ def test_webhook_ignores_non_message_update(app_no_db):
 
 
 def test_command_today_routes_successfully(app_no_db):
-    with patch("api.main.handle_telegram_command", new_callable=AsyncMock) as mocked:
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main.handle_telegram_command", new_callable=AsyncMock
+    ) as mocked:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/today"), headers=_headers())
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -86,10 +88,13 @@ def test_command_today_routes_successfully(app_no_db):
         assert call[0] == "/today"
         assert call[1] is None
         assert call[2] == "12345"
+        assert call[3] == "usr_123"
 
 
 def test_command_with_bot_suffix_is_supported(app_no_db):
-    with patch("api.main.handle_telegram_command", new_callable=AsyncMock) as mocked:
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main.handle_telegram_command", new_callable=AsyncMock
+    ) as mocked:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/today@mybot"), headers=_headers())
         assert resp.status_code == 200
         mocked.assert_awaited_once()
@@ -103,7 +108,9 @@ def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mo
         "problems": [{"title": "Problem A"}],
         "links": [],
     }
-    with patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture:
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture:
         apply_capture.return_value = (
             "inb_1",
             AppliedChanges(tasks_created=1, goals_created=1, problems_created=1),
@@ -119,7 +126,9 @@ def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mo
 
 
 def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
-    with patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture:
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture:
         apply_capture.return_value = (
             "inb_2",
             AppliedChanges(tasks_updated=1),
@@ -131,9 +140,37 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
         assert "1 task(s) updated" in ack
 
 
+def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value=None), patch(
+        "api.main.handle_telegram_command", new_callable=AsyncMock
+    ) as mocked:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/plan"), headers=_headers())
+        assert resp.status_code == 200
+        mocked.assert_not_awaited()
+        mock_send.assert_awaited_once()
+        assert "not linked yet" in mock_send.await_args.args[1].lower()
+
+
+def test_start_command_consumes_token_and_links(app_no_db, mock_send):
+    with patch("api.main._consume_telegram_link_token", new_callable=AsyncMock, return_value=True) as consume:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/start abc123"), headers=_headers())
+        assert resp.status_code == 200
+        consume.assert_awaited_once()
+        mock_send.assert_awaited_once()
+        assert "linked successfully" in mock_send.await_args.args[1].lower()
+
+
+def test_start_command_with_invalid_token_returns_guidance(app_no_db, mock_send):
+    with patch("api.main._consume_telegram_link_token", new_callable=AsyncMock, return_value=False):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/start badtoken"), headers=_headers())
+        assert resp.status_code == 200
+        mock_send.assert_awaited_once()
+        assert "link failed" in mock_send.await_args.args[1].lower()
+
+
 def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     with patch("api.main.redis_client", mock_redis):
-        asyncio.run(handle_telegram_command("/plan", None, "12345", mock_db))
+        asyncio.run(handle_telegram_command("/plan", None, "12345", "usr_abc", mock_db))
     mock_redis.rpush.assert_awaited_once()
     queue_name, raw_job = mock_redis.rpush.await_args.args
     assert queue_name == "default_queue"
@@ -151,7 +188,7 @@ def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
         ]
     })
     with patch("api.main.redis_client", mock_redis):
-        asyncio.run(handle_telegram_command("/focus", None, "12345", mock_db))
+        asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
     assert "Task 1" in text
     assert "Task 2" in text
@@ -164,7 +201,7 @@ def test_command_done_updates_owned_task_only(mock_db, mock_send):
     result = AsyncMock()
     result.rowcount = 1
     mock_db.execute.return_value = result
-    asyncio.run(handle_telegram_command("/done", "tsk_x", "12345", mock_db))
+    asyncio.run(handle_telegram_command("/done", "tsk_x", "12345", "usr_abc", mock_db))
     mock_db.commit.assert_awaited_once()
     assert "marked as done" in mock_send.await_args.args[1]
 
@@ -173,6 +210,6 @@ def test_command_done_rejects_non_owned_or_unknown(mock_db, mock_send):
     result = AsyncMock()
     result.rowcount = 0
     mock_db.execute.return_value = result
-    asyncio.run(handle_telegram_command("/done", "tsk_other", "12345", mock_db))
+    asyncio.run(handle_telegram_command("/done", "tsk_other", "12345", "usr_abc", mock_db))
     mock_db.commit.assert_not_awaited()
     assert "not found" in mock_send.await_args.args[1].lower()
