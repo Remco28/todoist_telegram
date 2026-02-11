@@ -31,10 +31,12 @@
 4. Confirm backup automation and restore readiness with operator evidence.
 
 ## Priority Backlog (Immediately After Phase 13)
-1. Implement Telegram intent routing (`query` vs `action`) for free-form messages.
-2. Add draft proposal lifecycle (`draft`, `confirmed`, `discarded`) with TTL.
-3. Add confirmation dialogue (`yes`, `edit`, `no`) before durable writes and Todoist sync.
-4. Add explicit `/ask` command and keep query path strictly read-only.
+1. Implement LLM-first action planner for free-form messages (`intent`, `scope`, `actions`, `confidence`).
+2. Add LLM critic pass for proposed actions (duplicates, contradictions, unresolved refs, risky bulk ops).
+3. Keep deterministic executor as validation/policy/transaction layer only.
+4. Add draft proposal lifecycle (`draft`, `confirmed`, `discarded`) with TTL.
+5. Add confirmation dialogue (`yes`, `edit`, `no`) before durable writes and Todoist sync.
+6. Keep `/ask` as optional fallback; normal UX should remain natural conversation.
 
 ## Priority Backlog (Next After Phase 8)
 1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.

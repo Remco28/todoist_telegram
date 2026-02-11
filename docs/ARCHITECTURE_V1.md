@@ -110,14 +110,26 @@ Produce ordered execution plans from structured state.
 
 ## Write Pipeline (LLM-Assisted, Backend-Enforced)
 1. Capture raw message.
-2. Call provider extraction operation for strict JSON proposal.
-3. Validate against schema and policy constraints.
-4. Present proposal to user for confirmation when policy requires.
-5. Apply deterministic mapping and normalization after confirmation.
-6. Commit transactional DB updates.
-7. Emit audit events, enqueue memory summarization, and enqueue immediate Todoist sync for changed tasks.
+2. Build grounded context (active tasks/goals/problems/links + recent summaries).
+3. Call provider action planner operation for strict JSON proposal (`intent`, `scope`, `actions[]`, `confidence`, `needs_confirmation`).
+4. Call provider critic operation to detect unsafe or low-quality proposals (duplicates, contradictions, missing targets, risky bulk ops).
+5. Validate against schema and policy constraints.
+6. Present proposal to user for confirmation when policy requires.
+7. Execute proposal deterministically after confirmation (no hidden semantic inference in executor).
+8. Commit transactional DB updates.
+9. Emit audit events, enqueue memory summarization, and enqueue immediate Todoist sync for changed tasks.
 
 Rule: provider suggests, backend decides, backend writes.
+
+## Action Intelligence Contract (v1.1 Direction)
+- Primary behavior comes from LLM planning + critique, not phrase-to-action hardcoding.
+- Deterministic code is limited to:
+  - schema validation,
+  - safety policy checks,
+  - transactional execution,
+  - retries/fallback handling.
+- Phrase heuristics may exist only as temporary emergency fallback and must be logged when used.
+- Every applied write must be traceable to a concrete proposed action in stored draft payload.
 
 ## Telegram Identity Flow
 1. API user requests one-time Telegram link token.

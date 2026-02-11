@@ -42,6 +42,8 @@ These gaps are now explicit priorities for the next phases.
 - Safe automation: auto-create allowed, destructive/bulk changes require policy guardrails.
 - Incremental delivery: ship vertical slices that are usable immediately.
 - Prompt contract owned by backend and versioned in repo.
+- LLM-first action reasoning: planner + critic prompts should drive conversational action logic; hardcoded phrase routing is temporary fallback only.
+- Deterministic executor only: backend validates and executes proposed actions, but does not own conversational interpretation.
 
 ## v1 Scope
 - Capture free-form messages and auto-structure them.
@@ -52,6 +54,7 @@ These gaps are now explicit priorities for the next phases.
 - Expose API/MCP endpoints for future clients.
 - Support provider-stateful continuation as an optimization, while treating DB memory as source of truth.
 - Support AI-first Telegram workflow where informal user messages are converted into a proposed action plan and applied only after user confirmation.
+- Use grounded reasoning outputs (`intent`, `scope`, `actions`, `confidence`) as the primary decision path for conversational writes.
 
 ## Out of Scope for v1
 - Multi-user collaboration features (shared projects/workspaces).

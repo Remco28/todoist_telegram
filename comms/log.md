@@ -418,3 +418,8 @@
 - Added enqueue-failure resilience: post-commit queue errors are logged (`action_apply_partial_enqueue_failure`) without falsely reporting full action failure.
 - Performed broader relevant-file pass across API queue publish points, worker consumers, idempotency path, and Telegram test coverage.
 - Validation: `cd backend && pytest -q` => 53 passed, 1 skipped.
+[2026-02-11 18:20] [ARCHITECT]: DOC ALIGNMENT: LLM-first action reasoning policy clarified for Phase 14.
+- Updated architecture contract to define planner+critic+deterministic-executor pipeline (LLM decides action semantics; backend validates and executes).
+- Updated prompt contract to add `action_plan` and `action_critic` operation expectations and explicit executor non-inference rule.
+- Updated project direction and execution plan to state phrase heuristics are temporary fallback only, not primary logic.
+- Updated Phase 14 spec to require planner+critic path and heuristic-fallback audit logging.
