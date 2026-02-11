@@ -4,7 +4,7 @@ import json
 import time
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
@@ -204,6 +204,13 @@ def _actions_to_extraction(actions: Any) -> Dict[str, Any]:
             priority = action.get("priority")
             if isinstance(priority, int) and 1 <= priority <= 4:
                 task_item["priority"] = priority
+            due_date = action.get("due_date")
+            if isinstance(due_date, str):
+                try:
+                    date.fromisoformat(due_date.strip()[:10])
+                    task_item["due_date"] = due_date.strip()[:10]
+                except ValueError:
+                    pass
             extraction["tasks"].append(task_item)
         elif entity_type == "goal":
             title = action.get("title")
@@ -427,9 +434,10 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
                 "title": task.title,
                 "status": task.status.value if hasattr(task.status, "value") else str(task.status),
                 "priority": task.priority,
+                "due_date": task.due_date.isoformat() if task.due_date else None,
             }
         )
-    return {"chat_id": chat_id, "tasks": tasks}
+    return {"chat_id": chat_id, "current_date_utc": utc_now().date().isoformat(), "tasks": tasks}
 
 
 async def _enqueue_summary_job(user_id: str, chat_id: str, inbox_item_id: str) -> None:
@@ -447,6 +455,15 @@ async def _enqueue_todoist_sync_job(user_id: str) -> None:
         "default_queue",
         json.dumps({"job_id": sync_job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}),
     )
+
+
+def _parse_due_date(value: Any) -> Optional[date]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        return None
 
 async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
                          message: str, extraction: dict, request_id: str,
@@ -481,6 +498,15 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 existing.title_norm = title_norm
             if "priority" in t_data:
                 existing.priority = t_data.get("priority")
+            if "due_date" in t_data:
+                due_raw = t_data.get("due_date")
+                if isinstance(due_raw, str) and due_raw.strip():
+                    try:
+                        existing.due_date = date.fromisoformat(due_raw.strip()[:10])
+                    except ValueError:
+                        pass
+                elif due_raw is None:
+                    existing.due_date = None
             if action == "archive":
                 existing.status = TaskStatus.archived
                 existing.archived_at = datetime.utcnow()
@@ -514,6 +540,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             db.add(Task(
                 id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
                 status=t_data.get("status", TaskStatus.open), priority=t_data.get("priority"),
+                due_date=_parse_due_date(t_data.get("due_date")),
                 source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
             ))
             entity_map[(EntityType.task, title_norm)] = task_id
@@ -795,6 +822,12 @@ def _validate_extraction_payload(extraction: Any) -> None:
             raise ValueError("Invalid target_task_id")
         if "priority" in task and task.get("priority") is not None and not isinstance(task.get("priority"), int):
             raise ValueError("Invalid task priority")
+        if "due_date" in task and task.get("due_date") is not None:
+            due_raw = task.get("due_date")
+            if not isinstance(due_raw, str):
+                raise ValueError("Invalid task due_date")
+            if _parse_due_date(due_raw) is None:
+                raise ValueError("Invalid task due_date format")
 
     for goal in extraction["goals"]:
         if not isinstance(goal, dict):

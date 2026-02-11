@@ -431,3 +431,10 @@
 - Added action-to-extraction translation so executor still consumes validated structured payload.
 - Expanded tests for planner-primary action flow, critic-reject clarification flow, and adapter planner/critic contract normalization.
 - Validation: `cd backend && pytest -q` => 58 passed, 1 skipped.
+[2026-02-11 18:56] [DEVELOPER]: HOTFIX DONE: Due-date propagation for AI-captured tasks.
+- Fixed capture/apply pipeline to persist `due_date` on both task create and update paths.
+- Added extraction/planner contract support for `due_date` (ISO `YYYY-MM-DD`) and normalized parsing in adapter.
+- Added grounding field `current_date_utc` so provider can resolve relative dates (e.g., "tomorrow").
+- Added validation for task `due_date` in extraction payload.
+- Added tests for due-date normalization and planner-to-draft due-date propagation.
+- Validation: `cd backend && pytest -q` => 59 passed, 1 skipped.

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from copy import deepcopy
+from datetime import date
 from typing import Any, Dict, Optional
 
 import httpx
@@ -34,6 +35,13 @@ class LLMAdapter:
         priority = candidate.get("priority")
         if isinstance(priority, int) and 1 <= priority <= 4:
             item["priority"] = priority
+        due_date = candidate.get("due_date")
+        if isinstance(due_date, str):
+            try:
+                parsed = date.fromisoformat(due_date.strip()[:10])
+                item["due_date"] = parsed.isoformat()
+            except ValueError:
+                pass
         target_task_id = candidate.get("target_task_id")
         if isinstance(target_task_id, str) and target_task_id.strip():
             item["target_task_id"] = target_task_id.strip()
@@ -338,6 +346,7 @@ class LLMAdapter:
             "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
             "Prefer updating/completing existing tasks from grounding before creating new ones.\n"
             "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
+            "When dates are explicit or relative (for example tomorrow/next week), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_utc.\n"
             "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
             "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
@@ -370,7 +379,8 @@ class LLMAdapter:
             "Return JSON with keys: intent, scope, actions, confidence, needs_confirmation.\n"
             "intent must be query or action.\n"
             "scope must be one of single|subset|all_open|all_matching.\n"
-            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional priority.\n"
+            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional priority, optional due_date.\n"
+            "Resolve relative dates against context.grounding.current_date_utc and output due_date as YYYY-MM-DD.\n"
             "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
             "Return only JSON."
         )

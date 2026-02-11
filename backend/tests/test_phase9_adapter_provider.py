@@ -70,6 +70,29 @@ def test_extract_success_normalization_and_usage():
     asyncio.run(_run())
 
 
+def test_extract_due_date_normalizes_to_iso_date():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[{"title":"Clean keyboard","status":"open","due_date":"2026-02-12T00:00:00Z"}],"goals":[],"problems":[],"links":[]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("clean tomorrow")
+            assert out["tasks"][0]["due_date"] == "2026-02-12"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_task_actions_shape_normalizes_to_tasks():
     async def _run():
         adapter = LLMAdapter()

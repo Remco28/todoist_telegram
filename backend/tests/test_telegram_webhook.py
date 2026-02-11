@@ -183,7 +183,7 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
         "confidence": 0.88,
         "needs_confirmation": True,
         "actions": [
-            {"entity_type": "task", "action": "create", "title": "Call contractor", "priority": 2},
+            {"entity_type": "task", "action": "create", "title": "Call contractor", "priority": 2, "due_date": "2026-02-12"},
             {"entity_type": "task", "action": "complete", "title": "Buy paint rollers", "target_task_id": "tsk_2"},
         ],
     }
@@ -207,6 +207,7 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
         extraction = create_draft.await_args.kwargs["extraction"]
         assert len(extraction["tasks"]) == 2
         assert extraction["tasks"][0]["title"] == "Call contractor"
+        assert extraction["tasks"][0]["due_date"] == "2026-02-12"
         assert extraction["tasks"][1]["action"] == "complete"
 
 
