@@ -102,3 +102,23 @@ def test_phase8_staging_smoke_core_paths():
         assert "total_mapped" in sync_status_json
         assert "pending_sync" in sync_status_json
         assert "error_count" in sync_status_json
+        assert "reconcile_error_count" in sync_status_json
+
+        reconcile_trigger_resp = client.post(
+            "/v1/sync/todoist/reconcile",
+            headers=_headers(auth_token, idempotency_key=f"phase8-reconcile-{suffix}"),
+        )
+        assert reconcile_trigger_resp.status_code == 200, reconcile_trigger_resp.text
+        reconcile_trigger_json = reconcile_trigger_resp.json()
+        assert reconcile_trigger_json.get("status") == "ok"
+        assert reconcile_trigger_json.get("enqueued") is True
+        assert isinstance(reconcile_trigger_json.get("job_id"), str) and reconcile_trigger_json["job_id"]
+
+        reconcile_status_resp = client.get(
+            "/v1/sync/todoist/status",
+            headers=_headers(auth_token),
+        )
+        assert reconcile_status_resp.status_code == 200, reconcile_status_resp.text
+        reconcile_status_json = reconcile_status_resp.json()
+        assert "last_reconcile_at" in reconcile_status_json
+        assert "reconcile_error_count" in reconcile_status_json

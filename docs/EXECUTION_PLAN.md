@@ -61,3 +61,13 @@
 1. Implement Phase 12 release-readiness spec and run full backend tests.
 2. Run opt-in staging smoke with reconcile coverage and capture evidence.
 3. Perform architect review and close out v1 readiness package.
+
+## Phase 12 Release Exit Gates
+1. Automated:
+   - `cd backend && pytest -q` passes.
+   - `RUN_STAGING_SMOKE=1 ... pytest -q tests/test_phase8_staging_smoke.py` passes with reconcile path.
+2. Operational:
+   - `ops/DEPLOY_CHECKLIST.md` release sign-off fields completed.
+   - `ops/RESTORE_RUNBOOK.md` first-15-minute incident process acknowledged by operator.
+3. Technical debt:
+   - Deprecated warnings reduced in touched runtime files versus previous baseline.

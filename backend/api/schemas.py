@@ -77,22 +77,22 @@ class PlanItem(BaseModel):
 class BlockedItem(BaseModel):
     task_id: str
     title: str = Field(..., min_length=1, max_length=240)
-    blocked_by: List[str] = Field(..., min_items=1, max_items=10)
+    blocked_by: List[str] = Field(..., min_length=1, max_length=10)
 
 class OrderReason(BaseModel):
     task_id: str
-    factors: List[str] = Field(..., min_items=1, max_items=6)
+    factors: List[str] = Field(..., min_length=1, max_length=6)
     # Valid factors: overdue, due_soon, high_impact, goal_alignment, dependency_ready, stale, quick_win
 
 class PlanResponseV1(BaseModel):
     schema_version: str = "plan.v1"
     plan_window: str = Field(..., pattern="^(today|this_week)$")
     generated_at: str # ISO datetime
-    today_plan: List[PlanItem] = Field(..., max_items=20)
-    next_actions: List[PlanItem] = Field(..., max_items=20)
-    blocked_items: List[BlockedItem] = Field(..., max_items=20)
-    why_this_order: Optional[List[OrderReason]] = Field(None, max_items=20)
-    assumptions: Optional[List[str]] = Field(None, max_items=10)
+    today_plan: List[PlanItem] = Field(..., max_length=20)
+    next_actions: List[PlanItem] = Field(..., max_length=20)
+    blocked_items: List[BlockedItem] = Field(..., max_length=20)
+    why_this_order: Optional[List[OrderReason]] = Field(None, max_length=20)
+    assumptions: Optional[List[str]] = Field(None, max_length=10)
 
 # --- Query Response v1 ---
 
@@ -121,13 +121,13 @@ class QueryResponseV1(BaseModel):
 
     confidence: float = Field(..., ge=0, le=1)
 
-    highlights: Optional[List[str]] = Field(None, max_items=8)
+    highlights: Optional[List[str]] = Field(None, max_length=8)
 
-    citations: Optional[List[Citation]] = Field(None, max_items=30)
+    citations: Optional[List[Citation]] = Field(None, max_length=30)
 
-    suggested_actions: Optional[List[SuggestedAction]] = Field(None, max_items=6)
+    suggested_actions: Optional[List[SuggestedAction]] = Field(None, max_length=6)
 
-    surfaced_entity_ids: Optional[List[str]] = Field(None, max_items=30)
+    surfaced_entity_ids: Optional[List[str]] = Field(None, max_length=30)
 
     follow_up_question: Optional[str] = Field(None, max_length=240)
 
@@ -216,7 +216,6 @@ class TodoistSyncStatusResponse(BaseModel):
     last_attempt_at: Optional[str] = None
     last_reconcile_at: Optional[str] = None
     reconcile_error_count: int = 0
-
 
 
 

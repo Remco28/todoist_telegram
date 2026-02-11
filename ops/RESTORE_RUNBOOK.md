@@ -46,3 +46,17 @@
 - Decision rule:
   - If integrity is in question, stop writes and restore first.
   - If integrity is intact, keep data and roll forward with a hotfix.
+
+## Release Incident First 15 Minutes
+1. Freeze writes:
+   - Stop API/worker traffic or scale down writers first.
+2. Confirm blast radius:
+   - Check `/health/ready`, `/health/metrics`, and recent `event_log` failures.
+3. Classify issue:
+   - Integrity risk (schema/data corruption signs) -> restore path.
+   - App/runtime regression with intact data -> roll forward or app rollback.
+4. Capture evidence immediately:
+   - Deployment timestamp, commit SHA, failing endpoint/job IDs, latest error traces.
+5. Make decision and execute:
+   - Roll forward if data integrity is intact.
+   - Restore if integrity is uncertain or clearly broken.

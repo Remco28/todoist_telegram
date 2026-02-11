@@ -3,7 +3,7 @@ import logging
 import json
 import uuid
 import time
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -20,6 +20,10 @@ from common.todoist import todoist_adapter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 # DB Setup
 engine = create_async_engine(settings.DATABASE_URL)
@@ -178,16 +182,16 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
                             local_task_id=task.id,
                             todoist_task_id=todoist_id,
                             sync_state="synced",
-                            last_synced_at=datetime.utcnow(),
-                            last_attempt_at=datetime.utcnow()
+                            last_synced_at=utc_now(),
+                            last_attempt_at=utc_now()
                         )
                         db.add(mapping)
                     else:
                         # Update existing error/placeholder mapping
                         mapping.todoist_task_id = todoist_id
                         mapping.sync_state = "synced"
-                        mapping.last_synced_at = datetime.utcnow()
-                        mapping.last_attempt_at = datetime.utcnow()
+                        mapping.last_synced_at = utc_now()
+                        mapping.last_attempt_at = utc_now()
                         mapping.last_error = None
                     
                     # If it's already done, close it now (create then close)
@@ -196,7 +200,7 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
                         await todoist_adapter.close_task(todoist_id)
                     
                 else:
-                    mapping.last_attempt_at = datetime.utcnow()
+                    mapping.last_attempt_at = utc_now()
                     # Check if status is done
                     if task.status == TaskStatus.done:
                         logger.info(f"Closing Todoist task {mapping.todoist_task_id}")
@@ -207,7 +211,7 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
                         await todoist_adapter.update_task(mapping.todoist_task_id, todoist_payload)
                     
                     mapping.sync_state = "synced"
-                    mapping.last_synced_at = datetime.utcnow()
+                    mapping.last_synced_at = utc_now()
                     mapping.last_error = None
                         
             except Exception as e:
@@ -223,7 +227,7 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
                         todoist_task_id=None, # Explicitly null for create failures
                         sync_state="error",
                         last_error=str(e),
-                        last_attempt_at=datetime.utcnow()
+                        last_attempt_at=utc_now()
                     )
                     db.add(mapping)
                 else:
@@ -313,7 +317,7 @@ async def handle_todoist_reconcile(job_id: str, payload: dict, job_data: dict):
             offset += len(mappings)
 
             for mapping in mappings:
-                mapping.last_attempt_at = datetime.utcnow()
+                mapping.last_attempt_at = utc_now()
                 try:
                     remote_task = await todoist_adapter.get_task(mapping.todoist_task_id)
                     if remote_task is None:
@@ -346,7 +350,7 @@ async def handle_todoist_reconcile(job_id: str, payload: dict, job_data: dict):
                         raise RuntimeError("local_task_missing")
 
                     changed_fields: list[str] = []
-                    now = datetime.utcnow()
+                    now = utc_now()
                     remote_completed = bool(remote_task.get("is_completed"))
                     if remote_completed and local_task.status != TaskStatus.done:
                         local_task.status = TaskStatus.done
@@ -383,7 +387,7 @@ async def handle_todoist_reconcile(job_id: str, payload: dict, job_data: dict):
                             changed_fields.append("due_date")
 
                     mapping.sync_state = "synced"
-                    mapping.last_synced_at = datetime.utcnow()
+                    mapping.last_synced_at = utc_now()
                     mapping.last_error = None
 
                     if changed_fields:
@@ -455,7 +459,7 @@ async def handle_plan_refresh(job_id: str, payload: dict):
         state = await collect_planning_state(db, user_id)
         
         # 2. Build deterministic payload
-        now = datetime.utcnow()
+        now = utc_now()
         plan_payload = build_plan_payload(state, now)
         
         # 3. Call adapter rewrite
@@ -468,7 +472,7 @@ async def handle_plan_refresh(job_id: str, payload: dict):
                 id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
                 operation="plan", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_PLAN,
                 prompt_version=settings.PROMPT_VERSION_PLAN, latency_ms=latency, status="success",
-                created_at=datetime.utcnow()
+                created_at=utc_now()
             ))
         except Exception as e:
             logger.error(f"Plan rewrite failed in worker: {e}")
@@ -479,7 +483,7 @@ async def handle_plan_refresh(job_id: str, payload: dict):
                 id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
                 operation="plan", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_PLAN,
                 prompt_version=settings.PROMPT_VERSION_PLAN, status="error", error_code=type(e).__name__,
-                created_at=datetime.utcnow()
+                created_at=utc_now()
             ))
             db.add(EventLog(
                 id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
@@ -491,7 +495,7 @@ async def handle_plan_refresh(job_id: str, payload: dict):
             from api.schemas import PlanResponseV1
             validated_payload = PlanResponseV1(**plan_payload)
             cache_key = f"plan:today:{user_id}:{chat_id}"
-            await redis_client.setex(cache_key, 86400, validated_payload.json())
+            await redis_client.setex(cache_key, 86400, validated_payload.model_dump_json())
         except Exception as e:
             logger.error(f"Generated plan failed validation: {e}")
             db.add(EventLog(
@@ -502,9 +506,9 @@ async def handle_plan_refresh(job_id: str, payload: dict):
             try:
                 # Re-build deterministic to be safe
                 state_fb = await collect_planning_state(db, user_id)
-                payload_fb = build_plan_payload(state_fb, datetime.utcnow())
+                payload_fb = build_plan_payload(state_fb, utc_now())
                 validated_fb = PlanResponseV1(**payload_fb)
-                await redis_client.setex(f"plan:today:{user_id}:{chat_id}", 86400, validated_fb.json())
+                await redis_client.setex(f"plan:today:{user_id}:{chat_id}", 86400, validated_fb.model_dump_json())
             except Exception as e2:
                 logger.error(f"Worker fallback validation failed: {e2}")
         
