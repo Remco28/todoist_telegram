@@ -101,7 +101,7 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert mocked.await_args.args[0] == "/today"
 
 
-def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mock_send):
+def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_db, mock_extract, mock_send):
     mock_extract.extract_structured_updates.return_value = {
         "tasks": [{"title": "Task A"}],
         "goals": [{"title": "Goal A"}],
@@ -109,47 +109,61 @@ def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mo
         "links": [],
     }
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture:
-        apply_capture.return_value = (
-            "inb_1",
-            AppliedChanges(tasks_created=1, goals_created=1, problems_created=1),
-        )
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("plain text"), headers=_headers())
         assert resp.status_code == 200
-        apply_capture.assert_awaited_once()
+        create_draft.assert_awaited_once()
+        apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
-        ack = mock_send.await_args.args[1]
-        assert "1 task(s) created" in ack
-        assert "1 goal(s) created" in ack
-        assert "1 problem(s) created" in ack
+        assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture:
-        apply_capture.return_value = (
-            "inb_2",
-            AppliedChanges(tasks_updated=1),
-        )
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("buy groceries"), headers=_headers())
         assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
-        ack = mock_send.await_args.args[1]
-        assert "1 task(s) updated" in ack
+        assert "did not find clear actions" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.query_ask", new_callable=AsyncMock
-    ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture:
+    ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture, patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch("api.main._create_action_draft", new_callable=AsyncMock) as create_draft:
         mocked_query.return_value = QueryResponseV1(answer="You have 2 open tasks.", confidence=0.9)
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What tasks are not completed?"), headers=_headers())
         assert resp.status_code == 200
         mocked_query.assert_awaited_once()
         apply_capture.assert_not_awaited()
+        create_draft.assert_not_awaited()
         assert "2 open tasks" in mock_send.await_args.args[1]
+
+
+def test_non_command_yes_applies_open_draft(app_no_db, mock_send):
+    fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}]}})()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch("api.main._confirm_action_draft", new_callable=AsyncMock) as confirm_draft:
+        confirm_draft.return_value = AppliedChanges(tasks_created=1)
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("yes"), headers=_headers())
+        assert resp.status_code == 200
+        confirm_draft.assert_awaited_once()
+        assert "applied" in mock_send.await_args.args[1].lower()
 
 
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):

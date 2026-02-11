@@ -320,3 +320,28 @@ class TelegramLinkToken(Base):
         Index("idx_telegram_link_tokens_user", "user_id"),
         Index("idx_telegram_link_tokens_expires", "expires_at"),
     )
+
+
+class ActionDraft(Base):
+    __tablename__ = "action_drafts"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+    chat_id = Column(String, nullable=False)
+    source_inbox_item_id = Column(String, ForeignKey("inbox_items.id"), nullable=True)
+    source_message = Column(Text, nullable=False)
+    proposal_json = Column(JSONB, nullable=False, server_default='{}')
+    status = Column(
+        String,
+        CheckConstraint("status IN ('draft','confirmed','discarded','expired')"),
+        nullable=False,
+        default="draft",
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_action_drafts_user_chat_status", "user_id", "chat_id", "status"),
+        Index("idx_action_drafts_expires", "expires_at"),
+    )

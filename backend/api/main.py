@@ -19,7 +19,7 @@ from common.models import (
     Base, IdempotencyKey, InboxItem, Task, Goal, Problem, 
     EntityLink, EventLog, PromptRun, TaskStatus, GoalStatus, 
     ProblemStatus, LinkType, EntityType, TodoistTaskMap,
-    TelegramUserMap, TelegramLinkToken
+    TelegramUserMap, TelegramLinkToken, ActionDraft
 )
 from common.adapter import adapter
 from common.memory import assemble_context
@@ -39,6 +39,209 @@ from common.telegram import (
 )
 
 # --- Shared Capture Pipeline ---
+ACTION_DRAFT_TTL_SECONDS = 1800
+
+
+def _draft_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_draft_reply(text: str) -> tuple[Optional[str], Optional[str]]:
+    normalized = (text or "").strip()
+    lowered = normalized.lower()
+    if lowered in {"yes", "y", "confirm", "apply", "do it", "sounds good"}:
+        return "confirm", None
+    if lowered in {"no", "n", "cancel", "discard", "skip"}:
+        return "discard", None
+    if lowered == "edit":
+        return "edit", ""
+    if lowered.startswith("edit "):
+        return "edit", normalized[5:].strip()
+    return None, None
+
+
+def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
+    tasks = [t.get("title", "").strip() for t in extraction.get("tasks", []) if isinstance(t, dict) and isinstance(t.get("title"), str)]
+    goals = [g.get("title", "").strip() for g in extraction.get("goals", []) if isinstance(g, dict) and isinstance(g.get("title"), str)]
+    problems = [p.get("title", "").strip() for p in extraction.get("problems", []) if isinstance(p, dict) and isinstance(p.get("title"), str)]
+    links_count = len(extraction.get("links", [])) if isinstance(extraction.get("links"), list) else 0
+
+    if not tasks and not goals and not problems and links_count == 0:
+        return (
+            "I did not find clear actions to apply yet.\n"
+            "Reply with more details, or ask a question directly."
+        )
+
+    lines = ["<b>Proposed updates:</b>"]
+    if tasks:
+        lines.append("")
+        lines.append("<b>Tasks</b>")
+        for title in tasks[:6]:
+            lines.append(f"• {escape_html(title)}")
+        if len(tasks) > 6:
+            lines.append(f"• +{len(tasks) - 6} more task(s)")
+    if goals:
+        lines.append("")
+        lines.append(f"<b>Goals</b>: {len(goals)}")
+    if problems:
+        lines.append(f"<b>Problems</b>: {len(problems)}")
+    if links_count:
+        lines.append(f"<b>Links</b>: {links_count}")
+
+    lines.append("")
+    lines.append("Reply with <code>yes</code> to apply, <code>edit ...</code> to revise, or <code>no</code> to discard.")
+    return "\n".join(lines)
+
+
+async def _get_open_action_draft(user_id: str, chat_id: str, db: AsyncSession) -> Optional[ActionDraft]:
+    now = _draft_now()
+    expire_stmt = (
+        update(ActionDraft)
+        .where(
+            ActionDraft.user_id == user_id,
+            ActionDraft.chat_id == chat_id,
+            ActionDraft.status == "draft",
+            ActionDraft.expires_at < now,
+        )
+        .values(status="expired", updated_at=now)
+    )
+    await db.execute(expire_stmt)
+
+    stmt = (
+        select(ActionDraft)
+        .where(
+            ActionDraft.user_id == user_id,
+            ActionDraft.chat_id == chat_id,
+            ActionDraft.status == "draft",
+            ActionDraft.expires_at >= now,
+        )
+        .order_by(ActionDraft.updated_at.desc())
+        .limit(1)
+    )
+    draft = (await db.execute(stmt)).scalar_one_or_none()
+    await db.commit()
+    return draft
+
+
+async def _create_action_draft(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    message: str,
+    extraction: Dict[str, Any],
+    request_id: str,
+) -> ActionDraft:
+    now = _draft_now()
+    clear_stmt = (
+        update(ActionDraft)
+        .where(
+            ActionDraft.user_id == user_id,
+            ActionDraft.chat_id == chat_id,
+            ActionDraft.status == "draft",
+        )
+        .values(status="discarded", updated_at=now)
+    )
+    await db.execute(clear_stmt)
+
+    draft = ActionDraft(
+        id=f"drf_{uuid.uuid4().hex[:12]}",
+        user_id=user_id,
+        chat_id=chat_id,
+        source_message=message,
+        proposal_json=extraction,
+        status="draft",
+        expires_at=now + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS),
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(draft)
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="action_draft_created",
+            payload_json={"draft_id": draft.id, "chat_id": chat_id},
+            created_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+    return draft
+
+
+async def _discard_action_draft(draft: ActionDraft, user_id: str, request_id: str, db: AsyncSession) -> None:
+    draft.status = "discarded"
+    draft.updated_at = _draft_now()
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="action_draft_discarded",
+            payload_json={"draft_id": draft.id},
+            created_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+
+
+async def _revise_action_draft(
+    draft: ActionDraft, user_id: str, request_id: str, edit_text: str, db: AsyncSession
+) -> Dict[str, Any]:
+    revised_message = f"{draft.source_message}\n\nUser clarification: {edit_text}".strip()
+    extraction = await adapter.extract_structured_updates(revised_message)
+    _validate_extraction_payload(extraction)
+    draft.source_message = revised_message
+    draft.proposal_json = extraction
+    draft.updated_at = _draft_now()
+    draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="action_draft_revised",
+            payload_json={"draft_id": draft.id},
+            created_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+    return extraction
+
+
+async def _confirm_action_draft(
+    draft: ActionDraft, user_id: str, chat_id: str, request_id: str, db: AsyncSession
+) -> AppliedChanges:
+    extraction = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
+    _, applied = await _apply_capture(
+        db=db,
+        user_id=user_id,
+        chat_id=chat_id,
+        source=settings.TELEGRAM_DEFAULT_SOURCE,
+        message=draft.source_message,
+        extraction=extraction,
+        request_id=request_id,
+    )
+    draft.status = "confirmed"
+    draft.updated_at = _draft_now()
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="action_draft_confirmed",
+            payload_json={"draft_id": draft.id},
+            created_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+
+    sync_job_id = str(uuid.uuid4())
+    await redis_client.rpush(
+        "default_queue",
+        json.dumps({"job_id": sync_job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}),
+    )
+    return applied
 
 async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
                          message: str, extraction: dict, request_id: str,
@@ -588,24 +791,48 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
             return {"status": "ok"}
 
-        # 4. Non-command text -> intent routing (query first, else capture)
+        # 4. Non-command text -> draft confirm flow + intent routing.
         request_id = f"tg_{uuid.uuid4().hex[:8]}"
         try:
-            if is_query_like_text(text):
+            open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
+            draft_action, draft_arg = _parse_draft_reply(text)
+
+            if open_draft and draft_action == "confirm":
+                applied = await _confirm_action_draft(
+                    draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
+                )
+                await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+            elif open_draft and draft_action == "discard":
+                await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
+                await send_message(chat_id, "Discarded the pending proposal.")
+            elif open_draft and draft_action == "edit":
+                if not draft_arg:
+                    await send_message(chat_id, "Please include your change after edit. Example: <code>edit split this into 3 tasks</code>")
+                    return {"status": "ok"}
+                extraction = await _revise_action_draft(
+                    draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
+                )
+                await send_message(chat_id, _format_action_draft_preview(extraction))
+            elif open_draft and draft_action is None and not is_query_like_text(text):
+                await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
+            elif is_query_like_text(text):
                 response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
                 await send_message(chat_id, escape_html(response.answer))
             else:
                 extraction = await adapter.extract_structured_updates(text)
                 _validate_extraction_payload(extraction)
-                _, applied = await _apply_capture(
-                    db=db, user_id=user_id, chat_id=chat_id,
-                    source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
-                    extraction=extraction, request_id=request_id
+                await _create_action_draft(
+                    db=db,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message=text,
+                    extraction=extraction,
+                    request_id=request_id,
                 )
-                await send_message(chat_id, format_capture_ack(applied.model_dump()))
+                await send_message(chat_id, _format_action_draft_preview(extraction))
         except Exception as e:
-            logger.error(f"Telegram capture failed: {e}")
-            await send_message(chat_id, "Sorry, I had trouble processing that thought. Please try again later.")
+            logger.error(f"Telegram routing failed: {e}")
+            await send_message(chat_id, "Sorry, I had trouble processing that message. Please try again later.")
 
     return {"status": "ok"}
 

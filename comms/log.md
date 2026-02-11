@@ -397,3 +397,11 @@
 [2026-02-11 17:00] [ARCHITECT]: SPEC READY: Published Phase 14 implementation spec at `comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md` covering draft lifecycle, confirmation gate, Telegram routing rules, immediate sync policy, and required tests.
 [2026-02-11 17:00] [ARCHITECT]: UX PREFERENCE LOCKED: Updated specs/docs to make natural-language chat the primary Telegram UX and `/ask` an optional fallback only (`comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md`, `docs/PROJECT_DIRECTION.md`, `docs/ARCHITECTURE_V1.md`).
 [2026-02-11 17:00] [DEVELOPER]: IMPL IN_PROGRESS: Phase 14 step 1 implemented: plain Telegram question intent routes to read-only query path; `/ask` command added as fallback; non-question text remains capture path.
+[2026-02-11 17:09] [DEVELOPER]: IMPL DONE: Phase 14 step 2 draft-confirm flow shipped for Telegram natural chat.
+- Added persistent `action_drafts` model + migration (`backend/common/models.py`, `backend/migrations/versions/e8f1a7c9d2b4_add_action_drafts.py`).
+- Non-command Telegram action text now creates a proposal draft (no immediate writes).
+- Added conversational confirmation handling for open drafts: `yes` applies, `edit ...` revises, `no` discards.
+- Confirm path now applies transactional capture and enqueues immediate Todoist sync job.
+- Added preview formatting for proposals and pending-draft guidance.
+- Added webhook tests for proposal creation, question read-only routing, and `yes` draft apply behavior.
+- Validation: `cd backend && pytest -q` => 52 passed, 1 skipped.
