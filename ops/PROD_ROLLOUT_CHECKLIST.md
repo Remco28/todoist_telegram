@@ -8,7 +8,7 @@
   - Worker: `backend/Dockerfile.worker`
 
 ## Preflight (Required)
-1. Confirm deployed git SHA from `main` and record it below.
+1. Confirm target git SHA from `main` (the commit you intend to deploy) and record it below.
 2. Confirm production env uses isolated infra (not staging DB/Redis).
 3. Confirm required env vars are present:
   - `DATABASE_URL` (`postgresql+asyncpg://...`)
@@ -22,6 +22,7 @@
   - `LLM_MODEL_PLAN`
   - `LLM_MODEL_SUMMARIZE`
   - `TODOIST_TOKEN` (if sync enabled)
+  - `TODOIST_API_BASE` (optional override; default `https://api.todoist.com/api/v1`)
   - `TELEGRAM_BOT_TOKEN` (if Telegram enabled)
   - `TELEGRAM_WEBHOOK_SECRET` (if Telegram enabled)
 4. Run backup before deploy:
@@ -30,9 +31,9 @@
   - `cd backend && alembic upgrade head --sql`
 
 ## Deploy (Required)
-1. Apply DB migrations:
+1. Deploy API service in Coolify (target SHA from preflight).
+2. Apply DB migrations from the deployed runtime/container:
   - `cd backend && alembic upgrade head`
-2. Deploy API service in Coolify.
 3. Verify API health:
   - `GET /health/live`
   - `GET /health/ready`

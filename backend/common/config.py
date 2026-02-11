@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Phase 5 Todoist Settings
     TODOIST_TOKEN: Optional[str] = None
-    TODOIST_API_BASE: str = "https://api.todoist.com/rest/v2"
+    TODOIST_API_BASE: str = "https://api.todoist.com/api/v1"
     TODOIST_RECONCILE_BATCH_SIZE: int = 200
     TODOIST_RECONCILE_WINDOW_MINUTES: int = 60
 
