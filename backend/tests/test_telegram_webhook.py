@@ -498,6 +498,53 @@ def test_completion_high_confidence_autopilot_applies_without_draft(app_no_db, m
         assert "applied automatically" in mock_send.await_args.args[1].lower()
 
 
+def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.95,
+        "needs_confirmation": False,
+        "actions": [{"entity_type": "task", "action": "update", "title": "Do 100 burpees"}],
+    }
+    grounding = {
+        "tasks": [{"id": "tsk_existing", "title": "Do 100 burpees", "status": "open"}],
+        "recent_task_refs": [{"id": "tsk_existing", "title": "Do 100 burpees", "status": "open"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"title": "Do 100 burpees", "action": "update"}], "goals": [], "problems": [], "links": []},
+    ):
+        apply_capture.return_value = ("inb_1", AppliedChanges(tasks_created=1))
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("add a Mark Wahlberg movie to my list. I want to watch it tomorrow night."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        apply_capture.assert_awaited_once()
+        sent_extraction = apply_capture.await_args.kwargs["extraction"]
+        assert sent_extraction["tasks"][0]["action"] == "create"
+        assert "Mark Wahlberg movie" in sent_extraction["tasks"][0]["title"]
+        assert "applied automatically" in mock_send.await_args.args[1].lower()
+
+
 def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):
     planned = {
         "intent": "action",

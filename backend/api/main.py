@@ -370,6 +370,18 @@ def _is_completion_request(message: str) -> bool:
     return False
 
 
+def _has_term_overlap(title_terms: set[str], msg_terms: set[str]) -> bool:
+    for m in msg_terms:
+        if len(m) < 4:
+            continue
+        for t in title_terms:
+            if len(t) < 4:
+                continue
+            if m == t or m.startswith(t) or t.startswith(m):
+                return True
+    return False
+
+
 def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(grounding, dict):
         return []
@@ -446,17 +458,6 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
     }
 
     explicit_rows: List[Dict[str, Any]] = []
-
-    def _has_term_overlap(title_terms: set[str], msg_terms: set[str]) -> bool:
-        for m in msg_terms:
-            if len(m) < 4:
-                continue
-            for t in title_terms:
-                if len(t) < 4:
-                    continue
-                if m == t or m.startswith(t) or t.startswith(m):
-                    return True
-        return False
 
     for row in open_rows:
         title_terms = _grounding_terms(row["title"].lower())
@@ -576,6 +577,74 @@ def _sanitize_completion_extraction(message: str, extraction: Dict[str, Any], gr
             sanitized_tasks = resolved_tasks
 
     return {"tasks": sanitized_tasks, "goals": [], "problems": [], "links": []}
+
+
+def _is_create_request(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw or is_query_like_text(raw):
+        return False
+    has_create_verb = any(token in raw for token in ("add ", "create ", "new task", "put "))
+    has_task_noun = any(
+        token in raw for token in ("to my list", "on my list", "task", "todo", "to-do", "to do", "add ", "create ")
+    )
+    return has_create_verb and has_task_noun
+
+
+def _derive_create_action_from_message(message: str) -> Optional[Dict[str, Any]]:
+    raw = (message or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    start_idx = -1
+    keyword_len = 0
+    add_idx = lowered.find("add ")
+    create_idx = lowered.find("create ")
+    if add_idx >= 0 and (create_idx < 0 or add_idx < create_idx):
+        start_idx = add_idx
+        keyword_len = 4
+    elif create_idx >= 0:
+        start_idx = create_idx
+        keyword_len = 7
+    phrase = raw[start_idx + keyword_len :].strip() if start_idx >= 0 else raw
+    phrase = re.split(r"\bto my list\b|\bon my list\b|[.!?]", phrase, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    phrase = re.sub(r"^(a|an|the)\s+", "", phrase, flags=re.IGNORECASE).strip()
+    if not phrase:
+        return None
+    title = phrase[0].upper() + phrase[1:] if len(phrase) > 1 else phrase.upper()
+    return {"title": title, "action": "create"}
+
+
+def _sanitize_create_extraction(message: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_create_request(message):
+        return extraction if isinstance(extraction, dict) else {"tasks": [], "goals": [], "problems": [], "links": []}
+
+    msg_terms = _grounding_terms((message or "").lower())
+    raw_tasks = extraction.get("tasks", []) if isinstance(extraction, dict) else []
+    sanitized_tasks: List[Dict[str, Any]] = []
+    if isinstance(raw_tasks, list):
+        for task in raw_tasks:
+            if not isinstance(task, dict):
+                continue
+            title = task.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            title_clean = title.strip()
+            title_terms = _grounding_terms(title_clean.lower())
+            if msg_terms and not _has_term_overlap(title_terms, msg_terms):
+                continue
+            item: Dict[str, Any] = {"title": title_clean, "action": "create"}
+            if isinstance(task.get("notes"), str) and task.get("notes").strip():
+                item["notes"] = task.get("notes").strip()
+            for key in ("priority", "impact_score", "urgency_score", "due_date"):
+                if task.get(key) is not None:
+                    item[key] = task.get(key)
+            sanitized_tasks.append(item)
+
+    if not sanitized_tasks:
+        derived = _derive_create_action_from_message(message)
+        if derived:
+            sanitized_tasks = [derived]
+    return {"tasks": sanitized_tasks[:3], "goals": [], "problems": [], "links": []}
 
 
 def _planner_confidence(planned: Any) -> float:
@@ -837,6 +906,7 @@ async def _revise_action_draft(
     extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
     extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
     extraction = _sanitize_completion_extraction(revised_message, extraction, grounding)
+    extraction = _sanitize_create_extraction(revised_message, extraction)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
@@ -1110,15 +1180,15 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
     entity_map = {}
     for t_data in extraction.get("tasks", []):
         title_norm = t_data["title"].lower().strip()
+        action = t_data.get("action")
         existing = None
         target_task_id = t_data.get("target_task_id")
         if isinstance(target_task_id, str) and target_task_id.strip():
             target_stmt = select(Task).where(Task.user_id == user_id, Task.id == target_task_id.strip())
             existing = (await db.execute(target_stmt)).scalar_one_or_none()
-        if existing is None:
+        if existing is None and action != "create":
             stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
             existing = (await db.execute(stmt)).scalar_one_or_none()
-        action = t_data.get("action")
         if existing:
             if action not in {"complete", "archive"}:
                 existing.title = t_data["title"]
@@ -1896,6 +1966,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                     extraction = await adapter.extract_structured_updates(text, grounding=grounding)
                 extraction = _apply_intent_fallbacks(text, extraction, grounding)
                 extraction = _sanitize_completion_extraction(text, extraction, grounding)
+                extraction = _sanitize_create_extraction(text, extraction)
                 if not _has_actionable_entities(extraction):
                     if completion_request:
                         await send_message(
@@ -1984,6 +2055,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
             extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
             extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
             extraction = _sanitize_completion_extraction(payload.message, extraction, grounding)
+            extraction = _sanitize_create_extraction(payload.message, extraction)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             _validate_extraction_payload(extraction)
