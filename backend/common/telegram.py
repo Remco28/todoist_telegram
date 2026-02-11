@@ -1,4 +1,5 @@
 import logging
+import re
 import httpx
 from html import escape as _html_escape
 from typing import Optional, Tuple, Dict, Any, List
@@ -12,6 +13,24 @@ def escape_html(text: str) -> str:
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TEXT_MAX_LEN = 4096
+QUERY_PREFIXES = (
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "show",
+    "list",
+    "summarize",
+    "tell me",
+    "do i",
+    "can i",
+    "am i",
+    "is there",
+    "are there",
+)
 
 def verify_telegram_secret(headers: Dict[str, str]) -> bool:
     if not settings.TELEGRAM_WEBHOOK_SECRET:
@@ -50,6 +69,16 @@ def extract_command(text: str) -> Tuple[Optional[str], Optional[str]]:
     command = parts[0].lower().split("@")[0]  # strip @botname suffix
     args = parts[1] if len(parts) > 1 else None
     return command, args
+
+
+def is_query_like_text(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if "?" in normalized:
+        return True
+    collapsed = re.sub(r"\s+", " ", normalized)
+    return any(collapsed.startswith(prefix + " ") or collapsed == prefix for prefix in QUERY_PREFIXES)
 
 async def send_message(chat_id: str, text: str) -> Dict[str, Any]:
     """

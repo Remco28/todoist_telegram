@@ -393,3 +393,7 @@
 - Added `ops/SECRETS_ROTATION_RUNBOOK.md` (rotation procedures for auth/xAI/Todoist/DB/Redis/Telegram secrets).
 - Added `ops/OPERATIONS_BASELINE.md` (health signals, alert thresholds, daily/weekly operator routines, incident first actions).
 - Updated `docs/README.md` release-readiness index with new Phase 13 operational docs.
+[2026-02-11 17:00] [ARCHITECT]: DIRECTION UPDATE: Formalized conversational UX decision in canonical docs: Telegram free-form text now targets intent routing (`query` vs `action`), with action proposals requiring explicit user confirmation (`yes`/`edit`/`no`) before DB writes and Todoist sync (`docs/PROJECT_DIRECTION.md`, `docs/ARCHITECTURE_V1.md`, `docs/PHASES.md`, `docs/EXECUTION_PLAN.md`).
+[2026-02-11 17:00] [ARCHITECT]: SPEC READY: Published Phase 14 implementation spec at `comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md` covering draft lifecycle, confirmation gate, Telegram routing rules, immediate sync policy, and required tests.
+[2026-02-11 17:00] [ARCHITECT]: UX PREFERENCE LOCKED: Updated specs/docs to make natural-language chat the primary Telegram UX and `/ask` an optional fallback only (`comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md`, `docs/PROJECT_DIRECTION.md`, `docs/ARCHITECTURE_V1.md`).
+[2026-02-11 17:00] [DEVELOPER]: IMPL IN_PROGRESS: Phase 14 step 1 implemented: plain Telegram question intent routes to read-only query path; `/ask` command added as fallback; non-question text remains capture path.

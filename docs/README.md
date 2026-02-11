@@ -32,8 +32,9 @@
 - Staging smoke invocation:
   - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
 
-## Current Active Spec
+## Current Active Specs
 - `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md`
+- `comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md`
 
 ## Legacy Archive
 - `archive/legacy_docs/diy_todo/`: earlier planning set kept for reference.

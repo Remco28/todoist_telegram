@@ -35,7 +35,7 @@ from api.schemas import (
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message,
     format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
-    escape_html
+    escape_html, is_query_like_text
 )
 
 # --- Shared Capture Pipeline ---
@@ -158,8 +158,16 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         else:
             await send_message(chat_id, f"Task <code>{escape_html(task_id)}</code> not found or not owned by you.")
 
+    elif command == "/ask":
+        question = (args or "").strip()
+        if not question:
+            await send_message(chat_id, "Please provide a question. Example: <code>/ask What tasks are overdue?</code>")
+            return
+        response = await query_ask(QueryAskRequest(chat_id=chat_id, query=question), user_id=user_id, db=db)
+        await send_message(chat_id, escape_html(response.answer))
+
     else:
-        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done"
+        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done\n/ask &lt;question&gt; - Ask a read-only question"
         await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
 
 
@@ -580,17 +588,21 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
             return {"status": "ok"}
 
-        # 4. Non-command text -> Full Capture Flow
+        # 4. Non-command text -> intent routing (query first, else capture)
         request_id = f"tg_{uuid.uuid4().hex[:8]}"
         try:
-            extraction = await adapter.extract_structured_updates(text)
-            _validate_extraction_payload(extraction)
-            _, applied = await _apply_capture(
-                db=db, user_id=user_id, chat_id=chat_id,
-                source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
-                extraction=extraction, request_id=request_id
-            )
-            await send_message(chat_id, format_capture_ack(applied.model_dump()))
+            if is_query_like_text(text):
+                response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
+                await send_message(chat_id, escape_html(response.answer))
+            else:
+                extraction = await adapter.extract_structured_updates(text)
+                _validate_extraction_payload(extraction)
+                _, applied = await _apply_capture(
+                    db=db, user_id=user_id, chat_id=chat_id,
+                    source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
+                    extraction=extraction, request_id=request_id
+                )
+                await send_message(chat_id, format_capture_ack(applied.model_dump()))
         except Exception as e:
             logger.error(f"Telegram capture failed: {e}")
             await send_message(chat_id, "Sorry, I had trouble processing that thought. Please try again later.")

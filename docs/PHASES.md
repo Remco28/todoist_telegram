@@ -15,6 +15,7 @@
 - Phase 11: Completed
 - Phase 12: Completed
 - Phase 13: In progress
+- Phase 14: Planned
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -178,3 +179,18 @@
 - Production smoke checks pass for capture/query/sync/reconcile paths.
 - Backup and restore readiness are documented and operator-verified.
 - Runbooks for rollout, secrets rotation, and monitoring baseline are complete.
+
+## Phase 14: Conversational Intent Routing and Confirmation UX
+### Goals
+- Make Telegram behave like a true assistant for informal messages:
+- classify incoming text as query vs action.
+- For action intent, generate a proposed structured plan (tasks/subtasks/notes/links/dates) before writing.
+- Add confirmation flow (`yes`, `edit`, `no`) so writes and Todoist sync happen only after approval.
+- Add `/ask` command and optional natural-language question routing for read-only answers.
+
+### Exit Criteria
+- Telegram can answer read-only questions without creating capture artifacts.
+- Telegram action proposals are shown and persisted as short-lived drafts.
+- `yes` applies draft transactionally and triggers immediate Todoist sync.
+- `edit` revises draft; `no` discards draft.
+- Audit events capture proposal generation, approval, apply result, and sync enqueue.

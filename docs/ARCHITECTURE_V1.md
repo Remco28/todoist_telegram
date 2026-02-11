@@ -11,8 +11,22 @@
 
 ## Interaction Modes
 - Query mode (read-only): answer questions from stored graph + summaries.
-- Action mode (write-enabled): parse intent and create/update/link entities.
+- Draft action mode (no-write): parse intent and generate a proposed mutation plan.
+- Apply action mode (write-enabled): apply previously confirmed proposal transactionally and sync.
 - Mode selection is backend controlled using intent classification and policy rules.
+
+## Telegram Conversational Contract (Target)
+1. User sends free-form text.
+2. Backend classifies message:
+- `query`: answer directly, no writes.
+- `action`: generate structured proposal and show confirmation summary.
+ - natural-language routing is primary; slash commands are optional fallback controls.
+3. Bot asks for confirmation (`yes`, `edit`, `no`):
+- `yes`: commit DB writes and enqueue immediate Todoist sync.
+- `edit`: regenerate proposal with user clarifications.
+- `no`: discard draft.
+4. All applied changes are logged with request id and proposal provenance.
+5. Rule: no autonomous durable writes from ambiguous conversational text without confirmation.
 
 ## Runtime Model (Coolify)
 - `api` container: request handling, business logic, auth, tool endpoints.
@@ -98,9 +112,10 @@ Produce ordered execution plans from structured state.
 1. Capture raw message.
 2. Call provider extraction operation for strict JSON proposal.
 3. Validate against schema and policy constraints.
-4. Apply deterministic mapping and normalization.
-5. Commit transactional DB updates.
-6. Emit audit events and optional plan refresh.
+4. Present proposal to user for confirmation when policy requires.
+5. Apply deterministic mapping and normalization after confirmation.
+6. Commit transactional DB updates.
+7. Emit audit events, enqueue memory summarization, and enqueue immediate Todoist sync for changed tasks.
 
 Rule: provider suggests, backend decides, backend writes.
 

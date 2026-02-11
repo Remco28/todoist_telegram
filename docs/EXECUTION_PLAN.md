@@ -14,6 +14,7 @@
 - Phase 11 Todoist bidirectional reconciliation completed.
 - Phase 12 staging validation and release readiness completed.
 - Phase 13 production rollout and operations baseline is in progress.
+- Next feature phase is defined: Phase 14 conversational intent routing + confirmation UX.
 - Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
 
 ## Implementation Tracks
@@ -28,6 +29,12 @@
 2. Publish production rollout, secret rotation, and operations baseline runbooks.
 3. Validate first production smoke evidence (capture/query/sync/reconcile).
 4. Confirm backup automation and restore readiness with operator evidence.
+
+## Priority Backlog (Immediately After Phase 13)
+1. Implement Telegram intent routing (`query` vs `action`) for free-form messages.
+2. Add draft proposal lifecycle (`draft`, `confirmed`, `discarded`) with TTL.
+3. Add confirmation dialogue (`yes`, `edit`, `no`) before durable writes and Todoist sync.
+4. Add explicit `/ask` command and keep query path strictly read-only.
 
 ## Priority Backlog (Next After Phase 8)
 1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.

@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 from httpx import ASGITransport, AsyncClient
 
 from api.main import handle_telegram_command
-from api.schemas import AppliedChanges
+from api.schemas import AppliedChanges, QueryResponseV1
 
 WEBHOOK_URL = "/v1/integrations/telegram/webhook"
 VALID_SECRET = "test_secret"
@@ -140,6 +140,18 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
         assert "1 task(s) updated" in ack
 
 
+def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture:
+        mocked_query.return_value = QueryResponseV1(answer="You have 2 open tasks.", confidence=0.9)
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What tasks are not completed?"), headers=_headers())
+        assert resp.status_code == 200
+        mocked_query.assert_awaited_once()
+        apply_capture.assert_not_awaited()
+        assert "2 open tasks" in mock_send.await_args.args[1]
+
+
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value=None), patch(
         "api.main.handle_telegram_command", new_callable=AsyncMock
@@ -179,6 +191,14 @@ def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     assert "job_id" in job
     mock_send.assert_awaited_once()
     assert job["job_id"] in mock_send.await_args.args[1]
+
+
+def test_command_ask_returns_query_answer(mock_send, mock_db):
+    with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
+        mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)
+        asyncio.run(handle_telegram_command("/ask", "what is blocked", "12345", "usr_abc", mock_db))
+    mocked_query.assert_awaited_once()
+    assert "no blocked tasks" in mock_send.await_args.args[1]
 
 
 def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
