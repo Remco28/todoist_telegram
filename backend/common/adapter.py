@@ -32,9 +32,18 @@ class LLMAdapter:
         status = candidate.get("status")
         if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
             item["status"] = status
+        notes = candidate.get("notes")
+        if isinstance(notes, str) and notes.strip():
+            item["notes"] = notes.strip()
         priority = candidate.get("priority")
         if isinstance(priority, int) and 1 <= priority <= 4:
             item["priority"] = priority
+        impact_score = candidate.get("impact_score")
+        if isinstance(impact_score, int) and 1 <= impact_score <= 5:
+            item["impact_score"] = impact_score
+        urgency_score = candidate.get("urgency_score")
+        if isinstance(urgency_score, int) and 1 <= urgency_score <= 5:
+            item["urgency_score"] = urgency_score
         due_date = candidate.get("due_date")
         if isinstance(due_date, str):
             try:
@@ -346,6 +355,7 @@ class LLMAdapter:
             "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
             "Prefer updating/completing existing tasks from grounding before creating new ones.\n"
             "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
+            "Task fields may include notes, priority (1 highest, 4 lowest), impact_score (1-5), urgency_score (1-5), due_date.\n"
             "When dates are explicit or relative (for example tomorrow/next week), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_utc.\n"
             "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
             "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
@@ -379,7 +389,7 @@ class LLMAdapter:
             "Return JSON with keys: intent, scope, actions, confidence, needs_confirmation.\n"
             "intent must be query or action.\n"
             "scope must be one of single|subset|all_open|all_matching.\n"
-            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional priority, optional due_date.\n"
+            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional notes, optional priority (1 highest, 4 lowest), optional impact_score (1-5), optional urgency_score (1-5), optional due_date.\n"
             "Resolve relative dates against context.grounding.current_date_utc and output due_date as YYYY-MM-DD.\n"
             "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
             "Return only JSON."

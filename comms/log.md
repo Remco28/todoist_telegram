@@ -438,3 +438,11 @@
 - Added validation for task `due_date` in extraction payload.
 - Added tests for due-date normalization and planner-to-draft due-date propagation.
 - Validation: `cd backend && pytest -q` => 59 passed, 1 skipped.
+[2026-02-11 19:14] [DEVELOPER]: IMPL DONE: Task enrichment fields (notes/priority/impact/urgency) + urgency inference.
+- Added task `urgency_score` model field and migration `f2b6c1d9a4e7_add_urgency_score_to_tasks.py`.
+- Extended planner/extraction contracts to carry `notes`, `priority` (1 highest), `impact_score`, `urgency_score`, and `due_date`.
+- Extended action-plan translation and capture apply path to persist these fields on task create/update.
+- Added fallback urgency inference when explicit urgency is not provided (based on due date + priority).
+- Updated planning score to consider explicit urgency and fixed priority semantic to treat `1` as highest.
+- Added regression tests for field normalization and urgency inference.
+- Validation: `cd backend && pytest -q` => 62 passed, 1 skipped.

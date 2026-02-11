@@ -93,6 +93,33 @@ def test_extract_due_date_normalizes_to_iso_date():
     asyncio.run(_run())
 
 
+def test_extract_task_enrichment_fields_normalize():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[{"title":"Clean keyboard","notes":"Use compressed air","priority":1,"impact_score":4,"urgency_score":3}],"goals":[],"problems":[],"links":[]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("Clean keyboard tomorrow")
+            task = out["tasks"][0]
+            assert task["notes"] == "Use compressed air"
+            assert task["priority"] == 1
+            assert task["impact_score"] == 4
+            assert task["urgency_score"] == 3
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_task_actions_shape_normalizes_to_tasks():
     async def _run():
         adapter = LLMAdapter()

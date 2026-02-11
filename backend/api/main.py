@@ -204,6 +204,15 @@ def _actions_to_extraction(actions: Any) -> Dict[str, Any]:
             priority = action.get("priority")
             if isinstance(priority, int) and 1 <= priority <= 4:
                 task_item["priority"] = priority
+            impact_score = action.get("impact_score")
+            if isinstance(impact_score, int) and 1 <= impact_score <= 5:
+                task_item["impact_score"] = impact_score
+            urgency_score = action.get("urgency_score")
+            if isinstance(urgency_score, int) and 1 <= urgency_score <= 5:
+                task_item["urgency_score"] = urgency_score
+            notes = action.get("notes")
+            if isinstance(notes, str) and notes.strip():
+                task_item["notes"] = notes.strip()
             due_date = action.get("due_date")
             if isinstance(due_date, str):
                 try:
@@ -434,6 +443,9 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
                 "title": task.title,
                 "status": task.status.value if hasattr(task.status, "value") else str(task.status),
                 "priority": task.priority,
+                "impact_score": task.impact_score,
+                "urgency_score": task.urgency_score,
+                "notes": task.notes,
                 "due_date": task.due_date.isoformat() if task.due_date else None,
             }
         )
@@ -464,6 +476,26 @@ def _parse_due_date(value: Any) -> Optional[date]:
         return date.fromisoformat(value.strip()[:10])
     except ValueError:
         return None
+
+
+def _infer_urgency_score(due: Optional[date], priority: Optional[int]) -> Optional[int]:
+    # Explicit urgency should win; this is fallback inference only.
+    inferred: Optional[int] = None
+    today = utc_now().date()
+    if due is not None:
+        days = (due - today).days
+        if days <= 0:
+            inferred = 5
+        elif days <= 2:
+            inferred = 4
+        elif days <= 7:
+            inferred = 3
+        else:
+            inferred = 2
+    if priority is not None and 1 <= priority <= 4:
+        priority_hint = {1: 4, 2: 3, 3: 2, 4: 1}[priority]
+        inferred = max(inferred or 1, priority_hint)
+    return inferred
 
 async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
                          message: str, extraction: dict, request_id: str,
@@ -498,6 +530,12 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 existing.title_norm = title_norm
             if "priority" in t_data:
                 existing.priority = t_data.get("priority")
+            if "impact_score" in t_data:
+                existing.impact_score = t_data.get("impact_score")
+            if "urgency_score" in t_data:
+                existing.urgency_score = t_data.get("urgency_score")
+            if "notes" in t_data and isinstance(t_data.get("notes"), str):
+                existing.notes = t_data.get("notes")
             if "due_date" in t_data:
                 due_raw = t_data.get("due_date")
                 if isinstance(due_raw, str) and due_raw.strip():
@@ -507,6 +545,8 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                         pass
                 elif due_raw is None:
                     existing.due_date = None
+            if t_data.get("urgency_score") is None:
+                existing.urgency_score = _infer_urgency_score(existing.due_date, existing.priority)
             if action == "archive":
                 existing.status = TaskStatus.archived
                 existing.archived_at = datetime.utcnow()
@@ -540,6 +580,11 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             db.add(Task(
                 id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
                 status=t_data.get("status", TaskStatus.open), priority=t_data.get("priority"),
+                impact_score=t_data.get("impact_score"),
+                urgency_score=t_data.get("urgency_score")
+                if isinstance(t_data.get("urgency_score"), int)
+                else _infer_urgency_score(_parse_due_date(t_data.get("due_date")), t_data.get("priority")),
+                notes=t_data.get("notes") if isinstance(t_data.get("notes"), str) else None,
                 due_date=_parse_due_date(t_data.get("due_date")),
                 source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
             ))
@@ -822,6 +867,16 @@ def _validate_extraction_payload(extraction: Any) -> None:
             raise ValueError("Invalid target_task_id")
         if "priority" in task and task.get("priority") is not None and not isinstance(task.get("priority"), int):
             raise ValueError("Invalid task priority")
+        if "priority" in task and isinstance(task.get("priority"), int) and not (1 <= task.get("priority") <= 4):
+            raise ValueError("Invalid task priority range")
+        if "impact_score" in task and task.get("impact_score") is not None:
+            if not isinstance(task.get("impact_score"), int) or not (1 <= task.get("impact_score") <= 5):
+                raise ValueError("Invalid task impact_score")
+        if "urgency_score" in task and task.get("urgency_score") is not None:
+            if not isinstance(task.get("urgency_score"), int) or not (1 <= task.get("urgency_score") <= 5):
+                raise ValueError("Invalid task urgency_score")
+        if "notes" in task and task.get("notes") is not None and not isinstance(task.get("notes"), str):
+            raise ValueError("Invalid task notes")
         if "due_date" in task and task.get("due_date") is not None:
             due_raw = task.get("due_date")
             if not isinstance(due_raw, str):

@@ -143,6 +143,7 @@ class Task(Base):
     status = Column(task_status_enum, nullable=False, default=TaskStatus.open)
     priority = Column(SmallInteger, CheckConstraint("priority BETWEEN 1 AND 4"), nullable=True)
     impact_score = Column(SmallInteger, CheckConstraint("impact_score BETWEEN 1 AND 5"), nullable=True)
+    urgency_score = Column(SmallInteger, CheckConstraint("urgency_score BETWEEN 1 AND 5"), nullable=True)
     due_date = Column(Date, nullable=True)
     source_inbox_item_id = Column(String, ForeignKey("inbox_items.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
