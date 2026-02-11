@@ -1,6 +1,6 @@
 # Phased Plan
 
-## Current Status (2026-02-10)
+## Current Status (2026-02-11)
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
@@ -13,7 +13,8 @@
 - Phase 9: Completed
 - Phase 10: Completed
 - Phase 11: Completed
-- Phase 12: In progress
+- Phase 12: Completed
+- Phase 13: In progress
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -165,3 +166,15 @@
 - Staging smoke validates capture/query/plan/sync/reconcile flows.
 - Release checklist and restore incident procedure are complete and actionable.
 - Deprecated datetime/pydantic usage is reduced in Phase 10-12 touched runtime paths without regressions.
+
+## Phase 13: Production Rollout and Operations Baseline
+### Goals
+- Roll out production environment (API + worker + dedicated DB/Redis) using the staging-proven Docker path.
+- Establish minimum operations baseline: secrets rotation workflow, backup automation, and alert checks.
+- Validate first production smoke flow and document release evidence.
+
+### Exit Criteria
+- Production deployment is live and stable.
+- Production smoke checks pass for capture/query/sync/reconcile paths.
+- Backup and restore readiness are documented and operator-verified.
+- Runbooks for rollout, secrets rotation, and monitoring baseline are complete.

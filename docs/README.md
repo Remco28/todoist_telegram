@@ -9,7 +9,8 @@
 - Phase 5 specification and revisions are archived under `comms/tasks/archive/`.
 - Phase 6 hardening specification is archived under `comms/tasks/archive/`.
 - Phase 7 specification and revision are archived under `comms/tasks/archive/`.
-- Phase 8 and Phase 9 implementation specifications are active in `comms/tasks/`.
+- Phase 8 through Phase 12 specifications are archived under `comms/tasks/archive/`.
+- Phase 13 implementation specification is active in `comms/tasks/`.
 
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.
@@ -27,6 +28,9 @@
 - `ops/RESTORE_RUNBOOK.md`: restore steps and release-incident first-response flow.
 - Staging smoke invocation:
   - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
+
+## Current Active Spec
+- `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md`
 
 ## Legacy Archive
 - `archive/legacy_docs/diy_todo/`: earlier planning set kept for reference.

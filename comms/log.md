@@ -384,3 +384,6 @@
   - `backend/common/models.py`: align SQLAlchemy enum names with migrated Postgres enum types (`task_status`, `goal_status`, `problem_status`, `link_type`, `entity_type`).
   - `backend/common/adapter.py`: sanitize provider extract payload list entries before API validation.
 [2026-02-11 08:31] [ARCHITECT]: CLOSEOUT: Phase 12 release-readiness gates satisfied in staging. Proceeding with merge to `main`.
+[2026-02-11 08:40] [ARCHITECT]: TRANSITION: Created branch `architect/phase-13-production-rollout`.
+[2026-02-11 08:41] [ARCHITECT]: SPEC READY: Published Phase 13 production rollout spec at `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md` and updated planning docs (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
+[2026-02-11 08:41] [ARCHITECT]: CLOSEOUT: Archived Phase 12 spec to `comms/tasks/archive/2026-02-10-phase-12-release-readiness-spec.md`.
