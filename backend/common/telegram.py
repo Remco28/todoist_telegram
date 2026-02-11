@@ -47,11 +47,16 @@ def parse_update(update_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         chat = message.get("chat")
         text = message.get("text")
         if chat and text:
+            message_id = message.get("message_id")
+            client_msg_id = None
+            if message_id is not None:
+                client_msg_id = f"tg:{chat.get('id')}:{message_id}"
             return {
                 "kind": "message",
                 "chat_id": str(chat.get("id")),
                 "text": text,
-                "username": chat.get("username")
+                "username": chat.get("username"),
+                "client_msg_id": client_msg_id,
             }
 
     callback = update_json.get("callback_query")

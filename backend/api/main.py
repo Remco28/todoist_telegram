@@ -42,6 +42,8 @@ from common.telegram import (
 
 # --- Shared Capture Pipeline ---
 ACTION_DRAFT_TTL_SECONDS = 1800
+AUTOPILOT_COMPLETION_CONFIDENCE = 0.70
+AUTOPILOT_ACTION_CONFIDENCE = 0.90
 
 
 def _draft_now() -> datetime:
@@ -574,6 +576,72 @@ def _sanitize_completion_extraction(message: str, extraction: Dict[str, Any], gr
             sanitized_tasks = resolved_tasks
 
     return {"tasks": sanitized_tasks, "goals": [], "problems": [], "links": []}
+
+
+def _planner_confidence(planned: Any) -> float:
+    if not isinstance(planned, dict):
+        return 0.0
+    value = planned.get("confidence")
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_safe_completion_extraction(extraction: Dict[str, Any]) -> bool:
+    tasks = extraction.get("tasks", []) if isinstance(extraction, dict) else []
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    if extraction.get("goals") or extraction.get("problems") or extraction.get("links"):
+        return False
+    for task in tasks:
+        if not isinstance(task, dict):
+            return False
+        action = str(task.get("action") or "").lower()
+        status = str(task.get("status") or "").lower()
+        target_task_id = task.get("target_task_id")
+        if action != "complete" and status != "done":
+            return False
+        if not isinstance(target_task_id, str) or not target_task_id.strip():
+            return False
+    return True
+
+
+def _is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:
+    tasks = extraction.get("tasks", []) if isinstance(extraction, dict) else []
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    if extraction.get("goals") or extraction.get("problems") or extraction.get("links"):
+        return False
+    if len(tasks) > 2:
+        return False
+    for task in tasks:
+        if not isinstance(task, dict):
+            return False
+        action = str(task.get("action") or "").lower()
+        if action and action not in {"create", "update", "noop"}:
+            return False
+    return True
+
+
+def _autopilot_decision(message: str, extraction: Dict[str, Any], planned: Any) -> tuple[bool, str]:
+    if not _has_actionable_entities(extraction):
+        return False, "no_actionable_entities"
+    confidence = _planner_confidence(planned)
+    completion_request = _is_completion_request(message)
+    if completion_request and _is_safe_completion_extraction(extraction):
+        if confidence >= AUTOPILOT_COMPLETION_CONFIDENCE:
+            return True, "completion_high_confidence"
+        return False, "completion_low_confidence"
+    if not isinstance(planned, dict):
+        return False, "no_planner_payload"
+    if planned.get("needs_confirmation") is True:
+        return False, "planner_requires_confirmation"
+    if confidence < AUTOPILOT_ACTION_CONFIDENCE:
+        return False, "action_low_confidence"
+    if _is_low_risk_action_extraction(extraction):
+        return True, "low_risk_action_high_confidence"
+    return False, "not_low_risk_action"
 
 
 def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
@@ -1648,6 +1716,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     chat_id = data["chat_id"]
     text = data.get("text", "")
     username = data.get("username")
+    client_msg_id = data.get("client_msg_id")
     update_kind = data.get("kind")
     if not _is_telegram_sender_allowed(chat_id, username):
         logger.warning("Ignoring telegram message from disallowed sender chat_id=%s username=%s", chat_id, username)
@@ -1847,6 +1916,42 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                     )
                     await db.commit()
                 _validate_extraction_payload(extraction)
+                auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)
+                db.add(
+                    EventLog(
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="telegram_autopilot_decision",
+                        payload_json={
+                            "chat_id": chat_id,
+                            "auto_apply": auto_apply,
+                            "reason": auto_reason,
+                            "confidence": _planner_confidence(planned),
+                        },
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                await db.commit()
+                if auto_apply:
+                    _, applied = await _apply_capture(
+                        db=db,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        source=settings.TELEGRAM_DEFAULT_SOURCE,
+                        message=text,
+                        extraction=extraction,
+                        request_id=request_id,
+                        client_msg_id=client_msg_id,
+                        commit=True,
+                        enqueue_summary=True,
+                    )
+                    try:
+                        await _enqueue_todoist_sync_job(user_id=user_id)
+                    except Exception as exc:
+                        logger.error("Failed to enqueue todoist sync after autopilot apply: %s", exc)
+                    await send_message(chat_id, "✅ Applied automatically. " + format_capture_ack(applied.model_dump()))
+                    return {"status": "ok"}
                 draft = await _create_action_draft(
                     db=db,
                     user_id=user_id,

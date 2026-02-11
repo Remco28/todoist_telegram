@@ -216,7 +216,7 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
     planned = {
         "intent": "action",
         "scope": "single",
-        "confidence": 0.8,
+        "confidence": 0.6,
         "needs_confirmation": True,
         "actions": [],
     }
@@ -319,7 +319,7 @@ def test_completion_request_filters_out_non_completion_planner_actions(app_no_db
     planned = {
         "intent": "action",
         "scope": "single",
-        "confidence": 0.9,
+        "confidence": 0.6,
         "needs_confirmation": True,
         "actions": [
             {"entity_type": "task", "action": "create", "title": "Do 100 pushups"},
@@ -410,7 +410,7 @@ def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no
 
 
 def test_soft_completion_statement_marks_matching_task(app_no_db, mock_send):
-    planned = {"intent": "action", "scope": "single", "confidence": 0.7, "needs_confirmation": True, "actions": []}
+    planned = {"intent": "action", "scope": "single", "confidence": 0.6, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
             {"id": "tsk_kbd", "title": "Clean mechanical keyboard", "status": "open"},
@@ -451,6 +451,51 @@ def test_soft_completion_statement_marks_matching_task(app_no_db, mock_send):
         assert len(extraction["tasks"]) == 1
         assert extraction["tasks"][0]["target_task_id"] == "tsk_kbd"
         assert extraction["tasks"][0]["action"] == "complete"
+
+
+def test_completion_high_confidence_autopilot_applies_without_draft(app_no_db, mock_send):
+    planned = {"intent": "action", "scope": "single", "confidence": 0.95, "needs_confirmation": True, "actions": []}
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
+    ) as enqueue_sync, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        apply_capture.return_value = ("inb_1", AppliedChanges(tasks_updated=2))
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Mark French homework and memorize script as complete."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        apply_capture.assert_awaited_once()
+        enqueue_sync.assert_awaited_once()
+        assert "applied automatically" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):
