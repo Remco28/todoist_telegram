@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -20,11 +21,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # --- Enums ---
-    op.execute("CREATE TYPE task_status AS ENUM ('open', 'blocked', 'done', 'archived')")
-    op.execute("CREATE TYPE goal_status AS ENUM ('active', 'paused', 'done', 'archived')")
-    op.execute("CREATE TYPE problem_status AS ENUM ('active', 'monitoring', 'resolved', 'archived')")
-    op.execute("CREATE TYPE link_type AS ENUM ('depends_on', 'blocks', 'supports_goal', 'related', 'addresses_problem')")
-    op.execute("CREATE TYPE entity_type AS ENUM ('task', 'goal', 'problem')")
+    # Let SQLAlchemy create enum types when referenced by tables.
+    task_status_enum = postgresql.ENUM('open', 'blocked', 'done', 'archived', name='task_status')
+    goal_status_enum = postgresql.ENUM('active', 'paused', 'done', 'archived', name='goal_status')
+    problem_status_enum = postgresql.ENUM('active', 'monitoring', 'resolved', 'archived', name='problem_status')
+    link_type_enum = postgresql.ENUM('depends_on', 'blocks', 'supports_goal', 'related', 'addresses_problem', name='link_type')
+    entity_type_enum = postgresql.ENUM('task', 'goal', 'problem', name='entity_type')
 
     # --- Tables ---
 
@@ -65,7 +67,7 @@ def upgrade() -> None:
         sa.Column('title', sa.Text(), nullable=False),
         sa.Column('title_norm', sa.Text(), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('status', sa.Enum('active', 'paused', 'done', 'archived', name='goal_status'), nullable=False, server_default='active'),
+        sa.Column('status', goal_status_enum, nullable=False, server_default='active'),
         sa.Column('horizon', sa.Text(), nullable=True),
         sa.Column('target_date', sa.Date(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -83,7 +85,7 @@ def upgrade() -> None:
         sa.Column('title', sa.Text(), nullable=False),
         sa.Column('title_norm', sa.Text(), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('status', sa.Enum('active', 'monitoring', 'resolved', 'archived', name='problem_status'), nullable=False, server_default='active'),
+        sa.Column('status', problem_status_enum, nullable=False, server_default='active'),
         sa.Column('severity', sa.SmallInteger(), nullable=True),
         sa.Column('horizon', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -102,7 +104,7 @@ def upgrade() -> None:
         sa.Column('title', sa.Text(), nullable=False),
         sa.Column('title_norm', sa.Text(), nullable=False),
         sa.Column('notes', sa.Text(), nullable=True),
-        sa.Column('status', sa.Enum('open', 'blocked', 'done', 'archived', name='task_status'), nullable=False, server_default='open'),
+        sa.Column('status', task_status_enum, nullable=False, server_default='open'),
         sa.Column('priority', sa.SmallInteger(), nullable=True),
         sa.Column('impact_score', sa.SmallInteger(), nullable=True),
         sa.Column('due_date', sa.Date(), nullable=True),
@@ -123,11 +125,11 @@ def upgrade() -> None:
         'entity_links',
         sa.Column('id', sa.String(), primary_key=True),
         sa.Column('user_id', sa.String(), nullable=False),
-        sa.Column('from_entity_type', sa.Enum('task', 'goal', 'problem', name='entity_type'), nullable=False),
+        sa.Column('from_entity_type', entity_type_enum, nullable=False),
         sa.Column('from_entity_id', sa.String(), nullable=False),
-        sa.Column('to_entity_type', sa.Enum('task', 'goal', 'problem', name='entity_type'), nullable=False),
+        sa.Column('to_entity_type', entity_type_enum, nullable=False),
         sa.Column('to_entity_id', sa.String(), nullable=False),
-        sa.Column('link_type', sa.Enum('depends_on', 'blocks', 'supports_goal', 'related', 'addresses_problem', name='link_type'), nullable=False),
+        sa.Column('link_type', link_type_enum, nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint('user_id', 'from_entity_type', 'from_entity_id', 'to_entity_type', 'to_entity_id', 'link_type', name='uq_entity_links')
     )
@@ -155,7 +157,7 @@ def upgrade() -> None:
         sa.Column('id', sa.String(), primary_key=True),
         sa.Column('user_id', sa.String(), nullable=False),
         sa.Column('chat_id', sa.String(), nullable=False),
-        sa.Column('entity_type', sa.Enum('task', 'goal', 'problem', name='entity_type'), nullable=False),
+        sa.Column('entity_type', entity_type_enum, nullable=False),
         sa.Column('entity_id', sa.String(), nullable=False),
         sa.Column('reason', sa.String(), nullable=True),
         sa.Column('surfaced_at', sa.DateTime(timezone=True), nullable=False),
