@@ -35,7 +35,7 @@ from api.schemas import (
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message,
     format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
-    escape_html, is_query_like_text
+    escape_html, is_query_like_text, format_query_answer
 )
 
 # --- Shared Capture Pipeline ---
@@ -44,6 +44,19 @@ ACTION_DRAFT_TTL_SECONDS = 1800
 
 def _draft_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _is_telegram_sender_allowed(chat_id: str, username: Optional[str]) -> bool:
+    allowed_chat_ids = settings.telegram_allowed_chat_ids
+    allowed_usernames = settings.telegram_allowed_usernames
+    if not allowed_chat_ids and not allowed_usernames:
+        return True
+    if chat_id in allowed_chat_ids:
+        return True
+    normalized_username = (username or "").strip().lstrip("@").lower()
+    if normalized_username and normalized_username in allowed_usernames:
+        return True
+    return False
 
 
 def _parse_draft_reply(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -338,7 +351,7 @@ async def _revise_action_draft(
     draft: ActionDraft, user_id: str, request_id: str, edit_text: str, db: AsyncSession
 ) -> Dict[str, Any]:
     revised_message = f"{draft.source_message}\n\nUser clarification: {edit_text}".strip()
-    grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id)
+    grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id, message=revised_message)
     extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
     extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
     _validate_extraction_payload(extraction)
@@ -426,29 +439,55 @@ async def _confirm_action_draft(
     return applied
 
 
-async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: str) -> Dict[str, Any]:
+def _grounding_terms(message: str) -> set[str]:
+    import re
+    terms = set(re.findall(r"[a-zA-Z0-9]{3,}", (message or "").lower()))
+    return {t for t in terms if t not in {"the", "and", "for", "with", "that", "this", "from", "have", "need"}}
+
+
+async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: str, message: str = "") -> Dict[str, Any]:
     task_rows = (
         await db.execute(
             select(Task)
             .where(Task.user_id == user_id, Task.status != TaskStatus.archived)
             .order_by(Task.updated_at.desc())
-            .limit(20)
+            .limit(80)
         )
     ).scalars().all()
-    tasks = []
-    for task in task_rows:
-        tasks.append(
-            {
-                "id": task.id,
-                "title": task.title,
-                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-                "priority": task.priority,
-                "impact_score": task.impact_score,
-                "urgency_score": task.urgency_score,
-                "notes": task.notes,
-                "due_date": task.due_date.isoformat() if task.due_date else None,
-            }
+    prepared = []
+    terms = _grounding_terms(message)
+    for idx, task in enumerate(task_rows):
+        title_l = (task.title or "").lower()
+        notes_l = (task.notes or "").lower()
+        overlap = 0
+        if terms:
+            for term in terms:
+                if term in title_l:
+                    overlap += 3
+                elif term in notes_l:
+                    overlap += 1
+        status = task.status.value if hasattr(task.status, "value") else str(task.status)
+        status_boost = 2 if status == "open" else 0
+        recency_boost = max(0, 10 - idx)
+        score = overlap + status_boost + recency_boost
+        prepared.append(
+            (
+                score,
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": status,
+                    "priority": task.priority,
+                    "impact_score": task.impact_score,
+                    "urgency_score": task.urgency_score,
+                    "notes": task.notes,
+                    "due_date": task.due_date.isoformat() if task.due_date else None,
+                },
+            )
         )
+    prepared.sort(key=lambda item: item[0], reverse=True)
+    max_items = 12 if terms else 8
+    tasks = [item[1] for item in prepared[:max_items]]
     return {"chat_id": chat_id, "current_date_utc": utc_now().date().isoformat(), "tasks": tasks}
 
 
@@ -685,7 +724,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             await send_message(chat_id, "Please provide a question. Example: <code>/ask What tasks are overdue?</code>")
             return
         response = await query_ask(QueryAskRequest(chat_id=chat_id, query=question), user_id=user_id, db=db)
-        await send_message(chat_id, escape_html(response.answer))
+        await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
 
     else:
         supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done\n/ask &lt;question&gt; - Ask a read-only question"
@@ -706,7 +745,10 @@ def _build_telegram_deep_link(raw_token: str) -> Optional[str]:
 
 async def _issue_telegram_link_token(user_id: str, db: AsyncSession) -> TelegramLinkTokenCreateResponse:
     raw_token = secrets.token_urlsafe(24)
-    expires_at = utc_now() + timedelta(seconds=settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS)
+    if settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS <= 0:
+        expires_at = utc_now() + timedelta(days=36500)
+    else:
+        expires_at = utc_now() + timedelta(seconds=settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS)
     record = TelegramLinkToken(
         id=f"tlt_{uuid.uuid4().hex[:12]}",
         token_hash=_hash_link_token(raw_token),
@@ -745,7 +787,7 @@ async def _consume_telegram_link_token(chat_id: str, username: Optional[str], ra
     expires_at = token_row.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < utc_now():
+    if settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS > 0 and expires_at < utc_now():
         return False
 
     mapping_stmt = select(TelegramUserMap).where(TelegramUserMap.chat_id == chat_id)
@@ -1108,6 +1150,9 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
     chat_id = data["chat_id"]
     text = data["text"]
     username = data.get("username")
+    if not _is_telegram_sender_allowed(chat_id, username):
+        logger.warning("Ignoring telegram message from disallowed sender chat_id=%s username=%s", chat_id, username)
+        return {"status": "ignored"}
     
     # 3. Command Routing
     command, args = extract_command(text)
@@ -1155,7 +1200,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             elif open_draft and draft_action is None and not is_query_like_text(text):
                 await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
             else:
-                grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id)
+                grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id, message=text)
                 planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
                 intent = planned.get("intent") if isinstance(planned, dict) else None
                 actions = planned.get("actions") if isinstance(planned, dict) else None
@@ -1180,7 +1225,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
 
                 if intent == "query":
                     response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
-                    await send_message(chat_id, escape_html(response.answer))
+                    await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
                     return {"status": "ok"}
 
                 extraction = _actions_to_extraction(actions)
@@ -1263,7 +1308,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
     for attempt_num in range(1, 3):
         start_time = time.time()
         try:
-            grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id)
+            grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id, message=payload.message)
             extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
             extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
             usage = _extract_usage(extraction)

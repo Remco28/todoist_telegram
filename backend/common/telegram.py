@@ -186,3 +186,23 @@ def format_capture_ack(applied: Dict[str, int]) -> str:
         return "Thought logged. No actionable entities extracted."
     
     return "✅ Captured: " + ", ".join(parts) + "."
+
+
+def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:
+    raw = (answer or "").strip()
+    if not raw:
+        return "I don't have an answer yet."
+
+    # Break into readable lines by sentence boundaries.
+    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", raw) if c.strip()]
+    if not chunks:
+        chunks = [raw]
+
+    lines = ["<b>Answer</b>", ""]
+    for chunk in chunks[:8]:
+        lines.append(f"• {escape_html(chunk)}")
+    if len(chunks) > 8:
+        lines.append("• ...")
+    if follow_up:
+        lines.extend(["", f"<i>Follow-up:</i> {escape_html(follow_up)}"])
+    return "\n".join(lines)

@@ -446,3 +446,11 @@
 - Updated planning score to consider explicit urgency and fixed priority semantic to treat `1` as highest.
 - Added regression tests for field normalization and urgency inference.
 - Validation: `cd backend && pytest -q` => 62 passed, 1 skipped.
+[2026-02-11 19:24] [DEVELOPER]: IMPL DONE: Telegram UX formatting + token-efficiency grounding + access restrictions.
+- Added `format_query_answer` for cleaner Telegram query responses (section header + bullet lines + optional follow-up).
+- Telegram `/ask` and conversational query replies now use formatted output instead of raw long blobs.
+- Added relevance-aware grounding selection for extraction/planner context (token overlap + recency scoring, top-N trimming).
+- Added Telegram sender allowlist controls (`TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ALLOWED_USERNAMES`) and ignore-by-default for disallowed senders.
+- Added non-expiring link-token mode by setting `TELEGRAM_LINK_TOKEN_TTL_SECONDS<=0`.
+- Added tests for disallowed webhook sender and non-expiring link-token issuance.
+- Validation: `cd backend && pytest -q` => 64 passed, 1 skipped.

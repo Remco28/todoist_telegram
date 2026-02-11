@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     TELEGRAM_LINK_TOKEN_TTL_SECONDS: int = 900
     TELEGRAM_BOT_USERNAME: Optional[str] = None
     TELEGRAM_DEEP_LINK_BASE_URL: Optional[str] = None
+    TELEGRAM_ALLOWED_CHAT_IDS: Optional[str] = None  # comma-separated
+    TELEGRAM_ALLOWED_USERNAMES: Optional[str] = None  # comma-separated (without @)
 
     # Phase 5 Todoist Settings
     TODOIST_TOKEN: Optional[str] = None
@@ -96,5 +98,22 @@ class Settings(BaseSettings):
             if token and user_id:
                 mapping[token] = user_id
         return mapping
+
+    @property
+    def telegram_allowed_chat_ids(self) -> List[str]:
+        if not self.TELEGRAM_ALLOWED_CHAT_IDS:
+            return []
+        return [v.strip() for v in self.TELEGRAM_ALLOWED_CHAT_IDS.split(",") if v.strip()]
+
+    @property
+    def telegram_allowed_usernames(self) -> List[str]:
+        if not self.TELEGRAM_ALLOWED_USERNAMES:
+            return []
+        values = []
+        for raw in self.TELEGRAM_ALLOWED_USERNAMES.split(","):
+            value = raw.strip().lstrip("@").lower()
+            if value:
+                values.append(value)
+        return values
 
 settings = Settings()

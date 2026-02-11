@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.main import handle_telegram_command
 from api.schemas import AppliedChanges, QueryResponseV1
+from common.config import settings
 
 WEBHOOK_URL = "/v1/integrations/telegram/webhook"
 VALID_SECRET = "test_secret"
@@ -74,6 +75,26 @@ def test_webhook_ignores_non_message_update(app_no_db):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ignored"
+
+
+def test_webhook_ignores_disallowed_sender(app_no_db, mock_send):
+    old_chat_ids = settings.TELEGRAM_ALLOWED_CHAT_IDS
+    old_usernames = settings.TELEGRAM_ALLOWED_USERNAMES
+    settings.TELEGRAM_ALLOWED_CHAT_IDS = "999999"
+    settings.TELEGRAM_ALLOWED_USERNAMES = "allowed_user"
+    try:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("hello", chat_id="12345"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        mock_send.assert_not_awaited()
+    finally:
+        settings.TELEGRAM_ALLOWED_CHAT_IDS = old_chat_ids
+        settings.TELEGRAM_ALLOWED_USERNAMES = old_usernames
 
 
 def test_command_today_routes_successfully(app_no_db):

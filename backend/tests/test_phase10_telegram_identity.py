@@ -9,7 +9,9 @@ from api.main import (
     get_db,
     _consume_telegram_link_token,
     _hash_link_token,
+    _issue_telegram_link_token,
 )
+from common.config import settings
 from common.models import TelegramLinkToken, TelegramUserMap
 
 
@@ -134,5 +136,22 @@ def test_consume_link_token_rejects_expired_or_consumed():
         fake_db_consumed = AsyncMock()
         fake_db_consumed.execute = AsyncMock(return_value=_FakeResult(one_or_none=consumed))
         assert await _consume_telegram_link_token("12345", "tester", raw_token, fake_db_consumed) is False
+
+    asyncio.run(_run())
+
+
+def test_issue_link_token_supports_non_expiring_mode():
+    async def _run():
+        fake_db = AsyncMock()
+        fake_db.add = MagicMock()
+        fake_db.commit = AsyncMock()
+        old_ttl = settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS
+        settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS = 0
+        try:
+            response = await _issue_telegram_link_token("usr_dev", fake_db)
+            assert response.link_token
+            assert response.expires_at.year >= 2100
+        finally:
+            settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS = old_ttl
 
     asyncio.run(_run())
