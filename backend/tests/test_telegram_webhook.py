@@ -230,6 +230,8 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
             {"id": "tsk_1", "title": "Do French homework", "status": "open"},
             {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
             {"id": "tsk_3", "title": "Read a chapter and annotate it", "status": "open"},
+            {"id": "tsk_4", "title": "Renew New York Public library card", "status": "open"},
+            {"id": "tsk_5", "title": "Take Amy's car for a car wash", "status": "open"},
         ],
     }
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
@@ -250,7 +252,7 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
         resp = _post(
             app_no_db,
             WEBHOOK_URL,
-            json=_tg_update("All of those assignments are done now. Mark them as complete."),
+            json=_tg_update("Reading the chapter, memorizing the script, and the french homework are all done. Mark them as complete."),
             headers=_headers(),
         )
         assert resp.status_code == 200
@@ -261,6 +263,9 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
         assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
         assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
         assert extraction["tasks"][2]["target_task_id"] == "tsk_3"
+        extracted_ids = {t["target_task_id"] for t in extraction["tasks"]}
+        assert "tsk_4" not in extracted_ids
+        assert "tsk_5" not in extracted_ids
 
 
 def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):

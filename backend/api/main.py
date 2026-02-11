@@ -276,6 +276,36 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
     if not isinstance(rows, list):
         return []
 
+    # Prefer explicit mentions in the current message over broad pronoun resolution.
+    message_terms = _grounding_terms(raw)
+    message_terms = {
+        term
+        for term in message_terms
+        if term
+        not in {
+            "mark",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "close",
+            "closed",
+            "all",
+            "those",
+            "them",
+            "that",
+            "these",
+            "this",
+            "it",
+            "assignments",
+            "tasks",
+            "ones",
+            "now",
+        }
+    }
+
+    explicit_matches: List[Dict[str, Any]] = []
     actions: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -289,14 +319,23 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
             continue
         if not isinstance(task_id, str) or not task_id.strip():
             continue
-        actions.append(
-            {
-                "title": title.strip(),
-                "action": "complete",
-                "status": "done",
-                "target_task_id": task_id.strip(),
-            }
-        )
+
+        action_item = {
+            "title": title.strip(),
+            "action": "complete",
+            "status": "done",
+            "target_task_id": task_id.strip(),
+        }
+        actions.append(action_item)
+
+        title_terms = _grounding_terms(title.strip().lower())
+        overlap = title_terms.intersection(message_terms)
+        if overlap:
+            explicit_matches.append(action_item)
+
+    if explicit_matches:
+        return explicit_matches
+
     return actions
 
 
