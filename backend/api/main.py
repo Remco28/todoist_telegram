@@ -4,7 +4,7 @@ import json
 import time
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
@@ -241,6 +241,10 @@ async def _consume_telegram_link_token(chat_id: str, username: Optional[str], ra
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Todoist MCP API")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 # DB Setup
 engine = create_async_engine(settings.DATABASE_URL, echo=settings.APP_ENV == "dev")
@@ -583,7 +587,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 source=settings.TELEGRAM_DEFAULT_SOURCE, message=text,
                 extraction=extraction, request_id=request_id
             )
-            await send_message(chat_id, format_capture_ack(applied.dict()))
+            await send_message(chat_id, format_capture_ack(applied.model_dump()))
         except Exception as e:
             logger.error(f"Telegram capture failed: {e}")
             await send_message(chat_id, "Sorry, I had trouble processing that thought. Please try again later.")
@@ -631,7 +635,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
         client_msg_id=payload.client_msg_id
     )
     resp = ThoughtCaptureResponse(status="ok", inbox_item_id=inbox_item_id, applied=applied, summary_refresh_enqueued=True)
-    await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp.dict())
+    await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp.model_dump())
     return resp
 
 # --- Entity CRUD ---
@@ -649,7 +653,7 @@ async def list_tasks(status: Optional[TaskStatus] = None, goal_id: Optional[str]
 @app.patch("/v1/tasks/{task_id}", dependencies=[Depends(check_idempotency)])
 async def update_task(request: Request, task_id: str, payload: TaskUpdate, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
-    update_data = payload.dict(exclude_unset=True)
+    update_data = payload.model_dump(exclude_unset=True)
     if not update_data: raise HTTPException(status_code=400, detail="No fields to update")
     if "status" in update_data: update_data["completed_at"] = datetime.utcnow() if update_data["status"] == TaskStatus.done else None
     stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(**update_data)
@@ -666,7 +670,7 @@ async def list_problems(user_id: str = Depends(get_authenticated_user), db: Asyn
 @app.patch("/v1/problems/{problem_id}", dependencies=[Depends(check_idempotency)])
 async def update_problem(request: Request, problem_id: str, payload: ProblemUpdate, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
-    stmt = update(Problem).where(Problem.id == problem_id, Problem.user_id == user_id).values(**payload.dict(exclude_unset=True))
+    stmt = update(Problem).where(Problem.id == problem_id, Problem.user_id == user_id).values(**payload.model_dump(exclude_unset=True))
     if (await db.execute(stmt)).rowcount == 0: raise HTTPException(status_code=404, detail="Problem not found")
     await db.commit()
     resp = {"status": "ok"}
@@ -680,7 +684,7 @@ async def list_goals(user_id: str = Depends(get_authenticated_user), db: AsyncSe
 @app.patch("/v1/goals/{goal_id}", dependencies=[Depends(check_idempotency)])
 async def update_goal(request: Request, goal_id: str, payload: GoalUpdate, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
-    stmt = update(Goal).where(Goal.id == goal_id, Goal.user_id == user_id).values(**payload.dict(exclude_unset=True))
+    stmt = update(Goal).where(Goal.id == goal_id, Goal.user_id == user_id).values(**payload.model_dump(exclude_unset=True))
     if (await db.execute(stmt)).rowcount == 0: raise HTTPException(status_code=404, detail="Goal not found")
     await db.commit()
     resp = {"status": "ok"}
@@ -714,7 +718,7 @@ async def plan_refresh(request: Request, payload: PlanRefreshRequest, user_id: s
     job_id = str(uuid.uuid4())
     await redis_client.rpush("default_queue", json.dumps({"job_id": job_id, "topic": "plan.refresh", "payload": {"user_id": user_id, "chat_id": payload.chat_id}}))
     resp = PlanRefreshResponse(status="ok", enqueued=True, job_id=job_id)
-    await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp.dict())
+    await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp.model_dump())
     return resp
 
 @app.get("/v1/plan/get_today", response_model=PlanResponseV1, dependencies=[Depends(get_authenticated_user)])
@@ -847,7 +851,7 @@ async def get_todoist_sync_status(user_id: str = Depends(get_authenticated_user)
             )
         )
     ).scalar()
-    reconcile_window_cutoff = datetime.utcnow() - timedelta(minutes=settings.TODOIST_RECONCILE_WINDOW_MINUTES)
+    reconcile_window_cutoff = utc_now() - timedelta(minutes=settings.TODOIST_RECONCILE_WINDOW_MINUTES)
     reconcile_error_count = (
         await db.execute(
             select(func.count(EventLog.id)).where(

@@ -13,6 +13,7 @@
 - Phase 9: Completed
 - Phase 10: Completed
 - Phase 11: Completed
+- Phase 12: In progress
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -153,3 +154,14 @@
 - Tasks changed in Todoist are reconciled locally on schedule or trigger.
 - Drift is measurable (metrics/events) and reduced in normal operation.
 - Reconciliation behavior is deterministic and auditable.
+
+## Phase 12: Staging Validation and Release Readiness
+### Goals
+- Validate end-to-end behavior in staging, including Todoist reconciliation paths.
+- Harden release and incident checklists for single-operator execution.
+- Reduce high-frequency deprecation noise in actively touched runtime paths.
+
+### Exit Criteria
+- Staging smoke validates capture/query/plan/sync/reconcile flows.
+- Release checklist and restore incident procedure are complete and actionable.
+- Deprecated datetime/pydantic usage is reduced in Phase 10-12 touched runtime paths without regressions.

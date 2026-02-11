@@ -22,6 +22,12 @@
 - `docs/contracts/`: concrete v1 JSON Schemas for `extract`, `query`, and `plan`.
 - `docs/LEGACY_DOC_REVIEW.md`: keep/merge/archive/discard recommendations for old docs.
 
+## Release Readiness
+- `ops/DEPLOY_CHECKLIST.md`: release gates, deploy sequence, rollback checklist.
+- `ops/RESTORE_RUNBOOK.md`: restore steps and release-incident first-response flow.
+- Staging smoke invocation:
+  - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
+
 ## Legacy Archive
 - `archive/legacy_docs/diy_todo/`: earlier planning set kept for reference.
 - `archive/legacy_docs/oldproject/`: prior Todoist MCP prototype artifacts.

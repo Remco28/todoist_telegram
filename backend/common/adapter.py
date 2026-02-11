@@ -14,6 +14,46 @@ logger = logging.getLogger(__name__)
 
 class LLMAdapter:
     @staticmethod
+    def _normalize_extract_task_item(candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+        title = candidate.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return None
+        item: Dict[str, Any] = {"title": title.strip()}
+        status = candidate.get("status")
+        if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
+            item["status"] = status
+        priority = candidate.get("priority")
+        if isinstance(priority, int) and 1 <= priority <= 4:
+            item["priority"] = priority
+        return item
+
+    @staticmethod
+    def _normalize_extract_title_item(candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+        title = candidate.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return None
+        return {"title": title.strip()}
+
+    @staticmethod
+    def _normalize_extract_link_item(candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+        link = {
+            "from_type": candidate.get("from_type"),
+            "from_title": candidate.get("from_title"),
+            "to_type": candidate.get("to_type"),
+            "to_title": candidate.get("to_title"),
+            "link_type": candidate.get("link_type"),
+        }
+        if all(isinstance(v, str) and v.strip() for v in link.values()):
+            return {k: v.strip() for k, v in link.items()}
+        return None
+
+    @staticmethod
     def _normalize_usage(candidate: Any) -> Optional[Dict[str, int]]:
         if not isinstance(candidate, dict):
             return None
@@ -148,12 +188,39 @@ class LLMAdapter:
     @staticmethod
     def _normalize_extract_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
-            normalized = {
-                "tasks": payload.get("tasks", []),
-                "goals": payload.get("goals", []),
-                "problems": payload.get("problems", []),
-                "links": payload.get("links", []),
-            }
+            tasks = [
+                item
+                for item in (
+                    LLMAdapter._normalize_extract_task_item(task)
+                    for task in payload.get("tasks", [])
+                )
+                if item is not None
+            ]
+            goals = [
+                item
+                for item in (
+                    LLMAdapter._normalize_extract_title_item(goal)
+                    for goal in payload.get("goals", [])
+                )
+                if item is not None
+            ]
+            problems = [
+                item
+                for item in (
+                    LLMAdapter._normalize_extract_title_item(problem)
+                    for problem in payload.get("problems", [])
+                )
+                if item is not None
+            ]
+            links = [
+                item
+                for item in (
+                    LLMAdapter._normalize_extract_link_item(link)
+                    for link in payload.get("links", [])
+                )
+                if item is not None
+            ]
+            normalized = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
         else:
             proposals = payload.get("proposals")
             if not isinstance(proposals, dict):

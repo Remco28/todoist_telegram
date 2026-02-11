@@ -341,3 +341,46 @@
 [2026-02-10 14:14] [ARCHITECT]: DOC UPDATE: Marked Phase 11 complete and updated next-session priorities in `docs/PHASES.md` and `docs/EXECUTION_PLAN.md`.
 [2026-02-10 14:19] [ARCHITECT]: TRANSITION: Merged `architect/phase-11-todoist-reconciliation` into `main` after Phase 11 pass.
 [2026-02-10 14:20] [ARCHITECT]: REMOTE UPDATED: Pushed Phase 11 branch and merged `main` to GitHub.
+[2026-02-10 17:54] [ARCHITECT]: TRANSITION: Created branch `architect/phase-12-release-readiness` for next phase work.
+[2026-02-10 17:55] [ARCHITECT]: SPEC READY: Published Phase 12 implementation spec at `comms/tasks/2026-02-10-phase-12-release-readiness-spec.md` (staging reconcile validation, release/incident checklist hardening, and scoped warning reduction).
+[2026-02-10 18:00] [CLAUDE]: IMPL IN_PROGRESS: Phase 12 release-readiness implementation (staging reconcile smoke coverage, ops checklist/runbook hardening, scoped warning cleanup, and docs updates).
+[2026-02-10 18:08] [CLAUDE]: IMPL DONE: Phase 12 release-readiness implementation complete.
+- Extended staging smoke in `backend/tests/test_phase8_staging_smoke.py` with reconcile trigger/status coverage:
+  - `POST /v1/sync/todoist/reconcile`
+  - `GET /v1/sync/todoist/status` reconcile fields assertions.
+- Updated release operations docs:
+  - `ops/DEPLOY_CHECKLIST.md`: added explicit v1 release gates (automated/manual/sign-off).
+  - `ops/RESTORE_RUNBOOK.md`: added "Release Incident First 15 Minutes" response section.
+- Updated docs index/release pointers:
+  - `docs/README.md`: added Release Readiness links and staging smoke invocation.
+- Applied scoped warning cleanup in active runtime files:
+  - `backend/api/schemas.py`: replaced deprecated list constraints (`min_items/max_items`) with `min_length/max_length`.
+  - `backend/api/main.py`: replaced low-risk deprecated pydantic calls (`dict` -> `model_dump`) in high-traffic paths and added scoped timezone-aware cutoff helper usage in reconcile status.
+  - `backend/worker/main.py`: added timezone-aware helper for sync/reconcile/plan-refresh paths and replaced deprecated pydantic `json()` usage with `model_dump_json()` in plan cache writes.
+- Updated execution planning doc:
+  - `docs/EXECUTION_PLAN.md`: added explicit Phase 12 Release Exit Gates section.
+- Validation:
+  - `python3 -m py_compile backend/tests/test_phase8_staging_smoke.py backend/api/main.py backend/worker/main.py backend/api/schemas.py`
+  - `cd backend && pytest -q tests/test_phase8_staging_smoke.py tests/test_todoist_sync.py` => 8 passed, 1 skipped
+  - `cd backend && pytest -q` => 49 passed, 1 skipped
+- Warning reduction evidence (full backend run): deprecation warnings reduced from 84 to 45 after scoped cleanup.
+[2026-02-10 18:16] [ARCHITECT]: REVIEW PASS: Phase 12 implementation accepted for code/spec scope. Reconcile smoke coverage, release/incident checklist hardening, and scoped warning reduction are correctly implemented and backend tests remain green.
+[2026-02-10 18:16] [ARCHITECT]: TEST GAP: Staging smoke run evidence is still pending environment execution (`RUN_STAGING_SMOKE=1 ... tests/test_phase8_staging_smoke.py`) and should be captured before final v1 release sign-off.
+[2026-02-10 18:23] [ARCHITECT]: STAGING GATE BLOCKED: Attempted `RUN_STAGING_SMOKE=1 pytest -q tests/test_phase8_staging_smoke.py` in this environment; failed due missing required env var `STAGING_API_BASE_URL`. Phase 12 code/docs pass locally; staging evidence remains the only pending release gate.
+[2026-02-11 08:30] [ARCHITECT]: STAGING VALIDATION PASS: End-to-end staging deployment verified on branch `architect/phase-12-release-readiness`.
+- Infrastructure: API + worker services deployed via Dockerfiles (`backend/Dockerfile`, `backend/Dockerfile.worker`) with dedicated staging Postgres/Redis.
+- Migrations: `alembic upgrade head` succeeded after migration runtime fixes.
+- Smoke evidence:
+  - `GET /health/live` => `{"status":"ok"}`
+  - `GET /health/ready` => `{"status":"ready"}`
+  - `POST /v1/capture/thought` => 200, created 2 tasks (`tasks_created=2`).
+  - `POST /v1/sync/todoist` => 200 (job enqueued).
+  - `POST /v1/sync/todoist/reconcile` => 200 (job enqueued).
+  - `GET /v1/sync/todoist/status` => 200 with `last_reconcile_at` populated and `reconcile_error_count=0`.
+  - `POST /v1/query/ask` => 200 with concrete task answer (no fallback).
+- Runtime fixes landed during staging bring-up:
+  - `backend/migrations/env.py`: async migration execution path for `postgresql+asyncpg`.
+  - `backend/migrations/versions/5638dfedf9dc_initial_schema.py`: remove duplicate enum creation path.
+  - `backend/common/models.py`: align SQLAlchemy enum names with migrated Postgres enum types (`task_status`, `goal_status`, `problem_status`, `link_type`, `entity_type`).
+  - `backend/common/adapter.py`: sanitize provider extract payload list entries before API validation.
+[2026-02-11 08:31] [ARCHITECT]: CLOSEOUT: Phase 12 release-readiness gates satisfied in staging. Proceeding with merge to `main`.

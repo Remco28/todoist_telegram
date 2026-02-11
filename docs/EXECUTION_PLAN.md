@@ -12,6 +12,7 @@
 - Phase 9 provider realization completed.
 - Phase 10 Telegram identity unification completed.
 - Phase 11 Todoist bidirectional reconciliation completed.
+- Phase 12 staging validation and release readiness is in progress.
 - Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
 
 ## Implementation Tracks
@@ -22,10 +23,10 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Validate Phase 11 reconciliation behavior against staging data.
-2. Reduce deprecation warnings (`datetime.utcnow`, pydantic v2 field deprecations) in core modules/tests.
-3. Prepare v1 release checklist and deployment notes.
-4. Draft next-phase roadmap beyond v1 completion.
+1. Extend staging smoke coverage to include reconcile trigger/status path.
+2. Finalize release and restore operational checklists for v1 launch.
+3. Reduce deprecated datetime/pydantic calls in Phase 10-12 touched runtime paths.
+4. Collect release evidence and finalize go/no-go checklist.
 
 ## Priority Backlog (Next After Phase 8)
 1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.
@@ -57,6 +58,16 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Run staging validation for Todoist reconcile behavior and drift metrics.
-2. Triage and schedule technical-debt cleanup for warning reductions.
-3. Decide next feature phase based on production feedback.
+1. Implement Phase 12 release-readiness spec and run full backend tests.
+2. Run opt-in staging smoke with reconcile coverage and capture evidence.
+3. Perform architect review and close out v1 readiness package.
+
+## Phase 12 Release Exit Gates
+1. Automated:
+   - `cd backend && pytest -q` passes.
+   - `RUN_STAGING_SMOKE=1 ... pytest -q tests/test_phase8_staging_smoke.py` passes with reconcile path.
+2. Operational:
+   - `ops/DEPLOY_CHECKLIST.md` release sign-off fields completed.
+   - `ops/RESTORE_RUNBOOK.md` first-15-minute incident process acknowledged by operator.
+3. Technical debt:
+   - Deprecated warnings reduced in touched runtime files versus previous baseline.
