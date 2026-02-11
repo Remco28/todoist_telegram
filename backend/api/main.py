@@ -1,6 +1,7 @@
 import uuid
 import hashlib
 import json
+import copy
 import time
 import logging
 import secrets
@@ -88,7 +89,7 @@ def _parse_draft_callback(callback_data: str) -> tuple[Optional[str], Optional[s
 
 
 def _draft_set_awaiting_edit_input(draft: ActionDraft, value: bool) -> None:
-    proposal = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
+    proposal = copy.deepcopy(draft.proposal_json) if isinstance(draft.proposal_json, dict) else {}
     meta = proposal.get("_meta") if isinstance(proposal.get("_meta"), dict) else {}
     meta["awaiting_edit_input"] = bool(value)
     proposal["_meta"] = meta
@@ -105,7 +106,7 @@ def _draft_is_awaiting_edit_input(draft: ActionDraft) -> bool:
 
 
 def _draft_set_proposal_message_id(draft: ActionDraft, message_id: int) -> None:
-    proposal = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
+    proposal = copy.deepcopy(draft.proposal_json) if isinstance(draft.proposal_json, dict) else {}
     meta = proposal.get("_meta") if isinstance(proposal.get("_meta"), dict) else {}
     meta["proposal_message_id"] = int(message_id)
     proposal["_meta"] = meta

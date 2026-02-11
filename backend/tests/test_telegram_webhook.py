@@ -13,7 +13,11 @@ from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
 
-from api.main import handle_telegram_command
+from api.main import (
+    handle_telegram_command,
+    _draft_set_awaiting_edit_input,
+    _draft_set_proposal_message_id,
+)
 from api.schemas import AppliedChanges, QueryResponseV1
 from common.config import settings
 
@@ -377,6 +381,28 @@ def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send):
         assert resp.status_code == 200
         edit_msg.assert_awaited_once()
         mock_send.assert_not_awaited()
+
+
+def test_draft_meta_updates_use_new_json_object():
+    draft = type(
+        "Draft",
+        (),
+        {
+            "proposal_json": {"tasks": [{"title": "Task A"}], "_meta": {"existing": True}},
+        },
+    )()
+    original = draft.proposal_json
+
+    _draft_set_awaiting_edit_input(draft, True)
+    after_awaiting = draft.proposal_json
+    assert after_awaiting is not original
+    assert after_awaiting["_meta"]["existing"] is True
+    assert after_awaiting["_meta"]["awaiting_edit_input"] is True
+
+    _draft_set_proposal_message_id(draft, 123)
+    after_message_id = draft.proposal_json
+    assert after_message_id is not after_awaiting
+    assert after_message_id["_meta"]["proposal_message_id"] == 123
 
 
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
