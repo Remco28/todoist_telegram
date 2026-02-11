@@ -111,6 +111,8 @@ def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_d
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
         "api.main._apply_capture", new_callable=AsyncMock
@@ -127,6 +129,8 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
         "api.main._apply_capture", new_callable=AsyncMock

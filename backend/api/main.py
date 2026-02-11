@@ -189,7 +189,8 @@ async def _revise_action_draft(
     draft: ActionDraft, user_id: str, request_id: str, edit_text: str, db: AsyncSession
 ) -> Dict[str, Any]:
     revised_message = f"{draft.source_message}\n\nUser clarification: {edit_text}".strip()
-    extraction = await adapter.extract_structured_updates(revised_message)
+    grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id)
+    extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
@@ -243,6 +244,28 @@ async def _confirm_action_draft(
     )
     return applied
 
+
+async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: str) -> Dict[str, Any]:
+    task_rows = (
+        await db.execute(
+            select(Task)
+            .where(Task.user_id == user_id, Task.status != TaskStatus.archived)
+            .order_by(Task.updated_at.desc())
+            .limit(20)
+        )
+    ).scalars().all()
+    tasks = []
+    for task in task_rows:
+        tasks.append(
+            {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+                "priority": task.priority,
+            }
+        )
+    return {"chat_id": chat_id, "tasks": tasks}
+
 async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
                          message: str, extraction: dict, request_id: str,
                          client_msg_id: Optional[str] = None) -> tuple:
@@ -259,12 +282,47 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
     entity_map = {}
     for t_data in extraction.get("tasks", []):
         title_norm = t_data["title"].lower().strip()
-        stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
-        existing = (await db.execute(stmt)).scalar_one_or_none()
+        existing = None
+        target_task_id = t_data.get("target_task_id")
+        if isinstance(target_task_id, str) and target_task_id.strip():
+            target_stmt = select(Task).where(Task.user_id == user_id, Task.id == target_task_id.strip())
+            existing = (await db.execute(target_stmt)).scalar_one_or_none()
+        if existing is None:
+            stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
+            existing = (await db.execute(stmt)).scalar_one_or_none()
+        action = t_data.get("action")
         if existing:
+            existing.title = t_data["title"]
+            existing.title_norm = title_norm
+            if "priority" in t_data:
+                existing.priority = t_data.get("priority")
+            if action == "archive":
+                existing.status = TaskStatus.archived
+                existing.archived_at = datetime.utcnow()
+            elif action == "complete":
+                existing.status = TaskStatus.done
+                existing.completed_at = datetime.utcnow()
+            elif "status" in t_data and t_data.get("status"):
+                existing.status = t_data.get("status")
+                status_value = t_data.get("status")
+                if status_value == TaskStatus.done or status_value == "done":
+                    existing.completed_at = datetime.utcnow()
+            existing.updated_at = datetime.utcnow()
             entity_map[(EntityType.task, title_norm)] = existing.id
             applied.tasks_updated += 1
         else:
+            if action in {"archive", "complete", "noop"}:
+                db.add(
+                    EventLog(
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="task_action_skipped_missing_target",
+                        payload_json={"title": t_data.get("title"), "action": action},
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                continue
             task_id = f"tsk_{uuid.uuid4().hex[:12]}"
             db.add(Task(
                 id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
@@ -819,7 +877,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
                 await send_message(chat_id, escape_html(response.answer))
             else:
-                extraction = await adapter.extract_structured_updates(text)
+                grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id)
+                extraction = await adapter.extract_structured_updates(text, grounding=grounding)
                 _validate_extraction_payload(extraction)
                 await _create_action_draft(
                     db=db,
@@ -848,7 +907,8 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
     for attempt_num in range(1, 3):
         start_time = time.time()
         try:
-            extraction = await adapter.extract_structured_updates(payload.message)
+            grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id)
+            extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             _validate_extraction_payload(extraction)

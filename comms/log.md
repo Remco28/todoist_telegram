@@ -405,3 +405,10 @@
 - Added preview formatting for proposals and pending-draft guidance.
 - Added webhook tests for proposal creation, question read-only routing, and `yes` draft apply behavior.
 - Validation: `cd backend && pytest -q` => 52 passed, 1 skipped.
+[2026-02-11 17:46] [DEVELOPER]: IMPL DONE: Extraction-quality upgrade (prompt+grounding+action semantics).
+- Added extraction grounding builder from current user tasks and wired it into Telegram draft extraction, draft revision, and API capture extraction calls.
+- Upgraded extraction prompt contract to prefer update/complete/archive over duplicate creates and support `action` + `target_task_id` task semantics.
+- Extended adapter normalization to accept `task_actions` shape and preserve action/target/confidence fields.
+- Updated capture apply pipeline to honor action semantics when matching existing tasks (complete/archive/update) and skip invalid action-only creates without target.
+- Added adapter test coverage for `task_actions` normalization and retained full suite pass (`53 passed, 1 skipped`).
+- Updated `docs/PROMPT_CONTRACT.md` to document action semantics and grounding expectations.

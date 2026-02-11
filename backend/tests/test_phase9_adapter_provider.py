@@ -70,6 +70,33 @@ def test_extract_success_normalization_and_usage():
     asyncio.run(_run())
 
 
+def test_extract_task_actions_shape_normalizes_to_tasks():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"task_actions":[{"title":"Change oil","action":"complete","target_task_id":"tsk_123","confidence":0.9}]}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("I do not need to change oil anymore", grounding={"tasks": []})
+            assert out["tasks"][0]["title"] == "Change oil"
+            assert out["tasks"][0]["action"] == "complete"
+            assert out["tasks"][0]["status"] == "done"
+            assert out["tasks"][0]["target_task_id"] == "tsk_123"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_malformed_payload_returns_safe_fallback():
     async def _run():
         adapter = LLMAdapter()

@@ -17,6 +17,10 @@ Keep model behavior consistent, auditable, and token-efficient across providers.
 
 ## Output Requirements
 - `extract` must return strict JSON with schema version.
+- `extract` should include task action semantics where possible:
+  - per-task `action`: `create|update|complete|archive|noop`
+  - optional `target_task_id` when referencing existing tasks.
+  - default preference: resolve against provided grounding candidates before creating near-duplicates.
 - `query` returns concise text plus optional cited entity ids.
 - `plan` returns ordered items and rationale fields.
 - `summarize` returns compact facts and open questions.
@@ -38,5 +42,6 @@ Keep model behavior consistent, auditable, and token-efficient across providers.
 ## Cost and Efficiency Controls
 - Keep system policy short and stable.
 - Prefer retrieval snippets over transcript replay.
+- Provide compact extraction grounding (recent tasks/goals/problems) so model can update existing entities rather than inventing duplicates.
 - Avoid LLM use for deterministic transforms.
 - Track per-operation token and cost budgets.

@@ -21,12 +21,25 @@ class LLMAdapter:
         if not isinstance(title, str) or not title.strip():
             return None
         item: Dict[str, Any] = {"title": title.strip()}
+        action = candidate.get("action")
+        if isinstance(action, str) and action in {"create", "update", "complete", "archive", "noop"}:
+            item["action"] = action
+            if action == "complete":
+                item["status"] = "done"
+            elif action == "archive":
+                item["status"] = "archived"
         status = candidate.get("status")
         if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
             item["status"] = status
         priority = candidate.get("priority")
         if isinstance(priority, int) and 1 <= priority <= 4:
             item["priority"] = priority
+        target_task_id = candidate.get("target_task_id")
+        if isinstance(target_task_id, str) and target_task_id.strip():
+            item["target_task_id"] = target_task_id.strip()
+        confidence = candidate.get("confidence")
+        if isinstance(confidence, (int, float)):
+            item["confidence"] = float(confidence)
         return item
 
     @staticmethod
@@ -187,7 +200,22 @@ class LLMAdapter:
 
     @staticmethod
     def _normalize_extract_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        if all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
+        task_actions = payload.get("task_actions")
+        if isinstance(task_actions, list):
+            tasks = []
+            for candidate in task_actions:
+                if not isinstance(candidate, dict):
+                    continue
+                normalized = LLMAdapter._normalize_extract_task_item(candidate)
+                if normalized is not None:
+                    tasks.append(normalized)
+            normalized = {
+                "tasks": tasks,
+                "goals": [],
+                "problems": [],
+                "links": [],
+            }
+        elif all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
             tasks = [
                 item
                 for item in (
@@ -301,16 +329,22 @@ class LLMAdapter:
             normalized["follow_up_question"] = follow_up
         return normalized
 
-    async def extract_structured_updates(self, message: str) -> Dict[str, Any]:
+    async def extract_structured_updates(self, message: str, grounding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         fallback = {"tasks": [], "goals": [], "problems": [], "links": []}
         prompt = (
             "Operation: extract.\n"
             "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
-            "Each task must include title and optional status/priority.\n"
+            "Prefer updating/completing existing tasks from grounding before creating new ones.\n"
+            "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
+            "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
+            "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
         )
         try:
-            raw = await self._invoke_operation("extract", prompt, message)
+            payload = {"message": message}
+            if isinstance(grounding, dict):
+                payload["grounding"] = grounding
+            raw = await self._invoke_operation("extract", prompt, json.dumps(payload, ensure_ascii=True))
             usage = self._normalize_usage(raw.get("usage"))
             normalized = self._normalize_extract_payload(raw)
             if usage:
