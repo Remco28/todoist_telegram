@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from copy import deepcopy
+from datetime import date
 from typing import Any, Dict, Optional
 
 import httpx
@@ -21,12 +22,41 @@ class LLMAdapter:
         if not isinstance(title, str) or not title.strip():
             return None
         item: Dict[str, Any] = {"title": title.strip()}
+        action = candidate.get("action")
+        if isinstance(action, str) and action in {"create", "update", "complete", "archive", "noop"}:
+            item["action"] = action
+            if action == "complete":
+                item["status"] = "done"
+            elif action == "archive":
+                item["status"] = "archived"
         status = candidate.get("status")
         if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
             item["status"] = status
+        notes = candidate.get("notes")
+        if isinstance(notes, str) and notes.strip():
+            item["notes"] = notes.strip()
         priority = candidate.get("priority")
         if isinstance(priority, int) and 1 <= priority <= 4:
             item["priority"] = priority
+        impact_score = candidate.get("impact_score")
+        if isinstance(impact_score, int) and 1 <= impact_score <= 5:
+            item["impact_score"] = impact_score
+        urgency_score = candidate.get("urgency_score")
+        if isinstance(urgency_score, int) and 1 <= urgency_score <= 5:
+            item["urgency_score"] = urgency_score
+        due_date = candidate.get("due_date")
+        if isinstance(due_date, str):
+            try:
+                parsed = date.fromisoformat(due_date.strip()[:10])
+                item["due_date"] = parsed.isoformat()
+            except ValueError:
+                pass
+        target_task_id = candidate.get("target_task_id")
+        if isinstance(target_task_id, str) and target_task_id.strip():
+            item["target_task_id"] = target_task_id.strip()
+        confidence = candidate.get("confidence")
+        if isinstance(confidence, (int, float)):
+            item["confidence"] = float(confidence)
         return item
 
     @staticmethod
@@ -85,6 +115,8 @@ class LLMAdapter:
 
     def _model_for(self, operation: str) -> str:
         if operation == "extract":
+            return settings.LLM_MODEL_EXTRACT
+        if operation in {"action_plan", "action_critic"}:
             return settings.LLM_MODEL_EXTRACT
         if operation == "query":
             return settings.LLM_MODEL_QUERY
@@ -187,7 +219,22 @@ class LLMAdapter:
 
     @staticmethod
     def _normalize_extract_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        if all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
+        task_actions = payload.get("task_actions")
+        if isinstance(task_actions, list):
+            tasks = []
+            for candidate in task_actions:
+                if not isinstance(candidate, dict):
+                    continue
+                normalized = LLMAdapter._normalize_extract_task_item(candidate)
+                if normalized is not None:
+                    tasks.append(normalized)
+            normalized = {
+                "tasks": tasks,
+                "goals": [],
+                "problems": [],
+                "links": [],
+            }
+        elif all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
             tasks = [
                 item
                 for item in (
@@ -301,16 +348,24 @@ class LLMAdapter:
             normalized["follow_up_question"] = follow_up
         return normalized
 
-    async def extract_structured_updates(self, message: str) -> Dict[str, Any]:
+    async def extract_structured_updates(self, message: str, grounding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         fallback = {"tasks": [], "goals": [], "problems": [], "links": []}
         prompt = (
             "Operation: extract.\n"
             "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
-            "Each task must include title and optional status/priority.\n"
+            "Prefer updating/completing existing tasks from grounding before creating new ones.\n"
+            "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
+            "Task fields may include notes, priority (1 highest, 4 lowest), impact_score (1-5), urgency_score (1-5), due_date.\n"
+            "When dates are explicit or relative (for example tomorrow/next week), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_utc.\n"
+            "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
+            "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
         )
         try:
-            raw = await self._invoke_operation("extract", prompt, message)
+            payload = {"message": message}
+            if isinstance(grounding, dict):
+                payload["grounding"] = grounding
+            raw = await self._invoke_operation("extract", prompt, json.dumps(payload, ensure_ascii=True))
             usage = self._normalize_usage(raw.get("usage"))
             normalized = self._normalize_extract_payload(raw)
             if usage:
@@ -318,6 +373,90 @@ class LLMAdapter:
             return normalized
         except Exception as exc:
             logger.warning("extract_structured_updates fallback: %s", type(exc).__name__)
+            return fallback
+
+    async def plan_actions(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        fallback = {
+            "intent": "query" if "?" in (message or "") else "action",
+            "scope": "single",
+            "actions": [],
+            "confidence": 0.0,
+            "needs_confirmation": True,
+        }
+        prompt = (
+            "Operation: action_plan.\n"
+            "Given user message and context, decide if this is query or action intent.\n"
+            "Return JSON with keys: intent, scope, actions, confidence, needs_confirmation.\n"
+            "intent must be query or action.\n"
+            "scope must be one of single|subset|all_open|all_matching.\n"
+            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional notes, optional priority (1 highest, 4 lowest), optional impact_score (1-5), optional urgency_score (1-5), optional due_date.\n"
+            "Resolve relative dates against context.grounding.current_date_utc and output due_date as YYYY-MM-DD.\n"
+            "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
+            "Return only JSON."
+        )
+        try:
+            payload: Dict[str, Any] = {"message": message}
+            if isinstance(context, dict):
+                payload["context"] = context
+            raw = await self._invoke_operation("action_plan", prompt, json.dumps(payload, ensure_ascii=True))
+            intent = raw.get("intent")
+            scope = raw.get("scope")
+            actions = raw.get("actions")
+            confidence = raw.get("confidence")
+            needs_confirmation = raw.get("needs_confirmation")
+            if intent not in {"query", "action"}:
+                raise ValueError("Invalid planner intent")
+            if scope not in {"single", "subset", "all_open", "all_matching"}:
+                scope = "single"
+            if not isinstance(actions, list):
+                actions = []
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.0
+            if not isinstance(needs_confirmation, bool):
+                needs_confirmation = True
+            return {
+                "intent": intent,
+                "scope": scope,
+                "actions": actions,
+                "confidence": float(confidence),
+                "needs_confirmation": needs_confirmation,
+            }
+        except Exception as exc:
+            logger.warning("plan_actions fallback: %s", type(exc).__name__)
+            return fallback
+
+    async def critique_actions(
+        self,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        proposal: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        fallback = {"approved": True, "issues": []}
+        prompt = (
+            "Operation: action_critic.\n"
+            "Review the proposed actions for correctness and safety.\n"
+            "Return JSON with keys: approved (bool), issues (array of strings), optional revised_actions (array).\n"
+            "Reject duplicates, unresolved targets, contradictory updates, and risky broad updates without clear scope.\n"
+            "Return only JSON."
+        )
+        try:
+            payload: Dict[str, Any] = {"message": message, "proposal": proposal or {}}
+            if isinstance(context, dict):
+                payload["context"] = context
+            raw = await self._invoke_operation("action_critic", prompt, json.dumps(payload, ensure_ascii=True))
+            approved = raw.get("approved")
+            issues = raw.get("issues")
+            revised_actions = raw.get("revised_actions")
+            if not isinstance(approved, bool):
+                approved = True
+            if not isinstance(issues, list):
+                issues = []
+            out: Dict[str, Any] = {"approved": approved, "issues": [str(x) for x in issues[:10]]}
+            if isinstance(revised_actions, list):
+                out["revised_actions"] = revised_actions
+            return out
+        except Exception as exc:
+            logger.warning("critique_actions fallback: %s", type(exc).__name__)
             return fallback
 
     async def summarize_memory(self, context: str) -> Dict[str, Any]:

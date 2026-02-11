@@ -86,6 +86,10 @@ def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float,
         elif days_diff <= 2:
             score += settings.PLAN_WEIGHT_URGENCY
             factors.append("due_soon")
+    if task.urgency_score:
+        score += (task.urgency_score / 5.0) * settings.PLAN_WEIGHT_URGENCY
+        if task.urgency_score >= 4:
+            factors.append("high_urgency")
             
     # 2. Impact (Weight 3.0)
     if task.impact_score:
@@ -111,10 +115,10 @@ def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float,
         score += min(days_stale / 30.0, 1.0) * settings.PLAN_WEIGHT_STALENESS
         factors.append("stale")
         
-    # 5. Quick Win
-    if task.priority == 4:
+    # 5. User-declared high priority (local convention: 1 = highest)
+    if task.priority == 1:
         score += 0.5
-        factors.append("quick_win")
+        factors.append("user_priority_high")
 
     return score, factors
 

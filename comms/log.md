@@ -384,3 +384,73 @@
   - `backend/common/models.py`: align SQLAlchemy enum names with migrated Postgres enum types (`task_status`, `goal_status`, `problem_status`, `link_type`, `entity_type`).
   - `backend/common/adapter.py`: sanitize provider extract payload list entries before API validation.
 [2026-02-11 08:31] [ARCHITECT]: CLOSEOUT: Phase 12 release-readiness gates satisfied in staging. Proceeding with merge to `main`.
+[2026-02-11 08:40] [ARCHITECT]: TRANSITION: Created branch `architect/phase-13-production-rollout`.
+[2026-02-11 08:41] [ARCHITECT]: SPEC READY: Published Phase 13 production rollout spec at `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md` and updated planning docs (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
+[2026-02-11 08:41] [ARCHITECT]: CLOSEOUT: Archived Phase 12 spec to `comms/tasks/archive/2026-02-10-phase-12-release-readiness-spec.md`.
+[2026-02-11 08:50] [DEVELOPER]: IMPL IN_PROGRESS: Phase 13 operations documentation deliverables.
+[2026-02-11 08:53] [DEVELOPER]: IMPL DONE: Phase 13 operations docs implemented.
+- Added `ops/PROD_ROLLOUT_CHECKLIST.md` (production rollout gates, smoke validation, rollback triggers, sign-off template).
+- Added `ops/SECRETS_ROTATION_RUNBOOK.md` (rotation procedures for auth/xAI/Todoist/DB/Redis/Telegram secrets).
+- Added `ops/OPERATIONS_BASELINE.md` (health signals, alert thresholds, daily/weekly operator routines, incident first actions).
+- Updated `docs/README.md` release-readiness index with new Phase 13 operational docs.
+[2026-02-11 17:00] [ARCHITECT]: DIRECTION UPDATE: Formalized conversational UX decision in canonical docs: Telegram free-form text now targets intent routing (`query` vs `action`), with action proposals requiring explicit user confirmation (`yes`/`edit`/`no`) before DB writes and Todoist sync (`docs/PROJECT_DIRECTION.md`, `docs/ARCHITECTURE_V1.md`, `docs/PHASES.md`, `docs/EXECUTION_PLAN.md`).
+[2026-02-11 17:00] [ARCHITECT]: SPEC READY: Published Phase 14 implementation spec at `comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md` covering draft lifecycle, confirmation gate, Telegram routing rules, immediate sync policy, and required tests.
+[2026-02-11 17:00] [ARCHITECT]: UX PREFERENCE LOCKED: Updated specs/docs to make natural-language chat the primary Telegram UX and `/ask` an optional fallback only (`comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md`, `docs/PROJECT_DIRECTION.md`, `docs/ARCHITECTURE_V1.md`).
+[2026-02-11 17:00] [DEVELOPER]: IMPL IN_PROGRESS: Phase 14 step 1 implemented: plain Telegram question intent routes to read-only query path; `/ask` command added as fallback; non-question text remains capture path.
+[2026-02-11 17:09] [DEVELOPER]: IMPL DONE: Phase 14 step 2 draft-confirm flow shipped for Telegram natural chat.
+- Added persistent `action_drafts` model + migration (`backend/common/models.py`, `backend/migrations/versions/e8f1a7c9d2b4_add_action_drafts.py`).
+- Non-command Telegram action text now creates a proposal draft (no immediate writes).
+- Added conversational confirmation handling for open drafts: `yes` applies, `edit ...` revises, `no` discards.
+- Confirm path now applies transactional capture and enqueues immediate Todoist sync job.
+- Added preview formatting for proposals and pending-draft guidance.
+- Added webhook tests for proposal creation, question read-only routing, and `yes` draft apply behavior.
+- Validation: `cd backend && pytest -q` => 52 passed, 1 skipped.
+[2026-02-11 17:46] [DEVELOPER]: IMPL DONE: Extraction-quality upgrade (prompt+grounding+action semantics).
+- Added extraction grounding builder from current user tasks and wired it into Telegram draft extraction, draft revision, and API capture extraction calls.
+- Upgraded extraction prompt contract to prefer update/complete/archive over duplicate creates and support `action` + `target_task_id` task semantics.
+- Extended adapter normalization to accept `task_actions` shape and preserve action/target/confidence fields.
+- Updated capture apply pipeline to honor action semantics when matching existing tasks (complete/archive/update) and skip invalid action-only creates without target.
+- Added adapter test coverage for `task_actions` normalization and retained full suite pass (`53 passed, 1 skipped`).
+- Updated `docs/PROMPT_CONTRACT.md` to document action semantics and grounding expectations.
+[2026-02-11 18:00] [ARCHITECT]: REVIEW+FIX: Atomic draft confirm hardening and adjacent reliability pass.
+- Refactored `_apply_capture` to support deferred commit/enqueue.
+- `_confirm_action_draft` now applies capture writes and draft status transition in a single DB transaction, then enqueues summary/sync jobs post-commit.
+- Added enqueue-failure resilience: post-commit queue errors are logged (`action_apply_partial_enqueue_failure`) without falsely reporting full action failure.
+- Performed broader relevant-file pass across API queue publish points, worker consumers, idempotency path, and Telegram test coverage.
+- Validation: `cd backend && pytest -q` => 53 passed, 1 skipped.
+[2026-02-11 18:20] [ARCHITECT]: DOC ALIGNMENT: LLM-first action reasoning policy clarified for Phase 14.
+- Updated architecture contract to define planner+critic+deterministic-executor pipeline (LLM decides action semantics; backend validates and executes).
+- Updated prompt contract to add `action_plan` and `action_critic` operation expectations and explicit executor non-inference rule.
+- Updated project direction and execution plan to state phrase heuristics are temporary fallback only, not primary logic.
+- Updated Phase 14 spec to require planner+critic path and heuristic-fallback audit logging.
+[2026-02-11 18:42] [DEVELOPER]: IMPL DONE: LLM-first Telegram planner+critic primary path (Phase 14 progression).
+- Added adapter operations `plan_actions` and `critique_actions` with provider-backed JSON contracts and safe fallbacks.
+- Updated Telegram non-command flow to use planner intent/actions first, then critic review, before draft creation.
+- Added event logging for planner and critic outcomes (`telegram_action_planned`, `telegram_action_critic_result`).
+- Preserved compatibility fallback to extract + heuristic fallback path with explicit `action_fallback_heuristic_used` event.
+- Added action-to-extraction translation so executor still consumes validated structured payload.
+- Expanded tests for planner-primary action flow, critic-reject clarification flow, and adapter planner/critic contract normalization.
+- Validation: `cd backend && pytest -q` => 58 passed, 1 skipped.
+[2026-02-11 18:56] [DEVELOPER]: HOTFIX DONE: Due-date propagation for AI-captured tasks.
+- Fixed capture/apply pipeline to persist `due_date` on both task create and update paths.
+- Added extraction/planner contract support for `due_date` (ISO `YYYY-MM-DD`) and normalized parsing in adapter.
+- Added grounding field `current_date_utc` so provider can resolve relative dates (e.g., "tomorrow").
+- Added validation for task `due_date` in extraction payload.
+- Added tests for due-date normalization and planner-to-draft due-date propagation.
+- Validation: `cd backend && pytest -q` => 59 passed, 1 skipped.
+[2026-02-11 19:14] [DEVELOPER]: IMPL DONE: Task enrichment fields (notes/priority/impact/urgency) + urgency inference.
+- Added task `urgency_score` model field and migration `f2b6c1d9a4e7_add_urgency_score_to_tasks.py`.
+- Extended planner/extraction contracts to carry `notes`, `priority` (1 highest), `impact_score`, `urgency_score`, and `due_date`.
+- Extended action-plan translation and capture apply path to persist these fields on task create/update.
+- Added fallback urgency inference when explicit urgency is not provided (based on due date + priority).
+- Updated planning score to consider explicit urgency and fixed priority semantic to treat `1` as highest.
+- Added regression tests for field normalization and urgency inference.
+- Validation: `cd backend && pytest -q` => 62 passed, 1 skipped.
+[2026-02-11 19:24] [DEVELOPER]: IMPL DONE: Telegram UX formatting + token-efficiency grounding + access restrictions.
+- Added `format_query_answer` for cleaner Telegram query responses (section header + bullet lines + optional follow-up).
+- Telegram `/ask` and conversational query replies now use formatted output instead of raw long blobs.
+- Added relevance-aware grounding selection for extraction/planner context (token overlap + recency scoring, top-N trimming).
+- Added Telegram sender allowlist controls (`TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ALLOWED_USERNAMES`) and ignore-by-default for disallowed senders.
+- Added non-expiring link-token mode by setting `TELEGRAM_LINK_TOKEN_TTL_SECONDS<=0`.
+- Added tests for disallowed webhook sender and non-expiring link-token issuance.
+- Validation: `cd backend && pytest -q` => 64 passed, 1 skipped.

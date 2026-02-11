@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, patch
 from httpx import ASGITransport, AsyncClient
 
 from api.main import handle_telegram_command
-from api.schemas import AppliedChanges
+from api.schemas import AppliedChanges, QueryResponseV1
+from common.config import settings
 
 WEBHOOK_URL = "/v1/integrations/telegram/webhook"
 VALID_SECRET = "test_secret"
@@ -76,6 +77,26 @@ def test_webhook_ignores_non_message_update(app_no_db):
     assert resp.json()["status"] == "ignored"
 
 
+def test_webhook_ignores_disallowed_sender(app_no_db, mock_send):
+    old_chat_ids = settings.TELEGRAM_ALLOWED_CHAT_IDS
+    old_usernames = settings.TELEGRAM_ALLOWED_USERNAMES
+    settings.TELEGRAM_ALLOWED_CHAT_IDS = "999999"
+    settings.TELEGRAM_ALLOWED_USERNAMES = "allowed_user"
+    try:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("hello", chat_id="12345"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        mock_send.assert_not_awaited()
+    finally:
+        settings.TELEGRAM_ALLOWED_CHAT_IDS = old_chat_ids
+        settings.TELEGRAM_ALLOWED_USERNAMES = old_usernames
+
+
 def test_command_today_routes_successfully(app_no_db):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.handle_telegram_command", new_callable=AsyncMock
@@ -101,7 +122,7 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert mocked.await_args.args[0] == "/today"
 
 
-def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mock_send):
+def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_db, mock_extract, mock_send):
     mock_extract.extract_structured_updates.return_value = {
         "tasks": [{"title": "Task A"}],
         "goals": [{"title": "Goal A"}],
@@ -109,35 +130,178 @@ def test_non_command_text_uses_full_capture_pipeline(app_no_db, mock_extract, mo
         "links": [],
     }
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture:
-        apply_capture.return_value = (
-            "inb_1",
-            AppliedChanges(tasks_created=1, goals_created=1, problems_created=1),
-        )
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("plain text"), headers=_headers())
         assert resp.status_code == 200
-        apply_capture.assert_awaited_once()
+        create_draft.assert_awaited_once()
+        apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
-        ack = mock_send.await_args.args[1]
-        assert "1 task(s) created" in ack
-        assert "1 goal(s) created" in ack
-        assert "1 problem(s) created" in ack
+        assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture:
-        apply_capture.return_value = (
-            "inb_2",
-            AppliedChanges(tasks_updated=1),
-        )
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("buy groceries"), headers=_headers())
         assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
-        ack = mock_send.await_args.args[1]
-        assert "1 task(s) updated" in ack
+        assert "did not find clear actions" in mock_send.await_args.args[1].lower()
+
+
+def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, mock_extract, mock_send):
+    mock_extract.extract_structured_updates.return_value = {
+        "tasks": [],
+        "goals": [],
+        "problems": [],
+        "links": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Replace bathroom fan", "status": "open"},
+            {"id": "tsk_2", "title": "Buy paint rollers", "status": "blocked"},
+            {"id": "tsk_3", "title": "Old finished task", "status": "done"},
+        ]
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Let's mark everything as done."), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 2
+        assert extraction["tasks"][0]["action"] == "complete"
+        assert extraction["tasks"][0]["status"] == "done"
+        assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
+        assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
+        assert "proposed updates" in mock_send.await_args.args[1].lower()
+
+
+def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.88,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "create",
+                "title": "Call contractor",
+                "notes": "Ask for itemized quote",
+                "priority": 2,
+                "impact_score": 4,
+                "urgency_score": 3,
+                "due_date": "2026-02-12",
+            },
+            {"entity_type": "task", "action": "complete", "title": "Buy paint rollers", "target_task_id": "tsk_2"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Renovation update"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extract_fallback.assert_not_awaited()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 2
+        assert extraction["tasks"][0]["title"] == "Call contractor"
+        assert extraction["tasks"][0]["notes"] == "Ask for itemized quote"
+        assert extraction["tasks"][0]["impact_score"] == 4
+        assert extraction["tasks"][0]["urgency_score"] == 3
+        assert extraction["tasks"][0]["due_date"] == "2026-02-12"
+        assert extraction["tasks"][1]["action"] == "complete"
+
+
+def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "all_open",
+        "confidence": 0.91,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "complete", "title": "Anything"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions",
+        new_callable=AsyncMock,
+        return_value={"approved": False, "issues": ["Missing target task references"]},
+    ):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Mark all done"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        assert "need one clarification" in mock_send.await_args.args[1].lower()
+
+
+def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture, patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch("api.main._create_action_draft", new_callable=AsyncMock) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main.adapter.plan_actions",
+        new_callable=AsyncMock,
+        return_value={"intent": "query", "scope": "single", "actions": [], "confidence": 0.9, "needs_confirmation": False},
+    ):
+        mocked_query.return_value = QueryResponseV1(answer="You have 2 open tasks.", confidence=0.9)
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What tasks are not completed?"), headers=_headers())
+        assert resp.status_code == 200
+        mocked_query.assert_awaited_once()
+        apply_capture.assert_not_awaited()
+        create_draft.assert_not_awaited()
+        assert "2 open tasks" in mock_send.await_args.args[1]
+
+
+def test_non_command_yes_applies_open_draft(app_no_db, mock_send):
+    fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}]}})()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch("api.main._confirm_action_draft", new_callable=AsyncMock) as confirm_draft:
+        confirm_draft.return_value = AppliedChanges(tasks_created=1)
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("yes"), headers=_headers())
+        assert resp.status_code == 200
+        confirm_draft.assert_awaited_once()
+        assert "applied" in mock_send.await_args.args[1].lower()
 
 
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
@@ -179,6 +343,14 @@ def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     assert "job_id" in job
     mock_send.assert_awaited_once()
     assert job["job_id"] in mock_send.await_args.args[1]
+
+
+def test_command_ask_returns_query_answer(mock_send, mock_db):
+    with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
+        mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)
+        asyncio.run(handle_telegram_command("/ask", "what is blocked", "12345", "usr_abc", mock_db))
+    mocked_query.assert_awaited_once()
+    assert "no blocked tasks" in mock_send.await_args.args[1]
 
 
 def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):

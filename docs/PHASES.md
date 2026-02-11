@@ -1,6 +1,6 @@
 # Phased Plan
 
-## Current Status (2026-02-10)
+## Current Status (2026-02-11)
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
@@ -13,7 +13,9 @@
 - Phase 9: Completed
 - Phase 10: Completed
 - Phase 11: Completed
-- Phase 12: In progress
+- Phase 12: Completed
+- Phase 13: In progress
+- Phase 14: Planned
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -165,3 +167,30 @@
 - Staging smoke validates capture/query/plan/sync/reconcile flows.
 - Release checklist and restore incident procedure are complete and actionable.
 - Deprecated datetime/pydantic usage is reduced in Phase 10-12 touched runtime paths without regressions.
+
+## Phase 13: Production Rollout and Operations Baseline
+### Goals
+- Roll out production environment (API + worker + dedicated DB/Redis) using the staging-proven Docker path.
+- Establish minimum operations baseline: secrets rotation workflow, backup automation, and alert checks.
+- Validate first production smoke flow and document release evidence.
+
+### Exit Criteria
+- Production deployment is live and stable.
+- Production smoke checks pass for capture/query/sync/reconcile paths.
+- Backup and restore readiness are documented and operator-verified.
+- Runbooks for rollout, secrets rotation, and monitoring baseline are complete.
+
+## Phase 14: Conversational Intent Routing and Confirmation UX
+### Goals
+- Make Telegram behave like a true assistant for informal messages:
+- classify incoming text as query vs action.
+- For action intent, generate a proposed structured plan (tasks/subtasks/notes/links/dates) before writing.
+- Add confirmation flow (`yes`, `edit`, `no`) so writes and Todoist sync happen only after approval.
+- Add `/ask` command and optional natural-language question routing for read-only answers.
+
+### Exit Criteria
+- Telegram can answer read-only questions without creating capture artifacts.
+- Telegram action proposals are shown and persisted as short-lived drafts.
+- `yes` applies draft transactionally and triggers immediate Todoist sync.
+- `edit` revises draft; `no` discards draft.
+- Audit events capture proposal generation, approval, apply result, and sync enqueue.

@@ -32,6 +32,7 @@ class TaskUpdate(BaseModel):
     due_date: Optional[str] = None
     notes: Optional[str] = None
     impact_score: Optional[int] = Field(None, ge=1, le=5)
+    urgency_score: Optional[int] = Field(None, ge=1, le=5)
 
 class GoalUpdate(BaseModel):
     title: Optional[str] = None
@@ -216,7 +217,6 @@ class TodoistSyncStatusResponse(BaseModel):
     last_attempt_at: Optional[str] = None
     last_reconcile_at: Optional[str] = None
     reconcile_error_count: int = 0
-
 
 
 

@@ -11,8 +11,22 @@
 
 ## Interaction Modes
 - Query mode (read-only): answer questions from stored graph + summaries.
-- Action mode (write-enabled): parse intent and create/update/link entities.
+- Draft action mode (no-write): parse intent and generate a proposed mutation plan.
+- Apply action mode (write-enabled): apply previously confirmed proposal transactionally and sync.
 - Mode selection is backend controlled using intent classification and policy rules.
+
+## Telegram Conversational Contract (Target)
+1. User sends free-form text.
+2. Backend classifies message:
+- `query`: answer directly, no writes.
+- `action`: generate structured proposal and show confirmation summary.
+ - natural-language routing is primary; slash commands are optional fallback controls.
+3. Bot asks for confirmation (`yes`, `edit`, `no`):
+- `yes`: commit DB writes and enqueue immediate Todoist sync.
+- `edit`: regenerate proposal with user clarifications.
+- `no`: discard draft.
+4. All applied changes are logged with request id and proposal provenance.
+5. Rule: no autonomous durable writes from ambiguous conversational text without confirmation.
 
 ## Runtime Model (Coolify)
 - `api` container: request handling, business logic, auth, tool endpoints.
@@ -96,13 +110,26 @@ Produce ordered execution plans from structured state.
 
 ## Write Pipeline (LLM-Assisted, Backend-Enforced)
 1. Capture raw message.
-2. Call provider extraction operation for strict JSON proposal.
-3. Validate against schema and policy constraints.
-4. Apply deterministic mapping and normalization.
-5. Commit transactional DB updates.
-6. Emit audit events and optional plan refresh.
+2. Build grounded context (active tasks/goals/problems/links + recent summaries).
+3. Call provider action planner operation for strict JSON proposal (`intent`, `scope`, `actions[]`, `confidence`, `needs_confirmation`).
+4. Call provider critic operation to detect unsafe or low-quality proposals (duplicates, contradictions, missing targets, risky bulk ops).
+5. Validate against schema and policy constraints.
+6. Present proposal to user for confirmation when policy requires.
+7. Execute proposal deterministically after confirmation (no hidden semantic inference in executor).
+8. Commit transactional DB updates.
+9. Emit audit events, enqueue memory summarization, and enqueue immediate Todoist sync for changed tasks.
 
 Rule: provider suggests, backend decides, backend writes.
+
+## Action Intelligence Contract (v1.1 Direction)
+- Primary behavior comes from LLM planning + critique, not phrase-to-action hardcoding.
+- Deterministic code is limited to:
+  - schema validation,
+  - safety policy checks,
+  - transactional execution,
+  - retries/fallback handling.
+- Phrase heuristics may exist only as temporary emergency fallback and must be logged when used.
+- Every applied write must be traceable to a concrete proposed action in stored draft payload.
 
 ## Telegram Identity Flow
 1. API user requests one-time Telegram link token.

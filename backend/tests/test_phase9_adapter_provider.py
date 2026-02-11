@@ -70,6 +70,83 @@ def test_extract_success_normalization_and_usage():
     asyncio.run(_run())
 
 
+def test_extract_due_date_normalizes_to_iso_date():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[{"title":"Clean keyboard","status":"open","due_date":"2026-02-12T00:00:00Z"}],"goals":[],"problems":[],"links":[]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("clean tomorrow")
+            assert out["tasks"][0]["due_date"] == "2026-02-12"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_extract_task_enrichment_fields_normalize():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[{"title":"Clean keyboard","notes":"Use compressed air","priority":1,"impact_score":4,"urgency_score":3}],"goals":[],"problems":[],"links":[]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("Clean keyboard tomorrow")
+            task = out["tasks"][0]
+            assert task["notes"] == "Use compressed air"
+            assert task["priority"] == 1
+            assert task["impact_score"] == 4
+            assert task["urgency_score"] == 3
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_extract_task_actions_shape_normalizes_to_tasks():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"task_actions":[{"title":"Change oil","action":"complete","target_task_id":"tsk_123","confidence":0.9}]}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("I do not need to change oil anymore", grounding={"tasks": []})
+            assert out["tasks"][0]["title"] == "Change oil"
+            assert out["tasks"][0]["action"] == "complete"
+            assert out["tasks"][0]["status"] == "done"
+            assert out["tasks"][0]["target_task_id"] == "tsk_123"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_malformed_payload_returns_safe_fallback():
     async def _run():
         adapter = LLMAdapter()
@@ -177,6 +254,62 @@ def test_retry_exhaustion_uses_fallback_policy():
                 out = await adapter.extract_structured_updates("ctx")
             assert out == {"tasks": [], "goals": [], "problems": [], "links": []}
             assert post.await_count == settings.LLM_MAX_RETRIES + 1
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_action_plan_success_shape():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"intent":"action","scope":"all_open","actions":[{"entity_type":"task","action":"complete","title":"Replace fan","target_task_id":"tsk_1"}],"confidence":0.92,"needs_confirmation":true}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.plan_actions("mark everything done", context={"grounding": {"tasks": []}})
+            assert out["intent"] == "action"
+            assert out["scope"] == "all_open"
+            assert isinstance(out["actions"], list)
+            assert out["confidence"] == 0.92
+            assert out["needs_confirmation"] is True
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_action_critic_rejection_shape():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"approved":false,"issues":["missing target id"],"revised_actions":[{"entity_type":"task","action":"complete","title":"Replace fan","target_task_id":"tsk_1"}]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.critique_actions(
+                    "done",
+                    context={"grounding": {"tasks": []}},
+                    proposal={"actions": []},
+                )
+            assert out["approved"] is False
+            assert out["issues"] == ["missing target id"]
+            assert isinstance(out.get("revised_actions"), list)
         finally:
             _restore_provider_settings(original)
 

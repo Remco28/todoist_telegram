@@ -9,9 +9,12 @@ Build an AI-powered personal execution system where you can send free-form thoug
 - AI engine: LLM API provider (provider-agnostic; Grok/OpenAI/Anthropic/Gemini can be plugged in).
 - Todoist role: downstream sync target, not source of truth.
 - CLI role: optional clients/adapters only (not core infrastructure).
-- Interaction model: one conversational UX with two backend modes:
-- Query mode (read-only answers from stored state)
-- Action mode (auto-structure and write updates)
+- Interaction model: one conversational UX with backend intent routing and confirmation gates:
+- Draft mode: AI proposes structured changes (tasks/subtasks/notes/links/dates) from free-form text.
+- Confirmation mode: bot asks for explicit user approval (`yes` / `edit` / `no`) before mutating durable state.
+- Apply mode: backend writes transactionally, then enqueues immediate Todoist sync.
+- Query mode: read-only answers from stored state, no writes.
+- Command prefixes are optional for normal use; user should be able to chat naturally.
 
 ## Current Reality Check (2026-02-10)
 - The deterministic backend core is in place and stable.
@@ -39,6 +42,8 @@ These gaps are now explicit priorities for the next phases.
 - Safe automation: auto-create allowed, destructive/bulk changes require policy guardrails.
 - Incremental delivery: ship vertical slices that are usable immediately.
 - Prompt contract owned by backend and versioned in repo.
+- LLM-first action reasoning: planner + critic prompts should drive conversational action logic; hardcoded phrase routing is temporary fallback only.
+- Deterministic executor only: backend validates and executes proposed actions, but does not own conversational interpretation.
 
 ## v1 Scope
 - Capture free-form messages and auto-structure them.
@@ -48,6 +53,8 @@ These gaps are now explicit priorities for the next phases.
 - Sync selected tasks to Todoist.
 - Expose API/MCP endpoints for future clients.
 - Support provider-stateful continuation as an optimization, while treating DB memory as source of truth.
+- Support AI-first Telegram workflow where informal user messages are converted into a proposed action plan and applied only after user confirmation.
+- Use grounded reasoning outputs (`intent`, `scope`, `actions`, `confidence`) as the primary decision path for conversational writes.
 
 ## Out of Scope for v1
 - Multi-user collaboration features (shared projects/workspaces).

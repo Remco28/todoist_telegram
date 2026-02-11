@@ -9,7 +9,8 @@
 - Phase 5 specification and revisions are archived under `comms/tasks/archive/`.
 - Phase 6 hardening specification is archived under `comms/tasks/archive/`.
 - Phase 7 specification and revision are archived under `comms/tasks/archive/`.
-- Phase 8 and Phase 9 implementation specifications are active in `comms/tasks/`.
+- Phase 8 through Phase 12 specifications are archived under `comms/tasks/archive/`.
+- Phase 13 implementation specification is active in `comms/tasks/`.
 
 ## Canonical Direction (Current)
 - `docs/PROJECT_DIRECTION.md`: mission, product direction, scope boundaries.
@@ -25,8 +26,15 @@
 ## Release Readiness
 - `ops/DEPLOY_CHECKLIST.md`: release gates, deploy sequence, rollback checklist.
 - `ops/RESTORE_RUNBOOK.md`: restore steps and release-incident first-response flow.
+- `ops/PROD_ROLLOUT_CHECKLIST.md`: production rollout sequence, smoke checks, and sign-off.
+- `ops/SECRETS_ROTATION_RUNBOOK.md`: production secret rotation and post-rotation validation.
+- `ops/OPERATIONS_BASELINE.md`: monitoring thresholds, operator checklists, and incident baseline.
 - Staging smoke invocation:
   - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
+
+## Current Active Specs
+- `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md`
+- `comms/tasks/2026-02-11-phase-14-conversational-intent-confirmation-spec.md`
 
 ## Legacy Archive
 - `archive/legacy_docs/diy_todo/`: earlier planning set kept for reference.

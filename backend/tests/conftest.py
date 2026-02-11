@@ -3,7 +3,7 @@
 Design goal: avoid async fixture loop injection and keep test boundaries explicit.
 """
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -42,6 +42,16 @@ def mock_send():
 @pytest.fixture
 def mock_extract():
     with patch("api.main.adapter") as m:
+        m.plan_actions = AsyncMock(
+            return_value={
+                "intent": "action",
+                "scope": "single",
+                "actions": [],
+                "confidence": 0.0,
+                "needs_confirmation": True,
+            }
+        )
+        m.critique_actions = AsyncMock(return_value={"approved": True, "issues": []})
         m.extract_structured_updates = AsyncMock(
             return_value={"tasks": [], "goals": [], "problems": [], "links": []}
         )
@@ -51,10 +61,15 @@ def mock_extract():
 @pytest.fixture
 def mock_db():
     db = AsyncMock()
-    result = AsyncMock()
+    result = Mock()
     result.rowcount = 1
+    result.scalar_one_or_none.return_value = None
+    scalars_result = Mock()
+    scalars_result.all.return_value = []
+    result.scalars.return_value = scalars_result
     db.execute = AsyncMock(return_value=result)
     db.commit = AsyncMock(return_value=None)
+    db.add = Mock()
     return db
 
 

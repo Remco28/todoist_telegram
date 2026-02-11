@@ -1,4 +1,5 @@
 import logging
+import re
 import httpx
 from html import escape as _html_escape
 from typing import Optional, Tuple, Dict, Any, List
@@ -10,6 +11,26 @@ def escape_html(text: str) -> str:
     return _html_escape(str(text), quote=False)
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_TEXT_MAX_LEN = 4096
+QUERY_PREFIXES = (
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "show",
+    "list",
+    "summarize",
+    "tell me",
+    "do i",
+    "can i",
+    "am i",
+    "is there",
+    "are there",
+)
 
 def verify_telegram_secret(headers: Dict[str, str]) -> bool:
     if not settings.TELEGRAM_WEBHOOK_SECRET:
@@ -49,6 +70,16 @@ def extract_command(text: str) -> Tuple[Optional[str], Optional[str]]:
     args = parts[1] if len(parts) > 1 else None
     return command, args
 
+
+def is_query_like_text(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if "?" in normalized:
+        return True
+    collapsed = re.sub(r"\s+", " ", normalized)
+    return any(collapsed.startswith(prefix + " ") or collapsed == prefix for prefix in QUERY_PREFIXES)
+
 async def send_message(chat_id: str, text: str) -> Dict[str, Any]:
     """
     Sends a message back to Telegram.
@@ -58,17 +89,41 @@ async def send_message(chat_id: str, text: str) -> Dict[str, Any]:
         return {"ok": False, "error": "token_missing"}
 
     url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    
+    safe_text = (text or "")[:TELEGRAM_TEXT_MAX_LEN]
+
     try:
         async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
+            # First try with HTML formatting.
+            payload = {
+                "chat_id": chat_id,
+                "text": safe_text,
+                "parse_mode": "HTML",
+            }
             resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+
+            # Common 400 case is parse issues; retry once with plain text.
+            logger.warning(
+                "Telegram send failed with HTML mode (status=%s, body=%s). Retrying without parse_mode.",
+                resp.status_code,
+                resp.text,
+            )
+            payload = {
+                "chat_id": chat_id,
+                "text": safe_text,
+            }
+            resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+
+            logger.error(
+                "Failed to send Telegram message (status=%s, body=%s)",
+                resp.status_code,
+                resp.text,
+            )
             resp.raise_for_status()
-            return resp.json()
+            return {"ok": False, "error": "telegram_send_failed"}
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return {"ok": False, "error": str(e)}
@@ -131,3 +186,23 @@ def format_capture_ack(applied: Dict[str, int]) -> str:
         return "Thought logged. No actionable entities extracted."
     
     return "✅ Captured: " + ", ".join(parts) + "."
+
+
+def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:
+    raw = (answer or "").strip()
+    if not raw:
+        return "I don't have an answer yet."
+
+    # Break into readable lines by sentence boundaries.
+    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", raw) if c.strip()]
+    if not chunks:
+        chunks = [raw]
+
+    lines = ["<b>Answer</b>", ""]
+    for chunk in chunks[:8]:
+        lines.append(f"• {escape_html(chunk)}")
+    if len(chunks) > 8:
+        lines.append("• ...")
+    if follow_up:
+        lines.extend(["", f"<i>Follow-up:</i> {escape_html(follow_up)}"])
+    return "\n".join(lines)
