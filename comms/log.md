@@ -412,3 +412,9 @@
 - Updated capture apply pipeline to honor action semantics when matching existing tasks (complete/archive/update) and skip invalid action-only creates without target.
 - Added adapter test coverage for `task_actions` normalization and retained full suite pass (`53 passed, 1 skipped`).
 - Updated `docs/PROMPT_CONTRACT.md` to document action semantics and grounding expectations.
+[2026-02-11 18:00] [ARCHITECT]: REVIEW+FIX: Atomic draft confirm hardening and adjacent reliability pass.
+- Refactored `_apply_capture` to support deferred commit/enqueue.
+- `_confirm_action_draft` now applies capture writes and draft status transition in a single DB transaction, then enqueues summary/sync jobs post-commit.
+- Added enqueue-failure resilience: post-commit queue errors are logged (`action_apply_partial_enqueue_failure`) without falsely reporting full action failure.
+- Performed broader relevant-file pass across API queue publish points, worker consumers, idempotency path, and Telegram test coverage.
+- Validation: `cd backend && pytest -q` => 53 passed, 1 skipped.

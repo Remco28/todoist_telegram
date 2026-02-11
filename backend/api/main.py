@@ -214,7 +214,7 @@ async def _confirm_action_draft(
     draft: ActionDraft, user_id: str, chat_id: str, request_id: str, db: AsyncSession
 ) -> AppliedChanges:
     extraction = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
-    _, applied = await _apply_capture(
+    inbox_item_id, applied = await _apply_capture(
         db=db,
         user_id=user_id,
         chat_id=chat_id,
@@ -222,6 +222,8 @@ async def _confirm_action_draft(
         message=draft.source_message,
         extraction=extraction,
         request_id=request_id,
+        commit=False,
+        enqueue_summary=False,
     )
     draft.status = "confirmed"
     draft.updated_at = _draft_now()
@@ -236,12 +238,41 @@ async def _confirm_action_draft(
         )
     )
     await db.commit()
+    summary_enqueued = True
+    sync_enqueued = True
+    summary_error: Optional[str] = None
+    sync_error: Optional[str] = None
+    try:
+        await _enqueue_summary_job(user_id=user_id, chat_id=chat_id, inbox_item_id=inbox_item_id)
+    except Exception as exc:
+        summary_enqueued = False
+        summary_error = str(exc)
+        logger.error("Failed to enqueue memory summary for draft %s: %s", draft.id, exc)
+    try:
+        await _enqueue_todoist_sync_job(user_id=user_id)
+    except Exception as exc:
+        sync_enqueued = False
+        sync_error = str(exc)
+        logger.error("Failed to enqueue Todoist sync for draft %s: %s", draft.id, exc)
 
-    sync_job_id = str(uuid.uuid4())
-    await redis_client.rpush(
-        "default_queue",
-        json.dumps({"job_id": sync_job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}),
-    )
+    if not summary_enqueued or not sync_enqueued:
+        db.add(
+            EventLog(
+                id=str(uuid.uuid4()),
+                request_id=request_id,
+                user_id=user_id,
+                event_type="action_apply_partial_enqueue_failure",
+                payload_json={
+                    "draft_id": draft.id,
+                    "summary_enqueued": summary_enqueued,
+                    "sync_enqueued": sync_enqueued,
+                    "summary_error": summary_error,
+                    "sync_error": sync_error,
+                },
+                created_at=datetime.utcnow(),
+            )
+        )
+        await db.commit()
     return applied
 
 
@@ -266,9 +297,28 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
         )
     return {"chat_id": chat_id, "tasks": tasks}
 
+
+async def _enqueue_summary_job(user_id: str, chat_id: str, inbox_item_id: str) -> None:
+    job_payload = {
+        "job_id": str(uuid.uuid4()),
+        "topic": "memory.summarize",
+        "payload": {"user_id": user_id, "chat_id": chat_id, "inbox_item_id": inbox_item_id},
+    }
+    await redis_client.rpush("default_queue", json.dumps(job_payload))
+
+
+async def _enqueue_todoist_sync_job(user_id: str) -> None:
+    sync_job_id = str(uuid.uuid4())
+    await redis_client.rpush(
+        "default_queue",
+        json.dumps({"job_id": sync_job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}),
+    )
+
 async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: str,
                          message: str, extraction: dict, request_id: str,
-                         client_msg_id: Optional[str] = None) -> tuple:
+                         client_msg_id: Optional[str] = None,
+                         commit: bool = True,
+                         enqueue_summary: bool = True) -> tuple:
     """Core capture pipeline used by both API and Telegram paths.
     Returns (inbox_item_id, applied: AppliedChanges)."""
     applied = AppliedChanges()
@@ -370,9 +420,10 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
         except Exception as e:
             db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
 
-    await db.commit()
-    job_payload = {"job_id": str(uuid.uuid4()), "topic": "memory.summarize", "payload": {"user_id": user_id, "chat_id": chat_id, "inbox_item_id": inbox_item_id}}
-    await redis_client.rpush("default_queue", json.dumps(job_payload))
+    if commit:
+        await db.commit()
+    if enqueue_summary:
+        await _enqueue_summary_job(user_id=user_id, chat_id=chat_id, inbox_item_id=inbox_item_id)
     return inbox_item_id, applied
 
 # --- Internal Helpers for Integration Routing ---
