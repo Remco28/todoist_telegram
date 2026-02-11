@@ -44,6 +44,13 @@ class EntityType(PyEnum):
     goal = "goal"
     problem = "problem"
 
+
+task_status_enum = Enum(TaskStatus, name="task_status")
+goal_status_enum = Enum(GoalStatus, name="goal_status")
+problem_status_enum = Enum(ProblemStatus, name="problem_status")
+link_type_enum = Enum(LinkType, name="link_type")
+entity_type_enum = Enum(EntityType, name="entity_type")
+
 # --- Models ---
 
 class Session(Base):
@@ -93,7 +100,7 @@ class Goal(Base):
     title = Column(Text, nullable=False)
     title_norm = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
-    status = Column(Enum(GoalStatus), nullable=False, default=GoalStatus.active)
+    status = Column(goal_status_enum, nullable=False, default=GoalStatus.active)
     horizon = Column(Text, nullable=True)
     target_date = Column(Date, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
@@ -113,7 +120,7 @@ class Problem(Base):
     title = Column(Text, nullable=False)
     title_norm = Column(Text, nullable=False)
     description = Column(Text, nullable=True)
-    status = Column(Enum(ProblemStatus), nullable=False, default=ProblemStatus.active)
+    status = Column(problem_status_enum, nullable=False, default=ProblemStatus.active)
     severity = Column(SmallInteger, CheckConstraint("severity BETWEEN 1 AND 5"), nullable=True)
     horizon = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
@@ -133,7 +140,7 @@ class Task(Base):
     title = Column(Text, nullable=False)
     title_norm = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
-    status = Column(Enum(TaskStatus), nullable=False, default=TaskStatus.open)
+    status = Column(task_status_enum, nullable=False, default=TaskStatus.open)
     priority = Column(SmallInteger, CheckConstraint("priority BETWEEN 1 AND 4"), nullable=True)
     impact_score = Column(SmallInteger, CheckConstraint("impact_score BETWEEN 1 AND 5"), nullable=True)
     due_date = Column(Date, nullable=True)
@@ -156,11 +163,11 @@ class EntityLink(Base):
     
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)
-    from_entity_type = Column(Enum(EntityType), nullable=False)
+    from_entity_type = Column(entity_type_enum, nullable=False)
     from_entity_id = Column(String, nullable=False)
-    to_entity_type = Column(Enum(EntityType), nullable=False)
+    to_entity_type = Column(entity_type_enum, nullable=False)
     to_entity_id = Column(String, nullable=False)
-    link_type = Column(Enum(LinkType), nullable=False)
+    link_type = Column(link_type_enum, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
@@ -193,7 +200,7 @@ class RecentContextItem(Base):
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)
     chat_id = Column(String, nullable=False)
-    entity_type = Column(Enum(EntityType), nullable=False)
+    entity_type = Column(entity_type_enum, nullable=False)
     entity_id = Column(String, nullable=False)
     reason = Column(String, nullable=True)
     surfaced_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
