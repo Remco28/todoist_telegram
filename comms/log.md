@@ -367,3 +367,20 @@
 [2026-02-10 18:16] [ARCHITECT]: REVIEW PASS: Phase 12 implementation accepted for code/spec scope. Reconcile smoke coverage, release/incident checklist hardening, and scoped warning reduction are correctly implemented and backend tests remain green.
 [2026-02-10 18:16] [ARCHITECT]: TEST GAP: Staging smoke run evidence is still pending environment execution (`RUN_STAGING_SMOKE=1 ... tests/test_phase8_staging_smoke.py`) and should be captured before final v1 release sign-off.
 [2026-02-10 18:23] [ARCHITECT]: STAGING GATE BLOCKED: Attempted `RUN_STAGING_SMOKE=1 pytest -q tests/test_phase8_staging_smoke.py` in this environment; failed due missing required env var `STAGING_API_BASE_URL`. Phase 12 code/docs pass locally; staging evidence remains the only pending release gate.
+[2026-02-11 08:30] [ARCHITECT]: STAGING VALIDATION PASS: End-to-end staging deployment verified on branch `architect/phase-12-release-readiness`.
+- Infrastructure: API + worker services deployed via Dockerfiles (`backend/Dockerfile`, `backend/Dockerfile.worker`) with dedicated staging Postgres/Redis.
+- Migrations: `alembic upgrade head` succeeded after migration runtime fixes.
+- Smoke evidence:
+  - `GET /health/live` => `{"status":"ok"}`
+  - `GET /health/ready` => `{"status":"ready"}`
+  - `POST /v1/capture/thought` => 200, created 2 tasks (`tasks_created=2`).
+  - `POST /v1/sync/todoist` => 200 (job enqueued).
+  - `POST /v1/sync/todoist/reconcile` => 200 (job enqueued).
+  - `GET /v1/sync/todoist/status` => 200 with `last_reconcile_at` populated and `reconcile_error_count=0`.
+  - `POST /v1/query/ask` => 200 with concrete task answer (no fallback).
+- Runtime fixes landed during staging bring-up:
+  - `backend/migrations/env.py`: async migration execution path for `postgresql+asyncpg`.
+  - `backend/migrations/versions/5638dfedf9dc_initial_schema.py`: remove duplicate enum creation path.
+  - `backend/common/models.py`: align SQLAlchemy enum names with migrated Postgres enum types (`task_status`, `goal_status`, `problem_status`, `link_type`, `entity_type`).
+  - `backend/common/adapter.py`: sanitize provider extract payload list entries before API validation.
+[2026-02-11 08:31] [ARCHITECT]: CLOSEOUT: Phase 12 release-readiness gates satisfied in staging. Proceeding with merge to `main`.
