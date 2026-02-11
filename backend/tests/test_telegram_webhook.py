@@ -143,6 +143,39 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
         assert "did not find clear actions" in mock_send.await_args.args[1].lower()
 
 
+def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, mock_extract, mock_send):
+    mock_extract.extract_structured_updates.return_value = {
+        "tasks": [],
+        "goals": [],
+        "problems": [],
+        "links": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Replace bathroom fan", "status": "open"},
+            {"id": "tsk_2", "title": "Buy paint rollers", "status": "blocked"},
+            {"id": "tsk_3", "title": "Old finished task", "status": "done"},
+        ]
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Let's mark everything as done."), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 2
+        assert extraction["tasks"][0]["action"] == "complete"
+        assert extraction["tasks"][0]["status"] == "done"
+        assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
+        assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
+        assert "proposed updates" in mock_send.await_args.args[1].lower()
+
+
 def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.query_ask", new_callable=AsyncMock

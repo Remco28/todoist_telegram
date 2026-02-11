@@ -93,6 +93,88 @@ def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _has_actionable_entities(extraction: Dict[str, Any]) -> bool:
+    return bool(
+        extraction.get("tasks")
+        or extraction.get("goals")
+        or extraction.get("problems")
+        or extraction.get("links")
+    )
+
+
+def _derive_bulk_complete_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return []
+
+    has_global_scope = any(
+        phrase in lowered
+        for phrase in (
+            "everything",
+            "all tasks",
+            "all my tasks",
+            "all of my tasks",
+            "all open tasks",
+        )
+    )
+    has_completion_intent = any(
+        phrase in lowered
+        for phrase in (
+            "mark",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "close",
+            "closed",
+        )
+    )
+    if not (has_global_scope and has_completion_intent):
+        return []
+
+    rows = grounding.get("tasks") if isinstance(grounding, dict) else None
+    if not isinstance(rows, list):
+        return []
+
+    actions: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = row.get("status")
+        if status in {"done", "archived"}:
+            continue
+        title = row.get("title")
+        task_id = row.get("id")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        item: Dict[str, Any] = {
+            "title": title.strip(),
+            "action": "complete",
+            "status": "done",
+        }
+        if isinstance(task_id, str) and task_id.strip():
+            item["target_task_id"] = task_id.strip()
+        actions.append(item)
+    return actions
+
+
+def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(extraction, dict):
+        return {"tasks": [], "goals": [], "problems": [], "links": []}
+    if _has_actionable_entities(extraction):
+        return extraction
+
+    fallback_tasks = _derive_bulk_complete_actions(message, grounding)
+    if fallback_tasks:
+        extraction = dict(extraction)
+        extraction["tasks"] = fallback_tasks
+        extraction.setdefault("goals", [])
+        extraction.setdefault("problems", [])
+        extraction.setdefault("links", [])
+    return extraction
+
+
 async def _get_open_action_draft(user_id: str, chat_id: str, db: AsyncSession) -> Optional[ActionDraft]:
     now = _draft_now()
     expire_stmt = (
@@ -191,6 +273,7 @@ async def _revise_action_draft(
     revised_message = f"{draft.source_message}\n\nUser clarification: {edit_text}".strip()
     grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id)
     extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
+    extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
@@ -938,6 +1021,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             else:
                 grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id)
                 extraction = await adapter.extract_structured_updates(text, grounding=grounding)
+                extraction = _apply_intent_fallbacks(text, extraction, grounding)
                 _validate_extraction_payload(extraction)
                 await _create_action_draft(
                     db=db,
@@ -968,6 +1052,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
         try:
             grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id)
             extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
+            extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             _validate_extraction_payload(extraction)
