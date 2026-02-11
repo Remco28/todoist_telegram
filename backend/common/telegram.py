@@ -39,23 +39,128 @@ def verify_telegram_secret(headers: Dict[str, str]) -> bool:
 
 def parse_update(update_json: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Extracts basic message info from a Telegram update.
-    Returns dict with chat_id and text if it's a message, else None.
+    Extract basic update info from Telegram payload.
+    Supports message and callback_query updates.
     """
     message = update_json.get("message")
-    if not message:
-        return None
-    
-    chat = message.get("chat")
-    text = message.get("text")
-    
-    if chat and text:
-        return {
-            "chat_id": str(chat.get("id")),
-            "text": text,
-            "username": chat.get("username")
-        }
+    if message:
+        chat = message.get("chat")
+        text = message.get("text")
+        if chat and text:
+            return {
+                "kind": "message",
+                "chat_id": str(chat.get("id")),
+                "text": text,
+                "username": chat.get("username")
+            }
+
+    callback = update_json.get("callback_query")
+    if callback and isinstance(callback, dict):
+        cb_message = callback.get("message") or {}
+        cb_chat = cb_message.get("chat") or {}
+        data = callback.get("data")
+        if cb_chat and isinstance(data, str):
+            from_user = callback.get("from") or {}
+            return {
+                "kind": "callback",
+                "chat_id": str(cb_chat.get("id")),
+                "username": from_user.get("username") or cb_chat.get("username"),
+                "callback_query_id": callback.get("id"),
+                "callback_data": data,
+                "text": "",
+            }
+
     return None
+
+
+def build_draft_reply_markup(draft_id: str) -> Dict[str, Any]:
+    # Keep labels short for compact mobile rendering.
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Yes", "callback_data": f"draft:confirm:{draft_id}"},
+                {"text": "Edit", "callback_data": f"draft:edit:{draft_id}"},
+                {"text": "No", "callback_data": f"draft:discard:{draft_id}"},
+            ]
+        ]
+    }
+
+
+async def answer_callback_query(callback_query_id: str, text: Optional[str] = None) -> Dict[str, Any]:
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "token_missing"}
+    url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+    payload: Dict[str, Any] = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+            logger.error(
+                "Failed to answer callback query (status=%s, body=%s)",
+                resp.status_code,
+                resp.text,
+            )
+            resp.raise_for_status()
+            return {"ok": False, "error": "telegram_callback_failed"}
+    except Exception as e:
+        logger.error(f"Failed to answer callback query: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+async def send_message(chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Sends a message back to Telegram.
+    """
+    if not settings.TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN not configured.")
+        return {"ok": False, "error": "token_missing"}
+
+    url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+    safe_text = (text or "")[:TELEGRAM_TEXT_MAX_LEN]
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
+            # First try with HTML formatting.
+            payload: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": safe_text,
+                "parse_mode": "HTML",
+            }
+            if isinstance(reply_markup, dict):
+                payload["reply_markup"] = reply_markup
+            resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+
+            # Common 400 case is parse issues; retry once with plain text.
+            logger.warning(
+                "Telegram send failed with HTML mode (status=%s, body=%s). Retrying without parse_mode.",
+                resp.status_code,
+                resp.text,
+            )
+            payload = {
+                "chat_id": chat_id,
+                "text": safe_text,
+            }
+            if isinstance(reply_markup, dict):
+                payload["reply_markup"] = reply_markup
+            resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+
+            logger.error(
+                "Failed to send Telegram message (status=%s, body=%s)",
+                resp.status_code,
+                resp.text,
+            )
+            resp.raise_for_status()
+            return {"ok": False, "error": "telegram_send_failed"}
+    except Exception as e:
+        logger.error(f"Failed to send Telegram message: {e}")
+        return {"ok": False, "error": str(e)}
 
 def extract_command(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -80,53 +185,6 @@ def is_query_like_text(text: str) -> bool:
     collapsed = re.sub(r"\s+", " ", normalized)
     return any(collapsed.startswith(prefix + " ") or collapsed == prefix for prefix in QUERY_PREFIXES)
 
-async def send_message(chat_id: str, text: str) -> Dict[str, Any]:
-    """
-    Sends a message back to Telegram.
-    """
-    if not settings.TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not configured.")
-        return {"ok": False, "error": "token_missing"}
-
-    url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-    safe_text = (text or "")[:TELEGRAM_TEXT_MAX_LEN]
-
-    try:
-        async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
-            # First try with HTML formatting.
-            payload = {
-                "chat_id": chat_id,
-                "text": safe_text,
-                "parse_mode": "HTML",
-            }
-            resp = await client.post(url, json=payload)
-            if resp.status_code < 400:
-                return resp.json()
-
-            # Common 400 case is parse issues; retry once with plain text.
-            logger.warning(
-                "Telegram send failed with HTML mode (status=%s, body=%s). Retrying without parse_mode.",
-                resp.status_code,
-                resp.text,
-            )
-            payload = {
-                "chat_id": chat_id,
-                "text": safe_text,
-            }
-            resp = await client.post(url, json=payload)
-            if resp.status_code < 400:
-                return resp.json()
-
-            logger.error(
-                "Failed to send Telegram message (status=%s, body=%s)",
-                resp.status_code,
-                resp.text,
-            )
-            resp.raise_for_status()
-            return {"ok": False, "error": "telegram_send_failed"}
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
-        return {"ok": False, "error": str(e)}
 
 def format_today_plan(plan_payload: Dict[str, Any]) -> str:
     """

@@ -33,7 +33,7 @@ from api.schemas import (
     TodoistSyncStatusResponse, TelegramLinkTokenCreateResponse
 )
 from common.telegram import (
-    verify_telegram_secret, parse_update, extract_command, send_message,
+    verify_telegram_secret, parse_update, extract_command, send_message, answer_callback_query, build_draft_reply_markup,
     format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
     escape_html, is_query_like_text, format_query_answer
 )
@@ -71,6 +71,20 @@ def _parse_draft_reply(text: str) -> tuple[Optional[str], Optional[str]]:
     if lowered.startswith("edit "):
         return "edit", normalized[5:].strip()
     return None, None
+
+
+def _parse_draft_callback(callback_data: str) -> tuple[Optional[str], Optional[str]]:
+    # Expected format: draft:<confirm|edit|discard>:<draft_id>
+    parts = (callback_data or "").split(":", 2)
+    if len(parts) != 3 or parts[0] != "draft":
+        return None, None
+    action = parts[1]
+    draft_id = parts[2]
+    if action not in {"confirm", "edit", "discard"}:
+        return None, None
+    if not draft_id.strip():
+        return None, None
+    return action, draft_id.strip()
 
 
 def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
@@ -1148,11 +1162,40 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         return {"status": "ignored"}
     
     chat_id = data["chat_id"]
-    text = data["text"]
+    text = data.get("text", "")
     username = data.get("username")
+    update_kind = data.get("kind")
     if not _is_telegram_sender_allowed(chat_id, username):
         logger.warning("Ignoring telegram message from disallowed sender chat_id=%s username=%s", chat_id, username)
         return {"status": "ignored"}
+
+    if update_kind == "callback":
+        callback_query_id = data.get("callback_query_id")
+        callback_data = data.get("callback_data", "")
+        request_id = f"tg_{uuid.uuid4().hex[:8]}"
+        user_id = await _resolve_telegram_user(chat_id, db)
+        if not user_id:
+            if callback_query_id:
+                await answer_callback_query(callback_query_id, "Chat is not linked.")
+            return {"status": "ok"}
+        open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
+        action, draft_id = _parse_draft_callback(callback_data)
+        if callback_query_id:
+            await answer_callback_query(callback_query_id)
+        if not open_draft or not action or draft_id != open_draft.id:
+            await send_message(chat_id, "This proposal is no longer active. Send a new message to continue.")
+            return {"status": "ok"}
+        if action == "confirm":
+            applied = await _confirm_action_draft(
+                draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
+            )
+            await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+        elif action == "discard":
+            await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
+            await send_message(chat_id, "Discarded the pending proposal.")
+        elif action == "edit":
+            await send_message(chat_id, "Reply with <code>edit ...</code> and your changes.")
+        return {"status": "ok"}
     
     # 3. Command Routing
     command, args = extract_command(text)
@@ -1196,7 +1239,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 extraction = await _revise_action_draft(
                     draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
                 )
-                await send_message(chat_id, _format_action_draft_preview(extraction))
+                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=build_draft_reply_markup(open_draft.id))
             elif open_draft and draft_action is None and not is_query_like_text(text):
                 await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
             else:
@@ -1281,7 +1324,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                     )
                     await db.commit()
                 _validate_extraction_payload(extraction)
-                await _create_action_draft(
+                draft = await _create_action_draft(
                     db=db,
                     user_id=user_id,
                     chat_id=chat_id,
@@ -1289,7 +1332,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                     extraction=extraction,
                     request_id=request_id,
                 )
-                await send_message(chat_id, _format_action_draft_preview(extraction))
+                markup = build_draft_reply_markup(draft.id)
+                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=markup)
         except Exception as e:
             logger.error(f"Telegram routing failed: {e}")
             await send_message(chat_id, "Sorry, I had trouble processing that message. Please try again later.")

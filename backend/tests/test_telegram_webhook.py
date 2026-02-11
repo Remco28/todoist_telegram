@@ -32,6 +32,17 @@ def _tg_update(text, chat_id="12345"):
         },
     }
 
+def _tg_callback_update(data, chat_id="12345"):
+    return {
+        "update_id": 2,
+        "callback_query": {
+            "id": "cbq_1",
+            "from": {"id": 42, "username": "testuser"},
+            "message": {"message_id": 9, "chat": {"id": int(chat_id), "type": "private"}},
+            "data": data,
+        },
+    }
+
 
 def _headers(secret=VALID_SECRET):
     headers = {"Content-Type": "application/json"}
@@ -302,6 +313,30 @@ def test_non_command_yes_applies_open_draft(app_no_db, mock_send):
         assert resp.status_code == 200
         confirm_draft.assert_awaited_once()
         assert "applied" in mock_send.await_args.args[1].lower()
+
+
+def test_callback_confirm_applies_open_draft(app_no_db, mock_send):
+    fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}]}})()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._confirm_action_draft", new_callable=AsyncMock, return_value=AppliedChanges(tasks_created=1)
+    ) as confirm_draft, patch("api.main.answer_callback_query", new_callable=AsyncMock) as ack:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_callback_update("draft:confirm:drf_1"), headers=_headers())
+        assert resp.status_code == 200
+        ack.assert_awaited_once()
+        confirm_draft.assert_awaited_once()
+        assert "applied" in mock_send.await_args.args[1].lower()
+
+
+def test_callback_edit_prompts_for_edit_text(app_no_db, mock_send):
+    fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}]}})()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch("api.main.answer_callback_query", new_callable=AsyncMock):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_callback_update("draft:edit:drf_1"), headers=_headers())
+        assert resp.status_code == 200
+        assert "reply with" in mock_send.await_args.args[1].lower()
 
 
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
