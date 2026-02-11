@@ -26,6 +26,9 @@
 ## Release Readiness
 - `ops/DEPLOY_CHECKLIST.md`: release gates, deploy sequence, rollback checklist.
 - `ops/RESTORE_RUNBOOK.md`: restore steps and release-incident first-response flow.
+- `ops/PROD_ROLLOUT_CHECKLIST.md`: production rollout sequence, smoke checks, and sign-off.
+- `ops/SECRETS_ROTATION_RUNBOOK.md`: production secret rotation and post-rotation validation.
+- `ops/OPERATIONS_BASELINE.md`: monitoring thresholds, operator checklists, and incident baseline.
 - Staging smoke invocation:
   - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
 

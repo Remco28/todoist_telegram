@@ -387,3 +387,9 @@
 [2026-02-11 08:40] [ARCHITECT]: TRANSITION: Created branch `architect/phase-13-production-rollout`.
 [2026-02-11 08:41] [ARCHITECT]: SPEC READY: Published Phase 13 production rollout spec at `comms/tasks/2026-02-11-phase-13-production-rollout-spec.md` and updated planning docs (`docs/PHASES.md`, `docs/EXECUTION_PLAN.md`, `docs/README.md`).
 [2026-02-11 08:41] [ARCHITECT]: CLOSEOUT: Archived Phase 12 spec to `comms/tasks/archive/2026-02-10-phase-12-release-readiness-spec.md`.
+[2026-02-11 08:50] [DEVELOPER]: IMPL IN_PROGRESS: Phase 13 operations documentation deliverables.
+[2026-02-11 08:53] [DEVELOPER]: IMPL DONE: Phase 13 operations docs implemented.
+- Added `ops/PROD_ROLLOUT_CHECKLIST.md` (production rollout gates, smoke validation, rollback triggers, sign-off template).
+- Added `ops/SECRETS_ROTATION_RUNBOOK.md` (rotation procedures for auth/xAI/Todoist/DB/Redis/Telegram secrets).
+- Added `ops/OPERATIONS_BASELINE.md` (health signals, alert thresholds, daily/weekly operator routines, incident first actions).
+- Updated `docs/README.md` release-readiness index with new Phase 13 operational docs.
