@@ -19,7 +19,7 @@ from common.config import settings
 from common.models import (
     Base, IdempotencyKey, InboxItem, Task, Goal, Problem, 
     EntityLink, EventLog, PromptRun, TaskStatus, GoalStatus, 
-    ProblemStatus, LinkType, EntityType, TodoistTaskMap,
+    ProblemStatus, LinkType, EntityType, TodoistTaskMap, RecentContextItem,
     TelegramUserMap, TelegramLinkToken, ActionDraft
 )
 from common.adapter import adapter
@@ -237,10 +237,82 @@ def _derive_bulk_complete_actions(message: str, grounding: Dict[str, Any]) -> Li
     return actions
 
 
+def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = (message or "").lower()
+    if is_query_like_text(raw):
+        return []
+
+    has_reference = any(
+        token in raw
+        for token in (
+            "those",
+            "them",
+            "that",
+            "these",
+            "this",
+            "it",
+            "assignments",
+            "tasks",
+            "ones",
+        )
+    )
+    has_completion_intent = any(
+        token in raw
+        for token in (
+            "mark",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "close",
+            "closed",
+        )
+    )
+    if not (has_reference and has_completion_intent):
+        return []
+
+    rows = grounding.get("recent_task_refs") if isinstance(grounding, dict) else None
+    if not isinstance(rows, list):
+        return []
+
+    actions: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = row.get("status")
+        if status in {"done", "archived"}:
+            continue
+        title = row.get("title")
+        task_id = row.get("id")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        if not isinstance(task_id, str) or not task_id.strip():
+            continue
+        actions.append(
+            {
+                "title": title.strip(),
+                "action": "complete",
+                "status": "done",
+                "target_task_id": task_id.strip(),
+            }
+        )
+    return actions
+
+
 def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extraction, dict):
         return {"tasks": [], "goals": [], "problems": [], "links": []}
     if _has_actionable_entities(extraction):
+        return extraction
+
+    reference_tasks = _derive_reference_complete_actions(message, grounding)
+    if reference_tasks:
+        extraction = dict(extraction)
+        extraction["tasks"] = reference_tasks
+        extraction.setdefault("goals", [])
+        extraction.setdefault("problems", [])
+        extraction.setdefault("links", [])
         return extraction
 
     fallback_tasks = _derive_bulk_complete_actions(message, grounding)
@@ -555,7 +627,45 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
     prepared.sort(key=lambda item: item[0], reverse=True)
     max_items = 12 if terms else 8
     tasks = [item[1] for item in prepared[:max_items]]
-    return {"chat_id": chat_id, "current_date_utc": utc_now().date().isoformat(), "tasks": tasks}
+    recent_refs: List[Dict[str, Any]] = []
+    now = utc_now()
+    recent_stmt = (
+        select(RecentContextItem)
+        .where(
+            RecentContextItem.user_id == user_id,
+            RecentContextItem.chat_id == chat_id,
+            RecentContextItem.entity_type == EntityType.task,
+            RecentContextItem.expires_at >= now,
+        )
+        .order_by(RecentContextItem.surfaced_at.desc())
+        .limit(24)
+    )
+    recent_rows = (await db.execute(recent_stmt)).scalars().all()
+    recent_task_ids: List[str] = []
+    seen: set[str] = set()
+    for row in recent_rows:
+        if row.entity_id not in seen:
+            seen.add(row.entity_id)
+            recent_task_ids.append(row.entity_id)
+        if len(recent_task_ids) >= 8:
+            break
+    if recent_task_ids:
+        recent_tasks_stmt = select(Task).where(Task.user_id == user_id, Task.id.in_(recent_task_ids))
+        recent_tasks = (await db.execute(recent_tasks_stmt)).scalars().all()
+        task_by_id = {task.id: task for task in recent_tasks}
+        for task_id in recent_task_ids:
+            task = task_by_id.get(task_id)
+            if not task:
+                continue
+            status = task.status.value if hasattr(task.status, "value") else str(task.status)
+            recent_refs.append({"id": task.id, "title": task.title, "status": status})
+
+    return {
+        "chat_id": chat_id,
+        "current_date_utc": utc_now().date().isoformat(),
+        "tasks": tasks,
+        "recent_task_refs": recent_refs,
+    }
 
 
 async def _enqueue_summary_job(user_id: str, chat_id: str, inbox_item_id: str) -> None:
@@ -573,6 +683,39 @@ async def _enqueue_todoist_sync_job(user_id: str) -> None:
         "default_queue",
         json.dumps({"job_id": sync_job_id, "topic": "sync.todoist", "payload": {"user_id": user_id}}),
     )
+
+
+async def _remember_recent_tasks(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    task_ids: List[str],
+    reason: str,
+    ttl_hours: int = 24,
+) -> None:
+    now = utc_now()
+    expires_at = now + timedelta(hours=max(1, ttl_hours))
+    unique_ids: List[str] = []
+    seen: set[str] = set()
+    for task_id in task_ids:
+        if isinstance(task_id, str) and task_id and task_id not in seen:
+            seen.add(task_id)
+            unique_ids.append(task_id)
+    if not unique_ids:
+        return
+    for task_id in unique_ids[:12]:
+        db.add(
+            RecentContextItem(
+                id=f"rcx_{uuid.uuid4().hex[:12]}",
+                user_id=user_id,
+                chat_id=chat_id,
+                entity_type=EntityType.task,
+                entity_id=task_id,
+                reason=reason,
+                surfaced_at=now,
+                expires_at=expires_at,
+            )
+        )
 
 
 def _parse_due_date(value: Any) -> Optional[date]:
@@ -612,6 +755,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
     Returns (inbox_item_id, applied: AppliedChanges)."""
     applied = AppliedChanges()
     inbox_item_id = f"inb_{uuid.uuid4().hex[:12]}"
+    touched_task_ids: List[str] = []
     db.add(InboxItem(
         id=inbox_item_id, user_id=user_id, chat_id=chat_id, source=source,
         client_msg_id=client_msg_id, message_raw=message, message_norm=message.strip(),
@@ -668,6 +812,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                     existing.completed_at = None
             existing.updated_at = datetime.utcnow()
             entity_map[(EntityType.task, title_norm)] = existing.id
+            touched_task_ids.append(existing.id)
             applied.tasks_updated += 1
         else:
             if action in {"archive", "complete", "noop"}:
@@ -695,6 +840,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
             ))
             entity_map[(EntityType.task, title_norm)] = task_id
+            touched_task_ids.append(task_id)
             applied.tasks_created += 1
 
     for g_data in extraction.get("goals", []):
@@ -731,6 +877,14 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 applied.links_created += 1
         except Exception as e:
             db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
+
+    await _remember_recent_tasks(
+        db=db,
+        user_id=user_id,
+        chat_id=chat_id,
+        task_ids=touched_task_ids,
+        reason="capture_apply",
+    )
 
     if commit:
         await db.commit()
@@ -1337,6 +1491,20 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
 
                 if intent == "query":
                     response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
+                    discussed_task_ids = [
+                        row.get("id")
+                        for row in (grounding.get("tasks") if isinstance(grounding, dict) else [])
+                        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+                    ]
+                    await _remember_recent_tasks(
+                        db=db,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        task_ids=discussed_task_ids[:6],
+                        reason="query_context",
+                        ttl_hours=12,
+                    )
+                    await db.commit()
                     await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
                     return {"status": "ok"}
 

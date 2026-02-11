@@ -212,6 +212,57 @@ def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, 
         assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
+def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.8,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+            {"id": "tsk_3", "title": "Read a chapter and annotate it", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+            {"id": "tsk_3", "title": "Read a chapter and annotate it", "status": "open"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("All of those assignments are done now. Mark them as complete."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 3
+        assert extraction["tasks"][0]["action"] == "complete"
+        assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
+        assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
+        assert extraction["tasks"][2]["target_task_id"] == "tsk_3"
+
+
 def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
     planned = {
         "intent": "action",
