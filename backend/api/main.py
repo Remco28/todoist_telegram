@@ -177,14 +177,14 @@ def _build_telegram_deep_link(raw_token: str) -> Optional[str]:
 
 async def _issue_telegram_link_token(user_id: str, db: AsyncSession) -> TelegramLinkTokenCreateResponse:
     raw_token = secrets.token_urlsafe(24)
-    expires_at = datetime.utcnow() + timedelta(seconds=settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS)
+    expires_at = utc_now() + timedelta(seconds=settings.TELEGRAM_LINK_TOKEN_TTL_SECONDS)
     record = TelegramLinkToken(
         id=f"tlt_{uuid.uuid4().hex[:12]}",
         token_hash=_hash_link_token(raw_token),
         user_id=user_id,
         expires_at=expires_at,
         consumed_at=None,
-        created_at=datetime.utcnow(),
+        created_at=utc_now(),
     )
     db.add(record)
     await db.commit()
@@ -200,7 +200,7 @@ async def _resolve_telegram_user(chat_id: str, db: AsyncSession) -> Optional[str
     mapping = (await db.execute(stmt)).scalar_one_or_none()
     if not mapping:
         return None
-    mapping.last_seen_at = datetime.utcnow()
+    mapping.last_seen_at = utc_now()
     await db.commit()
     return mapping.user_id
 
@@ -213,12 +213,15 @@ async def _consume_telegram_link_token(chat_id: str, username: Optional[str], ra
         return False
     if token_row.consumed_at is not None:
         return False
-    if token_row.expires_at < datetime.utcnow():
+    expires_at = token_row.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < utc_now():
         return False
 
     mapping_stmt = select(TelegramUserMap).where(TelegramUserMap.chat_id == chat_id)
     mapping = (await db.execute(mapping_stmt)).scalar_one_or_none()
-    now = datetime.utcnow()
+    now = utc_now()
     if mapping:
         mapping.user_id = token_row.user_id
         mapping.telegram_username = username
