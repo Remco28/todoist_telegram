@@ -3,6 +3,7 @@ import hashlib
 import json
 import copy
 import time
+import re
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone, date
@@ -343,7 +344,7 @@ def _is_completion_request(message: str) -> bool:
     raw = (message or "").strip().lower()
     if not raw or is_query_like_text(raw):
         return False
-    return any(
+    has_explicit_completion = any(
         token in raw
         for token in (
             "mark",
@@ -356,6 +357,15 @@ def _is_completion_request(message: str) -> bool:
             "closed",
         )
     )
+    if has_explicit_completion:
+        return True
+    # Soft completion statements like "I cleaned the keyboard already."
+    if "took care of" in raw or "already" in raw:
+        if raw.startswith("i ") or raw.startswith("i've ") or raw.startswith("i have "):
+            words = re.findall(r"[a-zA-Z]{4,}", raw)
+            if any(word.endswith("ed") for word in words):
+                return True
+    return False
 
 
 def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -390,7 +400,8 @@ def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]
 
 
 def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
-    if not _is_completion_request(message):
+    raw = (message or "").strip().lower()
+    if not _is_completion_request(raw):
         return []
     rows = _completion_candidate_rows(grounding)
     if not rows:
@@ -400,7 +411,11 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
     if not open_rows:
         return []
 
-    message_terms = _grounding_terms((message or "").lower())
+    explicit_completion = any(
+        token in raw
+        for token in ("mark", "done", "complete", "completed", "finish", "finished", "close", "closed")
+    )
+    message_terms = _grounding_terms(raw)
     message_terms = {
         term
         for term in message_terms
@@ -447,31 +462,34 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
             explicit_rows.append(row)
     selected_rows = explicit_rows
     if not selected_rows:
-        raw = (message or "").lower()
-        has_global_scope = any(
-            phrase in raw
-            for phrase in (
-                "everything",
-                "all tasks",
-                "all my tasks",
-                "all of my tasks",
-                "all open tasks",
+        if not explicit_completion:
+            # For soft "I already ...ed" statements, only explicit matches are safe.
+            selected_rows = []
+        else:
+            has_global_scope = any(
+                phrase in raw
+                for phrase in (
+                    "everything",
+                    "all tasks",
+                    "all my tasks",
+                    "all of my tasks",
+                    "all open tasks",
+                )
             )
-        )
-        has_reference = any(
-            token in raw
-            for token in ("those", "them", "that", "these", "this", "it", "assignments", "tasks", "ones")
-        )
-        if has_global_scope:
-            selected_rows = open_rows
-        elif has_reference:
-            recent_rows = grounding.get("recent_task_refs") if isinstance(grounding, dict) else []
-            recent_ids = {
-                row.get("id")
-                for row in recent_rows
-                if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
-            }
-            selected_rows = [row for row in open_rows if row["id"] in recent_ids] or open_rows
+            has_reference = any(
+                token in raw
+                for token in ("those", "them", "that", "these", "this", "it", "assignments", "tasks", "ones")
+            )
+            if has_global_scope:
+                selected_rows = open_rows
+            elif has_reference:
+                recent_rows = grounding.get("recent_task_refs") if isinstance(grounding, dict) else []
+                recent_ids = {
+                    row.get("id")
+                    for row in recent_rows
+                    if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+                }
+                selected_rows = [row for row in open_rows if row["id"] in recent_ids] or open_rows
     actions: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for row in selected_rows:
