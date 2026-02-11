@@ -87,6 +87,23 @@ def _parse_draft_callback(callback_data: str) -> tuple[Optional[str], Optional[s
     return action, draft_id.strip()
 
 
+def _draft_set_awaiting_edit_input(draft: ActionDraft, value: bool) -> None:
+    proposal = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
+    meta = proposal.get("_meta") if isinstance(proposal.get("_meta"), dict) else {}
+    meta["awaiting_edit_input"] = bool(value)
+    proposal["_meta"] = meta
+    draft.proposal_json = proposal
+
+
+def _draft_is_awaiting_edit_input(draft: ActionDraft) -> bool:
+    if not isinstance(draft.proposal_json, dict):
+        return False
+    meta = draft.proposal_json.get("_meta")
+    if not isinstance(meta, dict):
+        return False
+    return bool(meta.get("awaiting_edit_input"))
+
+
 def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
     tasks = [t.get("title", "").strip() for t in extraction.get("tasks", []) if isinstance(t, dict) and isinstance(t.get("title"), str)]
     goals = [g.get("title", "").strip() for g in extraction.get("goals", []) if isinstance(g, dict) and isinstance(g.get("title"), str)]
@@ -330,6 +347,7 @@ async def _create_action_draft(
         created_at=now,
         updated_at=now,
     )
+    _draft_set_awaiting_edit_input(draft, False)
     db.add(draft)
     db.add(
         EventLog(
@@ -371,6 +389,7 @@ async def _revise_action_draft(
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
+    _draft_set_awaiting_edit_input(draft, False)
     draft.updated_at = _draft_now()
     draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
     db.add(
@@ -1194,7 +1213,11 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
             await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
             await send_message(chat_id, "Discarded the pending proposal.")
         elif action == "edit":
-            await send_message(chat_id, "Reply with <code>edit ...</code> and your changes.")
+            _draft_set_awaiting_edit_input(open_draft, True)
+            open_draft.updated_at = _draft_now()
+            open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
+            await db.commit()
+            await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
         return {"status": "ok"}
     
     # 3. Command Routing
@@ -1223,6 +1246,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         try:
             open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
             draft_action, draft_arg = _parse_draft_reply(text)
+            awaiting_edit_input = bool(open_draft and _draft_is_awaiting_edit_input(open_draft))
 
             if open_draft and draft_action == "confirm":
                 applied = await _confirm_action_draft(
@@ -1234,10 +1258,19 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 await send_message(chat_id, "Discarded the pending proposal.")
             elif open_draft and draft_action == "edit":
                 if not draft_arg:
-                    await send_message(chat_id, "Please include your change after edit. Example: <code>edit split this into 3 tasks</code>")
+                    _draft_set_awaiting_edit_input(open_draft, True)
+                    open_draft.updated_at = _draft_now()
+                    open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
+                    await db.commit()
+                    await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
                     return {"status": "ok"}
                 extraction = await _revise_action_draft(
                     draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
+                )
+                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=build_draft_reply_markup(open_draft.id))
+            elif open_draft and awaiting_edit_input and draft_action is None and not is_query_like_text(text):
+                extraction = await _revise_action_draft(
+                    draft=open_draft, user_id=user_id, request_id=request_id, edit_text=text, db=db
                 )
                 await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=build_draft_reply_markup(open_draft.id))
             elif open_draft and draft_action is None and not is_query_like_text(text):

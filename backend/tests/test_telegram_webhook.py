@@ -336,7 +336,22 @@ def test_callback_edit_prompts_for_edit_text(app_no_db, mock_send):
     ), patch("api.main.answer_callback_query", new_callable=AsyncMock):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_callback_update("draft:edit:drf_1"), headers=_headers())
         assert resp.status_code == 200
-        assert "reply with" in mock_send.await_args.args[1].lower()
+        assert "reply with your changes" in mock_send.await_args.args[1].lower()
+
+
+def test_edit_button_then_plain_message_revises_draft(app_no_db, mock_send):
+    fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}], "_meta": {"awaiting_edit_input": True}}})()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._revise_action_draft",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"title": "Task B"}], "goals": [], "problems": [], "links": []},
+    ) as revise_draft:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Change this to task B"), headers=_headers())
+        assert resp.status_code == 200
+        revise_draft.assert_awaited_once()
+        assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
