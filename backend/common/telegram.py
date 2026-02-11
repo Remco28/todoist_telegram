@@ -110,6 +110,35 @@ async def answer_callback_query(callback_query_id: str, text: Optional[str] = No
         return {"ok": False, "error": str(e)}
 
 
+async def edit_message(chat_id: str, message_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "token_missing"}
+    url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/editMessageText"
+    safe_text = (text or "")[:TELEGRAM_TEXT_MAX_LEN]
+    payload: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": safe_text,
+        "parse_mode": "HTML",
+    }
+    if isinstance(reply_markup, dict):
+        payload["reply_markup"] = reply_markup
+    try:
+        async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code < 400:
+                return resp.json()
+            logger.warning(
+                "Telegram edit failed (status=%s, body=%s).",
+                resp.status_code,
+                resp.text,
+            )
+            return {"ok": False, "error": f"status_{resp.status_code}"}
+    except Exception as e:
+        logger.error(f"Failed to edit Telegram message: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 async def send_message(chat_id: str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Sends a message back to Telegram.

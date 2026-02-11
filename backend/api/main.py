@@ -33,7 +33,7 @@ from api.schemas import (
     TodoistSyncStatusResponse, TelegramLinkTokenCreateResponse
 )
 from common.telegram import (
-    verify_telegram_secret, parse_update, extract_command, send_message, answer_callback_query, build_draft_reply_markup,
+    verify_telegram_secret, parse_update, extract_command, send_message, edit_message, answer_callback_query, build_draft_reply_markup,
     format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
     escape_html, is_query_like_text, format_query_answer
 )
@@ -102,6 +102,39 @@ def _draft_is_awaiting_edit_input(draft: ActionDraft) -> bool:
     if not isinstance(meta, dict):
         return False
     return bool(meta.get("awaiting_edit_input"))
+
+
+def _draft_set_proposal_message_id(draft: ActionDraft, message_id: int) -> None:
+    proposal = draft.proposal_json if isinstance(draft.proposal_json, dict) else {}
+    meta = proposal.get("_meta") if isinstance(proposal.get("_meta"), dict) else {}
+    meta["proposal_message_id"] = int(message_id)
+    proposal["_meta"] = meta
+    draft.proposal_json = proposal
+
+
+def _draft_get_proposal_message_id(draft: ActionDraft) -> Optional[int]:
+    if not isinstance(draft.proposal_json, dict):
+        return None
+    meta = draft.proposal_json.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    message_id = meta.get("proposal_message_id")
+    if isinstance(message_id, int):
+        return message_id
+    return None
+
+
+async def _send_or_edit_draft_preview(chat_id: str, draft: ActionDraft, text: str) -> None:
+    markup = build_draft_reply_markup(draft.id)
+    message_id = _draft_get_proposal_message_id(draft)
+    if message_id is not None:
+        edited = await edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=markup)
+        if edited.get("ok") is True:
+            return
+    sent = await send_message(chat_id, text, reply_markup=markup)
+    result = sent.get("result") if isinstance(sent, dict) else None
+    if isinstance(result, dict) and isinstance(result.get("message_id"), int):
+        _draft_set_proposal_message_id(draft, result["message_id"])
 
 
 def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
@@ -1267,12 +1300,14 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 extraction = await _revise_action_draft(
                     draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
                 )
-                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=build_draft_reply_markup(open_draft.id))
+                await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
+                await db.commit()
             elif open_draft and awaiting_edit_input and draft_action is None and not is_query_like_text(text):
                 extraction = await _revise_action_draft(
                     draft=open_draft, user_id=user_id, request_id=request_id, edit_text=text, db=db
                 )
-                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=build_draft_reply_markup(open_draft.id))
+                await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
+                await db.commit()
             elif open_draft and draft_action is None and not is_query_like_text(text):
                 await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
             else:
@@ -1365,8 +1400,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                     extraction=extraction,
                     request_id=request_id,
                 )
-                markup = build_draft_reply_markup(draft.id)
-                await send_message(chat_id, _format_action_draft_preview(extraction), reply_markup=markup)
+                await _send_or_edit_draft_preview(chat_id, draft, _format_action_draft_preview(extraction))
+                await db.commit()
         except Exception as e:
             logger.error(f"Telegram routing failed: {e}")
             await send_message(chat_id, "Sorry, I had trouble processing that message. Please try again later.")

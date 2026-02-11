@@ -354,6 +354,31 @@ def test_edit_button_then_plain_message_revises_draft(app_no_db, mock_send):
         assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
+def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send):
+    fake_draft = type(
+        "Draft",
+        (),
+        {
+            "id": "drf_1",
+            "source_message": "plan kitchen",
+            "proposal_json": {"tasks": [{"title": "Task A"}], "_meta": {"proposal_message_id": 321}},
+            "updated_at": datetime.utcnow(),
+            "expires_at": datetime.utcnow(),
+        },
+    )()
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._revise_action_draft",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"title": "Task B"}], "goals": [], "problems": [], "links": []},
+    ), patch("api.main.edit_message", new_callable=AsyncMock, return_value={"ok": True}) as edit_msg:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("edit rename to task B"), headers=_headers())
+        assert resp.status_code == 200
+        edit_msg.assert_awaited_once()
+        mock_send.assert_not_awaited()
+
+
 def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value=None), patch(
         "api.main.handle_telegram_command", new_callable=AsyncMock
