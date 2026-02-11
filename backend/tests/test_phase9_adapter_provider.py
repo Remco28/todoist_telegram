@@ -208,3 +208,59 @@ def test_retry_exhaustion_uses_fallback_policy():
             _restore_provider_settings(original)
 
     asyncio.run(_run())
+
+
+def test_action_plan_success_shape():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"intent":"action","scope":"all_open","actions":[{"entity_type":"task","action":"complete","title":"Replace fan","target_task_id":"tsk_1"}],"confidence":0.92,"needs_confirmation":true}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.plan_actions("mark everything done", context={"grounding": {"tasks": []}})
+            assert out["intent"] == "action"
+            assert out["scope"] == "all_open"
+            assert isinstance(out["actions"], list)
+            assert out["confidence"] == 0.92
+            assert out["needs_confirmation"] is True
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_action_critic_rejection_shape():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"approved":false,"issues":["missing target id"],"revised_actions":[{"entity_type":"task","action":"complete","title":"Replace fan","target_task_id":"tsk_1"}]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.critique_actions(
+                    "done",
+                    context={"grounding": {"tasks": []}},
+                    proposal={"actions": []},
+                )
+            assert out["approved"] is False
+            assert out["issues"] == ["missing target id"]
+            assert isinstance(out.get("revised_actions"), list)
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())

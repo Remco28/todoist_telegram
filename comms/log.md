@@ -423,3 +423,11 @@
 - Updated prompt contract to add `action_plan` and `action_critic` operation expectations and explicit executor non-inference rule.
 - Updated project direction and execution plan to state phrase heuristics are temporary fallback only, not primary logic.
 - Updated Phase 14 spec to require planner+critic path and heuristic-fallback audit logging.
+[2026-02-11 18:42] [DEVELOPER]: IMPL DONE: LLM-first Telegram planner+critic primary path (Phase 14 progression).
+- Added adapter operations `plan_actions` and `critique_actions` with provider-backed JSON contracts and safe fallbacks.
+- Updated Telegram non-command flow to use planner intent/actions first, then critic review, before draft creation.
+- Added event logging for planner and critic outcomes (`telegram_action_planned`, `telegram_action_critic_result`).
+- Preserved compatibility fallback to extract + heuristic fallback path with explicit `action_fallback_heuristic_used` event.
+- Added action-to-extraction translation so executor still consumes validated structured payload.
+- Expanded tests for planner-primary action flow, critic-reject clarification flow, and adapter planner/critic contract normalization.
+- Validation: `cd backend && pytest -q` => 58 passed, 1 skipped.

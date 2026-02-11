@@ -99,6 +99,8 @@ class LLMAdapter:
     def _model_for(self, operation: str) -> str:
         if operation == "extract":
             return settings.LLM_MODEL_EXTRACT
+        if operation in {"action_plan", "action_critic"}:
+            return settings.LLM_MODEL_EXTRACT
         if operation == "query":
             return settings.LLM_MODEL_QUERY
         if operation == "plan":
@@ -352,6 +354,89 @@ class LLMAdapter:
             return normalized
         except Exception as exc:
             logger.warning("extract_structured_updates fallback: %s", type(exc).__name__)
+            return fallback
+
+    async def plan_actions(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        fallback = {
+            "intent": "query" if "?" in (message or "") else "action",
+            "scope": "single",
+            "actions": [],
+            "confidence": 0.0,
+            "needs_confirmation": True,
+        }
+        prompt = (
+            "Operation: action_plan.\n"
+            "Given user message and context, decide if this is query or action intent.\n"
+            "Return JSON with keys: intent, scope, actions, confidence, needs_confirmation.\n"
+            "intent must be query or action.\n"
+            "scope must be one of single|subset|all_open|all_matching.\n"
+            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional priority.\n"
+            "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
+            "Return only JSON."
+        )
+        try:
+            payload: Dict[str, Any] = {"message": message}
+            if isinstance(context, dict):
+                payload["context"] = context
+            raw = await self._invoke_operation("action_plan", prompt, json.dumps(payload, ensure_ascii=True))
+            intent = raw.get("intent")
+            scope = raw.get("scope")
+            actions = raw.get("actions")
+            confidence = raw.get("confidence")
+            needs_confirmation = raw.get("needs_confirmation")
+            if intent not in {"query", "action"}:
+                raise ValueError("Invalid planner intent")
+            if scope not in {"single", "subset", "all_open", "all_matching"}:
+                scope = "single"
+            if not isinstance(actions, list):
+                actions = []
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.0
+            if not isinstance(needs_confirmation, bool):
+                needs_confirmation = True
+            return {
+                "intent": intent,
+                "scope": scope,
+                "actions": actions,
+                "confidence": float(confidence),
+                "needs_confirmation": needs_confirmation,
+            }
+        except Exception as exc:
+            logger.warning("plan_actions fallback: %s", type(exc).__name__)
+            return fallback
+
+    async def critique_actions(
+        self,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        proposal: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        fallback = {"approved": True, "issues": []}
+        prompt = (
+            "Operation: action_critic.\n"
+            "Review the proposed actions for correctness and safety.\n"
+            "Return JSON with keys: approved (bool), issues (array of strings), optional revised_actions (array).\n"
+            "Reject duplicates, unresolved targets, contradictory updates, and risky broad updates without clear scope.\n"
+            "Return only JSON."
+        )
+        try:
+            payload: Dict[str, Any] = {"message": message, "proposal": proposal or {}}
+            if isinstance(context, dict):
+                payload["context"] = context
+            raw = await self._invoke_operation("action_critic", prompt, json.dumps(payload, ensure_ascii=True))
+            approved = raw.get("approved")
+            issues = raw.get("issues")
+            revised_actions = raw.get("revised_actions")
+            if not isinstance(approved, bool):
+                approved = True
+            if not isinstance(issues, list):
+                issues = []
+            out: Dict[str, Any] = {"approved": approved, "issues": [str(x) for x in issues[:10]]}
+            if isinstance(revised_actions, list):
+                out["revised_actions"] = revised_actions
+            return out
+        except Exception as exc:
+            logger.warning("critique_actions fallback: %s", type(exc).__name__)
             return fallback
 
     async def summarize_memory(self, context: str) -> Dict[str, Any]:

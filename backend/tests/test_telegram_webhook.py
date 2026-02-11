@@ -176,12 +176,79 @@ def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, 
         assert "proposed updates" in mock_send.await_args.args[1].lower()
 
 
+def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.88,
+        "needs_confirmation": True,
+        "actions": [
+            {"entity_type": "task", "action": "create", "title": "Call contractor", "priority": 2},
+            {"entity_type": "task", "action": "complete", "title": "Buy paint rollers", "target_task_id": "tsk_2"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Renovation update"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extract_fallback.assert_not_awaited()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 2
+        assert extraction["tasks"][0]["title"] == "Call contractor"
+        assert extraction["tasks"][1]["action"] == "complete"
+
+
+def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "all_open",
+        "confidence": 0.91,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "complete", "title": "Anything"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions",
+        new_callable=AsyncMock,
+        return_value={"approved": False, "issues": ["Missing target task references"]},
+    ):
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Mark all done"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        assert "need one clarification" in mock_send.await_args.args[1].lower()
+
+
 def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.query_ask", new_callable=AsyncMock
     ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture, patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
-    ), patch("api.main._create_action_draft", new_callable=AsyncMock) as create_draft:
+    ), patch("api.main._create_action_draft", new_callable=AsyncMock) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main.adapter.plan_actions",
+        new_callable=AsyncMock,
+        return_value={"intent": "query", "scope": "single", "actions": [], "confidence": 0.9, "needs_confirmation": False},
+    ):
         mocked_query.return_value = QueryResponseV1(answer="You have 2 open tasks.", confidence=0.9)
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What tasks are not completed?"), headers=_headers())
         assert resp.status_code == 200

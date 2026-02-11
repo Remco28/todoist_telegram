@@ -175,6 +175,57 @@ def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding:
     return extraction
 
 
+def _actions_to_extraction(actions: Any) -> Dict[str, Any]:
+    extraction: Dict[str, Any] = {"tasks": [], "goals": [], "problems": [], "links": []}
+    if not isinstance(actions, list):
+        return extraction
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        entity_type = action.get("entity_type")
+        op = action.get("action")
+        if entity_type == "task":
+            title = action.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            task_item: Dict[str, Any] = {"title": title.strip()}
+            if isinstance(op, str) and op in {"create", "update", "complete", "archive", "noop"}:
+                task_item["action"] = op
+                if op == "complete":
+                    task_item["status"] = "done"
+                elif op == "archive":
+                    task_item["status"] = "archived"
+            status = action.get("status")
+            if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
+                task_item["status"] = status
+            target_task_id = action.get("target_task_id")
+            if isinstance(target_task_id, str) and target_task_id.strip():
+                task_item["target_task_id"] = target_task_id.strip()
+            priority = action.get("priority")
+            if isinstance(priority, int) and 1 <= priority <= 4:
+                task_item["priority"] = priority
+            extraction["tasks"].append(task_item)
+        elif entity_type == "goal":
+            title = action.get("title")
+            if isinstance(title, str) and title.strip():
+                extraction["goals"].append({"title": title.strip()})
+        elif entity_type == "problem":
+            title = action.get("title")
+            if isinstance(title, str) and title.strip():
+                extraction["problems"].append({"title": title.strip()})
+        elif entity_type == "link":
+            link = {
+                "from_type": action.get("from_type"),
+                "from_title": action.get("from_title"),
+                "to_type": action.get("to_type"),
+                "to_title": action.get("to_title"),
+                "link_type": action.get("link_type"),
+            }
+            if all(isinstance(v, str) and v.strip() for v in link.values()):
+                extraction["links"].append({k: v.strip() for k, v in link.items()})
+    return extraction
+
+
 async def _get_open_action_draft(user_id: str, chat_id: str, db: AsyncSession) -> Optional[ActionDraft]:
     now = _draft_now()
     expire_stmt = (
@@ -1015,13 +1066,87 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 await send_message(chat_id, _format_action_draft_preview(extraction))
             elif open_draft and draft_action is None and not is_query_like_text(text):
                 await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
-            elif is_query_like_text(text):
-                response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
-                await send_message(chat_id, escape_html(response.answer))
             else:
                 grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id)
-                extraction = await adapter.extract_structured_updates(text, grounding=grounding)
+                planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
+                intent = planned.get("intent") if isinstance(planned, dict) else None
+                actions = planned.get("actions") if isinstance(planned, dict) else None
+
+                db.add(
+                    EventLog(
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="telegram_action_planned",
+                        payload_json={
+                            "chat_id": chat_id,
+                            "intent": intent,
+                            "confidence": planned.get("confidence") if isinstance(planned, dict) else None,
+                            "scope": planned.get("scope") if isinstance(planned, dict) else None,
+                            "actions_count": len(actions) if isinstance(actions, list) else 0,
+                        },
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                await db.commit()
+
+                if intent == "query":
+                    response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
+                    await send_message(chat_id, escape_html(response.answer))
+                    return {"status": "ok"}
+
+                extraction = _actions_to_extraction(actions)
+                critic = await adapter.critique_actions(
+                    text,
+                    context={"grounding": grounding, "chat_id": chat_id},
+                    proposal={"intent": intent, "actions": actions},
+                )
+                db.add(
+                    EventLog(
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="telegram_action_critic_result",
+                        payload_json={
+                            "chat_id": chat_id,
+                            "approved": critic.get("approved"),
+                            "issues": critic.get("issues"),
+                        },
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                await db.commit()
+
+                revised_actions = critic.get("revised_actions") if isinstance(critic, dict) else None
+                if isinstance(revised_actions, list):
+                    extraction = _actions_to_extraction(revised_actions)
+                if isinstance(critic, dict) and critic.get("approved") is False:
+                    issues = critic.get("issues") if isinstance(critic.get("issues"), list) else []
+                    issue_text = "\n".join([f"• {escape_html(str(i))}" for i in issues[:3]]) if issues else "• Proposal needs clarification."
+                    await send_message(
+                        chat_id,
+                        "I need one clarification before applying changes:\n"
+                        f"{issue_text}\n\n"
+                        "Reply with more detail, and I will revise the proposal.",
+                    )
+                    return {"status": "ok"}
+
+                # Compatibility fallback while planner quality matures.
+                if not _has_actionable_entities(extraction):
+                    extraction = await adapter.extract_structured_updates(text, grounding=grounding)
                 extraction = _apply_intent_fallbacks(text, extraction, grounding)
+                if not _has_actionable_entities(extraction):
+                    db.add(
+                        EventLog(
+                            id=str(uuid.uuid4()),
+                            request_id=request_id,
+                            user_id=user_id,
+                            event_type="action_fallback_heuristic_used",
+                            payload_json={"chat_id": chat_id, "reason": "planner_and_extract_empty"},
+                            created_at=datetime.utcnow(),
+                        )
+                    )
+                    await db.commit()
                 _validate_extraction_payload(extraction)
                 await _create_action_draft(
                     db=db,
