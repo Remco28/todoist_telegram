@@ -339,6 +339,225 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
     return actions
 
 
+def _is_completion_request(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw or is_query_like_text(raw):
+        return False
+    return any(
+        token in raw
+        for token in (
+            "mark",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "close",
+            "closed",
+        )
+    )
+
+
+def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(grounding, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for key in ("recent_task_refs", "tasks"):
+        rows = grounding.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            task_id = row.get("id")
+            title = row.get("title")
+            if not isinstance(task_id, str) or not task_id.strip():
+                continue
+            if not isinstance(title, str) or not title.strip():
+                continue
+            if task_id in seen:
+                continue
+            seen.add(task_id)
+            out.append(
+                {
+                    "id": task_id.strip(),
+                    "title": title.strip(),
+                    "status": str(row.get("status") or "").strip().lower(),
+                }
+            )
+    return out
+
+
+def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not _is_completion_request(message):
+        return []
+    rows = _completion_candidate_rows(grounding)
+    if not rows:
+        return []
+
+    open_rows = [row for row in rows if row.get("status") in {"open", "blocked"}]
+    if not open_rows:
+        return []
+
+    message_terms = _grounding_terms((message or "").lower())
+    message_terms = {
+        term
+        for term in message_terms
+        if term
+        not in {
+            "mark",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "close",
+            "closed",
+            "all",
+            "those",
+            "them",
+            "that",
+            "these",
+            "this",
+            "it",
+            "assignments",
+            "tasks",
+            "ones",
+            "now",
+        }
+    }
+
+    explicit_rows: List[Dict[str, Any]] = []
+
+    def _has_term_overlap(title_terms: set[str], msg_terms: set[str]) -> bool:
+        for m in msg_terms:
+            if len(m) < 4:
+                continue
+            for t in title_terms:
+                if len(t) < 4:
+                    continue
+                if m == t or m.startswith(t) or t.startswith(m):
+                    return True
+        return False
+
+    for row in open_rows:
+        title_terms = _grounding_terms(row["title"].lower())
+        if _has_term_overlap(title_terms, message_terms):
+            explicit_rows.append(row)
+    selected_rows = explicit_rows
+    if not selected_rows:
+        raw = (message or "").lower()
+        has_global_scope = any(
+            phrase in raw
+            for phrase in (
+                "everything",
+                "all tasks",
+                "all my tasks",
+                "all of my tasks",
+                "all open tasks",
+            )
+        )
+        has_reference = any(
+            token in raw
+            for token in ("those", "them", "that", "these", "this", "it", "assignments", "tasks", "ones")
+        )
+        if has_global_scope:
+            selected_rows = open_rows
+        elif has_reference:
+            recent_rows = grounding.get("recent_task_refs") if isinstance(grounding, dict) else []
+            recent_ids = {
+                row.get("id")
+                for row in recent_rows
+                if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+            }
+            selected_rows = [row for row in open_rows if row["id"] in recent_ids] or open_rows
+    actions: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in selected_rows:
+        task_id = row.get("id")
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        actions.append(
+            {
+                "title": row["title"],
+                "action": "complete",
+                "status": "done",
+                "target_task_id": task_id,
+            }
+        )
+    return actions
+
+
+def _sanitize_completion_extraction(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_completion_request(message):
+        return extraction if isinstance(extraction, dict) else {"tasks": [], "goals": [], "problems": [], "links": []}
+
+    rows = _completion_candidate_rows(grounding)
+    open_by_id: Dict[str, Dict[str, Any]] = {}
+    open_by_title: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if row.get("status") not in {"open", "blocked"}:
+            continue
+        task_id = row["id"]
+        open_by_id[task_id] = row
+        open_by_title[row["title"].lower().strip()] = row
+
+    sanitized_tasks: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    raw_tasks = extraction.get("tasks", []) if isinstance(extraction, dict) else []
+    if isinstance(raw_tasks, list):
+        for task in raw_tasks:
+            if not isinstance(task, dict):
+                continue
+            action = str(task.get("action") or "").lower()
+            status = str(task.get("status") or "").lower()
+            if action not in {"complete", ""} and status != "done":
+                continue
+            candidate = None
+            target_id = task.get("target_task_id")
+            if isinstance(target_id, str) and target_id.strip():
+                candidate = open_by_id.get(target_id.strip())
+            if candidate is None:
+                title = task.get("title")
+                if isinstance(title, str) and title.strip():
+                    candidate = open_by_title.get(title.strip().lower())
+            if candidate is None:
+                continue
+            task_id = candidate["id"]
+            if task_id in seen:
+                continue
+            seen.add(task_id)
+            sanitized_tasks.append(
+                {
+                    "title": candidate["title"],
+                    "action": "complete",
+                    "status": "done",
+                    "target_task_id": task_id,
+                }
+            )
+
+    resolved_tasks = _resolve_completion_actions(message, grounding)
+    if not sanitized_tasks:
+        sanitized_tasks = resolved_tasks
+    elif resolved_tasks:
+        sanitized_ids = {
+            task.get("target_task_id")
+            for task in sanitized_tasks
+            if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
+        }
+        resolved_ids = {
+            task.get("target_task_id")
+            for task in resolved_tasks
+            if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
+        }
+        if sanitized_ids and sanitized_ids.issubset(resolved_ids):
+            sanitized_tasks = resolved_tasks
+
+    return {"tasks": sanitized_tasks, "goals": [], "problems": [], "links": []}
+
+
 def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extraction, dict):
         return {"tasks": [], "goals": [], "problems": [], "links": []}
@@ -531,6 +750,7 @@ async def _revise_action_draft(
     grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id, message=revised_message)
     extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
     extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
+    extraction = _sanitize_completion_extraction(revised_message, extraction, grounding)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
@@ -1572,7 +1792,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 revised_actions = critic.get("revised_actions") if isinstance(critic, dict) else None
                 if isinstance(revised_actions, list):
                     extraction = _actions_to_extraction(revised_actions)
-                if isinstance(critic, dict) and critic.get("approved") is False:
+                completion_request = _is_completion_request(text)
+                if isinstance(critic, dict) and critic.get("approved") is False and not completion_request:
                     issues = critic.get("issues") if isinstance(critic.get("issues"), list) else []
                     issue_text = "\n".join([f"• {escape_html(str(i))}" for i in issues[:3]]) if issues else "• Proposal needs clarification."
                     await send_message(
@@ -1587,7 +1808,15 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 if not _has_actionable_entities(extraction):
                     extraction = await adapter.extract_structured_updates(text, grounding=grounding)
                 extraction = _apply_intent_fallbacks(text, extraction, grounding)
+                extraction = _sanitize_completion_extraction(text, extraction, grounding)
                 if not _has_actionable_entities(extraction):
+                    if completion_request:
+                        await send_message(
+                            chat_id,
+                            "I could not find open matching tasks to complete. They may already be done.\n"
+                            "Ask me to list open tasks, then try again.",
+                        )
+                        return {"status": "ok"}
                     db.add(
                         EventLog(
                             id=str(uuid.uuid4()),
@@ -1631,6 +1860,7 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
             grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id, message=payload.message)
             extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
             extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
+            extraction = _sanitize_completion_extraction(payload.message, extraction, grounding)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             _validate_extraction_payload(extraction)

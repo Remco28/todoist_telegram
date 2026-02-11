@@ -315,6 +315,100 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
         assert extraction["tasks"][1]["action"] == "complete"
 
 
+def test_completion_request_filters_out_non_completion_planner_actions(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.9,
+        "needs_confirmation": True,
+        "actions": [
+            {"entity_type": "task", "action": "create", "title": "Do 100 pushups"},
+            {"entity_type": "task", "action": "complete", "title": "Do French homework"},
+        ],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+            {"id": "tsk_3", "title": "Read a chapter and annotate it", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "open"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "open"},
+            {"id": "tsk_3", "title": "Read a chapter and annotate it", "status": "open"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("The French homework, memorize script, and reading a chapter are all done. Mark them complete."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["goals"] == []
+        assert extraction["problems"] == []
+        assert extraction["links"] == []
+        ids = {t["target_task_id"] for t in extraction["tasks"]}
+        assert ids == {"tsk_1", "tsk_2", "tsk_3"}
+        titles = {t["title"] for t in extraction["tasks"]}
+        assert "Do 100 pushups" not in titles
+
+
+def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no_db, mock_send):
+    planned = {"intent": "action", "scope": "single", "confidence": 0.8, "needs_confirmation": True, "actions": []}
+    grounding = {
+        "tasks": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "done"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "done"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_1", "title": "Do French homework", "status": "done"},
+            {"id": "tsk_2", "title": "Memorize a script", "status": "done"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": False, "issues": ["already done"]}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("French homework and memorize script are done. Mark them complete."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        assert "could not find open matching tasks" in mock_send.await_args.args[1].lower()
+
+
 def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):
     planned = {
         "intent": "action",
@@ -336,7 +430,7 @@ def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_s
         new_callable=AsyncMock,
         return_value={"approved": False, "issues": ["Missing target task references"]},
     ):
-        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Mark all done"), headers=_headers())
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Please organize this plan"), headers=_headers())
         assert resp.status_code == 200
         create_draft.assert_not_awaited()
         assert "need one clarification" in mock_send.await_args.args[1].lower()
