@@ -292,8 +292,9 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             existing = (await db.execute(stmt)).scalar_one_or_none()
         action = t_data.get("action")
         if existing:
-            existing.title = t_data["title"]
-            existing.title_norm = title_norm
+            if action not in {"complete", "archive"}:
+                existing.title = t_data["title"]
+                existing.title_norm = title_norm
             if "priority" in t_data:
                 existing.priority = t_data.get("priority")
             if action == "archive":
@@ -307,6 +308,8 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 status_value = t_data.get("status")
                 if status_value == TaskStatus.done or status_value == "done":
                     existing.completed_at = datetime.utcnow()
+                else:
+                    existing.completed_at = None
             existing.updated_at = datetime.utcnow()
             entity_map[(EntityType.task, title_norm)] = existing.id
             applied.tasks_updated += 1
@@ -600,6 +603,11 @@ def _validate_extraction_payload(extraction: Any) -> None:
             raise ValueError("Invalid task entry type")
         if not isinstance(task.get("title"), str) or not task.get("title").strip():
             raise ValueError("Invalid task title")
+        action = task.get("action")
+        if action is not None and action not in {"create", "update", "complete", "archive", "noop"}:
+            raise ValueError("Invalid task action")
+        if "target_task_id" in task and task.get("target_task_id") is not None and not isinstance(task.get("target_task_id"), str):
+            raise ValueError("Invalid target_task_id")
         if "priority" in task and task.get("priority") is not None and not isinstance(task.get("priority"), int):
             raise ValueError("Invalid task priority")
 
