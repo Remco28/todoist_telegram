@@ -315,6 +315,48 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
         assert extraction["tasks"][1]["action"] == "complete"
 
 
+def test_non_command_marketplace_text_does_not_trigger_completion_mode(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.98,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "create",
+                "title": "Give away cigars on Facebook Marketplace",
+                "notes": "Set price to free; not urgent.",
+            }
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update(
+                "give away my cigars. facebook marketplace or something. set price to free. it's taking up space. it's not urgent. i want it done eventually..."
+            ),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 1
+        assert extraction["tasks"][0]["action"] == "create"
+        assert extraction["tasks"][0]["title"] == "Give away cigars on Facebook Marketplace"
+
+
 def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send):
     planned = {
         "intent": "action",

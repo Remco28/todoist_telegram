@@ -45,7 +45,7 @@ from common.telegram import (
 ACTION_DRAFT_TTL_SECONDS = 1800
 AUTOPILOT_COMPLETION_CONFIDENCE = 0.70
 AUTOPILOT_ACTION_CONFIDENCE = 0.90
-COMPLETION_INTENT_TOKENS = ("mark", "done", "complete", "completed", "close", "closed")
+COMPLETION_INTENT_TOKENS = ("mark", "complete", "completed", "close", "closed")
 
 
 def _draft_now() -> datetime:
@@ -255,10 +255,7 @@ def _derive_bulk_complete_actions(message: str, grounding: Dict[str, Any]) -> Li
             "all open tasks",
         )
     )
-    has_completion_intent = any(
-        phrase in lowered
-        for phrase in COMPLETION_INTENT_TOKENS
-    )
+    has_completion_intent = any(_contains_word(lowered, phrase) for phrase in COMPLETION_INTENT_TOKENS)
     if not (has_global_scope and has_completion_intent):
         return []
 
@@ -294,7 +291,7 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
         return []
 
     has_reference = any(
-        token in raw
+        _contains_word(raw, token)
         for token in (
             "those",
             "them",
@@ -307,10 +304,7 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
             "ones",
         )
     )
-    has_completion_intent = any(
-        token in raw
-        for token in COMPLETION_INTENT_TOKENS
-    )
+    has_completion_intent = any(_contains_word(raw, token) for token in COMPLETION_INTENT_TOKENS)
     if not (has_reference and has_completion_intent):
         return []
 
@@ -383,11 +377,10 @@ def _is_completion_request(message: str) -> bool:
     raw = (message or "").strip().lower()
     if not raw or is_query_like_text(raw):
         return False
-    has_explicit_completion = any(
-        token in raw
-        for token in COMPLETION_INTENT_TOKENS
-    )
+    has_explicit_completion = any(_contains_word(raw, token) for token in COMPLETION_INTENT_TOKENS)
     if has_explicit_completion:
+        return True
+    if _contains_word(raw, "mark") and _contains_word(raw, "done"):
         return True
     # Soft completion statements like "I cleaned the keyboard already."
     if "took care of" in raw or "already" in raw:
