@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     # Shared
     APP_ENV: str = "dev"
     APP_PORT: int = 8000
+    APP_TIMEZONE: str = "UTC"
     DATABASE_URL: str
     REDIS_URL: str
     APP_AUTH_BEARER_TOKENS: str  # Comma-separated

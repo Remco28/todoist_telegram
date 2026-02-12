@@ -8,7 +8,7 @@ These tests validate:
 """
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, date
 from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -543,6 +543,117 @@ def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, m
         assert sent_extraction["tasks"][0]["action"] == "create"
         assert "Mark Wahlberg movie" in sent_extraction["tasks"][0]["title"]
         assert "applied automatically" in mock_send.await_args.args[1].lower()
+
+
+def test_tonight_forces_local_today_due_date(app_no_db, mock_send):
+    planned = {"intent": "action", "scope": "single", "confidence": 0.3, "needs_confirmation": True, "actions": []}
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"title": "Respond to Gil", "due_date": "2026-02-13"}], "goals": [], "problems": [], "links": []},
+    ), patch("api.main._local_today", return_value=date(2026, 2, 12)):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Respond to Gil by tonight. He wants to know about the payment from Tomas."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["due_date"] == "2026-02-12"
+
+
+def test_tomorrow_night_does_not_force_today_due_date(app_no_db, mock_send):
+    planned = {"intent": "action", "scope": "single", "confidence": 0.3, "needs_confirmation": True, "actions": []}
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"title": "Watch movie", "due_date": "2026-02-13"}], "goals": [], "problems": [], "links": []},
+    ), patch("api.main._local_today", return_value=date(2026, 2, 12)):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Add movie night tomorrow night."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["due_date"] == "2026-02-13"
+
+
+def test_unrelated_targeted_update_is_rewritten_to_create(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.95,
+        "needs_confirmation": False,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "update",
+                "title": "Finish reading the audiobook about Christianity",
+                "target_task_id": "tsk_gil",
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_gil", "title": "Respond to Gil by tonight", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_gil", "title": "Respond to Gil by tonight", "status": "open"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ):
+        apply_capture.return_value = ("inb_1", AppliedChanges(tasks_created=1))
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Finish reading the audiobook about Christianity by tonight"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        if apply_capture.await_count:
+            extraction = apply_capture.await_args.kwargs["extraction"]
+        else:
+            create_draft.assert_awaited_once()
+            extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["action"] == "create"
+        assert extraction["tasks"][0].get("target_task_id") is None
 
 
 def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_send):

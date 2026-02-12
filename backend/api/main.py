@@ -8,6 +8,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -44,10 +45,66 @@ from common.telegram import (
 ACTION_DRAFT_TTL_SECONDS = 1800
 AUTOPILOT_COMPLETION_CONFIDENCE = 0.70
 AUTOPILOT_ACTION_CONFIDENCE = 0.90
+COMPLETION_INTENT_TOKENS = ("mark", "done", "complete", "completed", "close", "closed")
 
 
 def _draft_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _local_now() -> datetime:
+    tz_name = (settings.APP_TIMEZONE or "").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = timezone.utc
+    return datetime.now(tz)
+
+
+def _local_today() -> date:
+    return _local_now().date()
+
+
+def _contains_word(text: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}\b", (text or "").lower()))
+
+
+def _should_force_tonight_to_today(message: str) -> bool:
+    lowered = (message or "").lower()
+    if "tomorrow night" in lowered:
+        return False
+    if _contains_word(lowered, "tomorrow"):
+        return False
+    return _contains_word(lowered, "tonight")
+
+
+def _resolve_relative_due_date_overrides(message: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(extraction, dict):
+        return extraction
+    tasks = extraction.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return extraction
+    if not _should_force_tonight_to_today(message):
+        return extraction
+
+    forced_due_date = _local_today().isoformat()
+    rewritten: List[Any] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            rewritten.append(task)
+            continue
+        action = task.get("action")
+        status_value = task.get("status")
+        if action in {"complete", "archive", "noop"} or status_value in {"done", "archived"}:
+            rewritten.append(task)
+            continue
+        updated = dict(task)
+        updated["due_date"] = forced_due_date
+        rewritten.append(updated)
+
+    out = dict(extraction)
+    out["tasks"] = rewritten
+    return out
 
 
 def _is_telegram_sender_allowed(chat_id: str, username: Optional[str]) -> bool:
@@ -200,16 +257,7 @@ def _derive_bulk_complete_actions(message: str, grounding: Dict[str, Any]) -> Li
     )
     has_completion_intent = any(
         phrase in lowered
-        for phrase in (
-            "mark",
-            "done",
-            "complete",
-            "completed",
-            "finish",
-            "finished",
-            "close",
-            "closed",
-        )
+        for phrase in COMPLETION_INTENT_TOKENS
     )
     if not (has_global_scope and has_completion_intent):
         return []
@@ -261,16 +309,7 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
     )
     has_completion_intent = any(
         token in raw
-        for token in (
-            "mark",
-            "done",
-            "complete",
-            "completed",
-            "finish",
-            "finished",
-            "close",
-            "closed",
-        )
+        for token in COMPLETION_INTENT_TOKENS
     )
     if not (has_reference and has_completion_intent):
         return []
@@ -290,8 +329,6 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
             "done",
             "complete",
             "completed",
-            "finish",
-            "finished",
             "close",
             "closed",
             "all",
@@ -348,16 +385,7 @@ def _is_completion_request(message: str) -> bool:
         return False
     has_explicit_completion = any(
         token in raw
-        for token in (
-            "mark",
-            "done",
-            "complete",
-            "completed",
-            "finish",
-            "finished",
-            "close",
-            "closed",
-        )
+        for token in COMPLETION_INTENT_TOKENS
     )
     if has_explicit_completion:
         return True
@@ -427,7 +455,7 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
 
     explicit_completion = any(
         token in raw
-        for token in ("mark", "done", "complete", "completed", "finish", "finished", "close", "closed")
+        for token in COMPLETION_INTENT_TOKENS
     )
     message_terms = _grounding_terms(raw)
     message_terms = {
@@ -439,8 +467,6 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
             "done",
             "complete",
             "completed",
-            "finish",
-            "finished",
             "close",
             "closed",
             "all",
@@ -647,6 +673,70 @@ def _sanitize_create_extraction(message: str, extraction: Dict[str, Any]) -> Dic
     return {"tasks": sanitized_tasks[:3], "goals": [], "problems": [], "links": []}
 
 
+def _sanitize_targeted_task_actions(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(extraction, dict):
+        return {"tasks": [], "goals": [], "problems": [], "links": []}
+    raw_tasks = extraction.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        return extraction
+
+    rows = _completion_candidate_rows(grounding)
+    row_by_id: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        row_by_id[row["id"]] = row
+
+    msg_lower = (message or "").lower()
+    msg_terms = _grounding_terms(msg_lower)
+    weak_terms = {"today", "tonight", "tomorrow", "night", "morning", "evening", "week", "month", "day"}
+    msg_terms = {term for term in msg_terms if term not in weak_terms}
+    has_reference_language = any(
+        _contains_word(msg_lower, token) for token in ("that", "this", "it", "previous", "earlier", "above", "again")
+    ) or "same task" in msg_lower or "same one" in msg_lower
+
+    sanitized: List[Any] = []
+    for task in raw_tasks:
+        if not isinstance(task, dict):
+            sanitized.append(task)
+            continue
+        target_id = task.get("target_task_id")
+        if not isinstance(target_id, str) or not target_id.strip():
+            sanitized.append(task)
+            continue
+
+        target = row_by_id.get(target_id.strip())
+        if not target:
+            normalized = dict(task)
+            normalized.pop("target_task_id", None)
+            if normalized.get("action") in {"update", "noop"}:
+                normalized["action"] = "create"
+            sanitized.append(normalized)
+            continue
+
+        action = str(task.get("action") or "").lower()
+        if action in {"complete", "archive"}:
+            sanitized.append(task)
+            continue
+
+        candidate_title = str(target.get("title") or "")
+        candidate_terms = _grounding_terms(candidate_title.lower())
+        candidate_terms = {term for term in candidate_terms if term not in weak_terms}
+
+        overlaps_target = _has_term_overlap(candidate_terms, msg_terms)
+
+        if has_reference_language or overlaps_target:
+            sanitized.append(task)
+            continue
+
+        normalized = dict(task)
+        normalized.pop("target_task_id", None)
+        normalized["action"] = "create"
+        sanitized.append(normalized)
+
+    out = dict(extraction)
+    out["tasks"] = sanitized
+    return out
+
+
 def _planner_confidence(planned: Any) -> float:
     if not isinstance(planned, dict):
         return 0.0
@@ -688,7 +778,7 @@ def _is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:
         if not isinstance(task, dict):
             return False
         action = str(task.get("action") or "").lower()
-        if action and action not in {"create", "update", "noop"}:
+        if action and action not in {"create", "noop"}:
             return False
     return True
 
@@ -907,6 +997,8 @@ async def _revise_action_draft(
     extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
     extraction = _sanitize_completion_extraction(revised_message, extraction, grounding)
     extraction = _sanitize_create_extraction(revised_message, extraction)
+    extraction = _sanitize_targeted_task_actions(revised_message, extraction, grounding)
+    extraction = _resolve_relative_due_date_overrides(revised_message, extraction)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
     draft.proposal_json = extraction
@@ -1078,6 +1170,10 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
     return {
         "chat_id": chat_id,
         "current_date_utc": utc_now().date().isoformat(),
+        "current_datetime_utc": utc_now().isoformat(),
+        "current_date_local": _local_today().isoformat(),
+        "current_datetime_local": _local_now().isoformat(),
+        "timezone": settings.APP_TIMEZONE,
         "tasks": tasks,
         "recent_task_refs": recent_refs,
     }
@@ -1145,7 +1241,7 @@ def _parse_due_date(value: Any) -> Optional[date]:
 def _infer_urgency_score(due: Optional[date], priority: Optional[int]) -> Optional[int]:
     # Explicit urgency should win; this is fallback inference only.
     inferred: Optional[int] = None
-    today = utc_now().date()
+    today = _local_today()
     if due is not None:
         days = (due - today).days
         if days <= 0:
@@ -1967,6 +2063,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
                 extraction = _apply_intent_fallbacks(text, extraction, grounding)
                 extraction = _sanitize_completion_extraction(text, extraction, grounding)
                 extraction = _sanitize_create_extraction(text, extraction)
+                extraction = _sanitize_targeted_task_actions(text, extraction, grounding)
+                extraction = _resolve_relative_due_date_overrides(text, extraction)
                 if not _has_actionable_entities(extraction):
                     if completion_request:
                         await send_message(
@@ -2056,6 +2154,8 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
             extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
             extraction = _sanitize_completion_extraction(payload.message, extraction, grounding)
             extraction = _sanitize_create_extraction(payload.message, extraction)
+            extraction = _sanitize_targeted_task_actions(payload.message, extraction, grounding)
+            extraction = _resolve_relative_due_date_overrides(payload.message, extraction)
             usage = _extract_usage(extraction)
             latency = int((time.time() - start_time) * 1000)
             _validate_extraction_payload(extraction)
