@@ -44,6 +44,7 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
 
 ## Weekly Operator Checklist
 1. Confirm backups were created in the expected schedule.
+   - If using R2, verify latest object in `R2_PREFIX/<project>/<env>/` per `ops/R2_BACKUP_RUNBOOK.md`.
 2. Test one restore dry-run step from `ops/RESTORE_RUNBOOK.md` (non-destructive).
 3. Review deprecation/error logs for new runtime drift.
 4. Review token/cost endpoint:

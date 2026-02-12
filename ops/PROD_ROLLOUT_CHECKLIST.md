@@ -27,7 +27,9 @@
   - `TELEGRAM_WEBHOOK_SECRET` (if Telegram enabled)
 4. Run backup before deploy:
   - `DATABASE_URL="<prod_db_url>" BACKUP_RETENTION_DAYS=14 ./ops/backup_db.sh`
-5. Preview migration SQL:
+5. Confirm off-server backup schedule exists (recommended):
+  - Coolify scheduled task using `backend/ops/backup_to_r2.sh` (see `ops/R2_BACKUP_RUNBOOK.md`)
+6. Preview migration SQL:
   - `cd backend && alembic upgrade head --sql`
 
 ## Deploy (Required)

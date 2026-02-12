@@ -266,6 +266,34 @@ curl -sS https://<your-domain>/health/ready
 curl -sS https://<your-domain>/health/preflight
 ```
 
+### Off-Server DB Backup (Cloudflare R2 via Coolify Scheduled Task)
+This repo includes a ready script inside the container image:
+- `backend/ops/backup_to_r2.sh`
+
+In Coolify Scheduled Tasks (API service):
+- Name: `db-backup-r2`
+- Frequency: `0 3 * * *` (daily)
+- Command:
+```bash
+/bin/bash -lc 'cd /app && ./ops/backup_to_r2.sh'
+```
+
+Required env vars for the task:
+- `DATABASE_URL`
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+
+Recommended env vars:
+- `BACKUP_PROJECT=todoist_telegram`
+- `BACKUP_ENV=prod`
+- `R2_PREFIX=database-backups`
+- `BACKUP_RETENTION_DAYS=14`
+
+Full runbook:
+- `ops/R2_BACKUP_RUNBOOK.md`
+
 ## 6) Common Pitfalls and Fixes
 
 ### "Missing Idempotency-Key header"
