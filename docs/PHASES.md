@@ -17,7 +17,8 @@
 - Phase 13: Completed
 - Phase 14: Completed
 - Phase 15: Completed
-- Phase 16: Planned
+- Phase 16: Completed
+- Phase 17: Planned
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -218,5 +219,18 @@
 ### Exit Criteria
 - No title-based mutation fallback exists for task mutations.
 - Ambiguous action messages route to clarify, not guessed writes.
+- Low-confidence actionable plans route to clarify instead of draft/apply.
+- Readiness reports critical credential failures before live traffic handling.
+
+## Phase 17: Reliability Automation and Memory Continuity
+### Goals
+- Add automated Todoist reconcile schedule (pull changes from Todoist without manual trigger).
+- Add passive memory capture path for non-action conversational messages.
+- Tighten restore readiness with repeatable monthly restore drill checklist evidence.
+
+### Exit Criteria
+- Reconcile runs on schedule and reflects Todoist-side updates locally.
+- Non-action user messages can be retained/summarized without creating task writes.
+- Restore drill process is repeatable and documented with operator evidence.
 - Preflight/readiness clearly signals invalid critical credentials.
 - Regression tests cover ambiguity and mutation safety gates.

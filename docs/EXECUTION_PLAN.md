@@ -16,7 +16,8 @@
 - Phase 13 production rollout and operations baseline completed.
 - Phase 14 conversational intent routing + confirmation UX completed.
 - Phase 15 advisory hardening completed.
-- Next feature phase: Phase 16 first-principles alignment (ID-first mutations, clarify mode, fallback cleanup, preflight).
+- Phase 16 first-principles alignment completed (ID-first mutations, clarify mode, fallback cleanup, preflight).
+- Next feature phase: Phase 17 reliability automation + memory continuity.
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -26,18 +27,16 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Implement Phase 16 ID-first mutation gating for task update/complete/archive paths.
-2. Implement explicit clarification mode for unresolved or low-confidence action intents.
-3. Remove unsafe heuristic guessing in planner fallback paths.
-4. Add app-level preflight checks for DB/Redis/LLM/Telegram credentials.
+1. Add scheduled reconcile automation so Todoist-side changes flow back without manual API calls.
+2. Add passive memory capture for non-action conversational text.
+3. Run and document monthly restore drill against R2 backups.
+4. Add lightweight alerting/checks for missed backup schedule runs.
 
-## Priority Backlog (After Phase 16)
-1. Implement LLM-first action planner for free-form messages (`intent`, `scope`, `actions`, `confidence`).
-2. Add LLM critic pass for proposed actions (duplicates, contradictions, unresolved refs, risky bulk ops).
-3. Keep deterministic executor as validation/policy/transaction layer only.
-4. Add draft proposal lifecycle (`draft`, `confirmed`, `discarded`) with TTL.
-5. Add confirmation dialogue (`yes`, `edit`, `no`) before durable writes and Todoist sync.
-6. Keep `/ask` as optional fallback; normal UX should remain natural conversation.
+## Priority Backlog (After Phase 17)
+1. Improve planner/entity resolution quality using better grounding ranking.
+2. Add optional semantic retrieval layer for larger long-term context.
+3. Extend user-facing explainability for action decisions and clarification prompts.
+4. Expand operational dashboards for backup/reconcile/queue trend health.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -63,6 +62,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Execute Phase 16 implementation against `comms/tasks/2026-02-12-phase-16-first-principles-alignment-spec.md`.
-2. Run focused regression tests on Telegram action parsing and mutation safety.
-3. Run production smoke after deploy and capture evidence in `comms/log.md`.
+1. Configure and verify scheduled Todoist reconcile in Coolify.
+2. Define and implement passive no-action memory capture behavior.
+3. Execute first R2 restore drill and record evidence in `comms/log.md`.

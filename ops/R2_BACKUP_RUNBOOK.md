@@ -71,3 +71,26 @@ Create a scheduled task under your API service:
 - Keep one bucket across projects; separate by `<project>/<env>` prefix.
 - Do not hardcode secrets in command strings; use env vars.
 - If command length limits exist in Coolify, keep command short and place logic in script (this runbook does that).
+
+## Reuse Template (Any Project)
+Use this exact pattern for every project:
+
+1. Copy script:
+   - `backend/ops/backup_to_r2.sh`
+2. Ensure image has tools:
+   - `postgresql-client` and `rclone`
+3. Create Coolify task:
+   - Name: `db-backup-r2`
+   - Frequency: `0 3 * * *`
+   - Command: `/bin/bash -lc 'cd /app && ./ops/backup_to_r2.sh'`
+4. Set project-specific vars only:
+   - `DATABASE_URL`
+   - `BACKUP_PROJECT=<repo_or_app_name>`
+   - `BACKUP_ENV=<prod|staging>`
+5. Keep shared vars same across all projects:
+   - `R2_ACCOUNT_ID`
+   - `R2_ACCESS_KEY_ID`
+   - `R2_SECRET_ACCESS_KEY`
+   - `R2_BUCKET`
+   - `R2_PREFIX=database-backups`
+6. Verify one manual run after deploy and one scheduled run next day.
