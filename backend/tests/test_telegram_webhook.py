@@ -350,6 +350,75 @@ def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send)
         assert extraction["tasks"][0]["title"] == "Follow up with accountant"
 
 
+def test_non_command_planner_unusable_actions_uses_extract_fallback(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.92,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "create", "target_task_id": "tsk_missing_title"}],
+    }
+    extracted = {
+        "tasks": [{"title": "Return Nico's library books to NYPL", "action": "create", "due_date": "2026-02-12"}],
+        "goals": [],
+        "problems": [],
+        "links": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock, return_value=extracted
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Return Nico's library books to NYPL tomorrow"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extract_fallback.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["title"] == "Return Nico's library books to NYPL"
+
+
+def test_non_command_unusable_critic_revisions_do_not_clobber_planner_extraction(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.92,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "create", "title": "Return Nico's library books to NYPL"}],
+    }
+    critic = {
+        "approved": True,
+        "issues": [],
+        "revised_actions": [{"entity_type": "task", "action": "create", "target_task_id": "tsk_missing_title"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value=critic
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Return Nico's library books to NYPL tomorrow"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extract_fallback.assert_not_awaited()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["title"] == "Return Nico's library books to NYPL"
+
+
 def test_non_command_planner_valid_does_not_use_intent_fallbacks(app_no_db, mock_send):
     planned = {
         "intent": "action",

@@ -1997,6 +1997,20 @@ async def _handle_telegram_draft_flow(
     used_extract_fallback = False
     if planner_actions_valid:
         extraction = _actions_to_extraction(actions)
+        if not _has_actionable_entities(extraction):
+            used_extract_fallback = True
+            db.add(
+                EventLog(
+                    id=str(uuid.uuid4()),
+                    request_id=request_id,
+                    user_id=user_id,
+                    event_type="action_fallback_heuristic_used",
+                    payload_json={"chat_id": chat_id, "reason": "planner_actions_unusable"},
+                    created_at=utc_now(),
+                )
+            )
+            await db.commit()
+            extraction = await adapter.extract_structured_updates(text, grounding=grounding)
     else:
         used_extract_fallback = True
         db.add(
@@ -2035,7 +2049,21 @@ async def _handle_telegram_draft_flow(
 
     revised_actions = critic.get("revised_actions") if isinstance(critic, dict) else None
     if isinstance(revised_actions, list):
-        extraction = _actions_to_extraction(revised_actions)
+        revised_extraction = _actions_to_extraction(revised_actions)
+        if _has_actionable_entities(revised_extraction):
+            extraction = revised_extraction
+        else:
+            db.add(
+                EventLog(
+                    id=str(uuid.uuid4()),
+                    request_id=request_id,
+                    user_id=user_id,
+                    event_type="action_fallback_heuristic_used",
+                    payload_json={"chat_id": chat_id, "reason": "critic_revised_actions_unusable"},
+                    created_at=utc_now(),
+                )
+            )
+            await db.commit()
     completion_request = _is_completion_request(text)
     if isinstance(critic, dict) and critic.get("approved") is False and not completion_request:
         issues = critic.get("issues") if isinstance(critic.get("issues"), list) else []
