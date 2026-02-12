@@ -147,7 +147,9 @@ def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_d
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
-        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+        "api.main._build_extraction_grounding",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"id": "tsk_2", "title": "Buy paint rollers", "status": "open"}]},
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
@@ -165,7 +167,9 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
-        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+        "api.main._build_extraction_grounding",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"id": "tsk_2", "title": "Buy paint rollers", "status": "open"}]},
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
@@ -179,7 +183,7 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
         assert "did not find clear actions" in mock_send.await_args.args[1].lower()
 
 
-def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, mock_extract, mock_send):
+def test_non_command_bulk_done_without_actionable_plan_requests_clarification(app_no_db, mock_extract, mock_send):
     mock_extract.extract_structured_updates.return_value = {
         "tasks": [],
         "goals": [],
@@ -202,17 +206,11 @@ def test_non_command_bulk_done_fallback_generates_completion_actions(app_no_db, 
     ):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Let's mark everything as done."), headers=_headers())
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
-        extraction = create_draft.await_args.kwargs["extraction"]
-        assert len(extraction["tasks"]) == 2
-        assert extraction["tasks"][0]["action"] == "complete"
-        assert extraction["tasks"][0]["status"] == "done"
-        assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
-        assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
-        assert "proposed updates" in mock_send.await_args.args[1].lower()
+        create_draft.assert_not_awaited()
+        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
 
 
-def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_send):
+def test_non_command_reference_completion_without_actionable_plan_requests_clarification(app_no_db, mock_send):
     planned = {
         "intent": "action",
         "scope": "single",
@@ -256,16 +254,8 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
-        extraction = create_draft.await_args.kwargs["extraction"]
-        assert len(extraction["tasks"]) == 3
-        assert extraction["tasks"][0]["action"] == "complete"
-        assert extraction["tasks"][0]["target_task_id"] == "tsk_1"
-        assert extraction["tasks"][1]["target_task_id"] == "tsk_2"
-        assert extraction["tasks"][2]["target_task_id"] == "tsk_3"
-        extracted_ids = {t["target_task_id"] for t in extraction["tasks"]}
-        assert "tsk_4" not in extracted_ids
-        assert "tsk_5" not in extracted_ids
+        create_draft.assert_not_awaited()
+        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
@@ -291,7 +281,9 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
-        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+        "api.main._build_extraction_grounding",
+        new_callable=AsyncMock,
+        return_value={"tasks": [{"id": "tsk_2", "title": "Buy paint rollers", "status": "open"}]},
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
@@ -619,7 +611,7 @@ def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no
         assert "could not find open matching tasks" in mock_send.await_args.args[1].lower()
 
 
-def test_soft_completion_statement_marks_matching_task(app_no_db, mock_send):
+def test_soft_completion_statement_without_resolved_actions_requests_clarification(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.6, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
@@ -653,17 +645,11 @@ def test_soft_completion_statement_marks_matching_task(app_no_db, mock_send):
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
-        extraction = create_draft.await_args.kwargs["extraction"]
-        assert extraction["goals"] == []
-        assert extraction["problems"] == []
-        assert extraction["links"] == []
-        assert len(extraction["tasks"]) == 1
-        assert extraction["tasks"][0]["target_task_id"] == "tsk_kbd"
-        assert extraction["tasks"][0]["action"] == "complete"
+        create_draft.assert_not_awaited()
+        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
 
 
-def test_completion_high_confidence_autopilot_applies_without_draft(app_no_db, mock_send):
+def test_completion_high_confidence_without_actionable_entities_does_not_autopilot(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.95, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
@@ -703,9 +689,9 @@ def test_completion_high_confidence_autopilot_applies_without_draft(app_no_db, m
         )
         assert resp.status_code == 200
         create_draft.assert_not_awaited()
-        apply_capture.assert_awaited_once()
-        enqueue_sync.assert_awaited_once()
-        assert "applied automatically" in mock_send.await_args.args[1].lower()
+        apply_capture.assert_not_awaited()
+        enqueue_sync.assert_not_awaited()
+        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
 
 
 def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, mock_send):

@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     OPERATIONS_METRICS_WINDOW_HOURS: int = 24
     WORKER_ALERT_FAILURE_THRESHOLD: int = 5
     BACKUP_RETENTION_DAYS: int = 14
+    PREFLIGHT_CACHE_SECONDS: int = 300
+    PREFLIGHT_TIMEOUT_SECONDS: int = 8
 
     # Phase 7 Auth, Rate Limit, Cost Settings
     RATE_LIMIT_WINDOW_SECONDS: int = 60

@@ -98,6 +98,10 @@ TELEGRAM_LINK_TOKEN_TTL_SECONDS=900
 
 TODOIST_TOKEN=REPLACE_ME
 TODOIST_API_BASE=https://api.todoist.com/api/v1
+
+# Optional preflight tuning (used in staging/prod readiness checks):
+# PREFLIGHT_CACHE_SECONDS=300
+# PREFLIGHT_TIMEOUT_SECONDS=8
 ```
 
 ### Step 5: Run DB migrations
@@ -123,6 +127,7 @@ python -m worker.main
 ```bash
 curl -sS http://localhost:8000/health/live
 curl -sS http://localhost:8000/health/ready
+curl -sS http://localhost:8000/health/preflight
 ```
 
 ## 2) Minimal API Smoke Test
@@ -258,6 +263,7 @@ Then verify:
 ```bash
 curl -sS https://<your-domain>/health/live
 curl -sS https://<your-domain>/health/ready
+curl -sS https://<your-domain>/health/preflight
 ```
 
 ## 6) Common Pitfalls and Fixes

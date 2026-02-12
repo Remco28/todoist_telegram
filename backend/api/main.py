@@ -6,9 +6,11 @@ import time
 import re
 import logging
 import secrets
+import asyncio
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import httpx
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -837,25 +839,12 @@ def _autopilot_decision(message: str, extraction: Dict[str, Any], planned: Any) 
 def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extraction, dict):
         return {"tasks": [], "goals": [], "problems": [], "links": []}
-    if _has_actionable_entities(extraction):
-        return extraction
-
-    reference_tasks = _derive_reference_complete_actions(message, grounding)
-    if reference_tasks:
-        extraction = dict(extraction)
-        extraction["tasks"] = reference_tasks
-        extraction.setdefault("goals", [])
-        extraction.setdefault("problems", [])
-        extraction.setdefault("links", [])
-        return extraction
-
-    fallback_tasks = _derive_bulk_complete_actions(message, grounding)
-    if fallback_tasks:
-        extraction = dict(extraction)
-        extraction["tasks"] = fallback_tasks
-        extraction.setdefault("goals", [])
-        extraction.setdefault("problems", [])
-        extraction.setdefault("links", [])
+    # Phase 16 policy: no heuristic guessing of actions from phrase patterns.
+    # Fallback only normalizes shape; planner or extraction must provide actionable entities.
+    extraction.setdefault("tasks", [])
+    extraction.setdefault("goals", [])
+    extraction.setdefault("problems", [])
+    extraction.setdefault("links", [])
     return extraction
 
 
@@ -1026,7 +1015,9 @@ async def _revise_action_draft(
     grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=draft.chat_id, message=revised_message)
     extraction = await adapter.extract_structured_updates(revised_message, grounding=grounding)
     extraction = _apply_intent_fallbacks(revised_message, extraction, grounding)
-    extraction = _sanitize_completion_extraction(revised_message, extraction, grounding)
+    extraction = _sanitize_completion_extraction(
+        revised_message, extraction, grounding, allow_heuristic_resolution=False
+    )
     extraction = _sanitize_create_extraction(revised_message, extraction)
     extraction = _sanitize_targeted_task_actions(revised_message, extraction, grounding)
     extraction = _resolve_relative_due_date_overrides(revised_message, extraction)
@@ -1591,6 +1582,8 @@ AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=F
 
 # Redis Setup
 redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+_preflight_lock = asyncio.Lock()
+_preflight_cache: Dict[str, Any] = {"checked_at": None, "report": None}
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -1746,6 +1739,85 @@ async def save_idempotency(user_id: str, idempotency_key: str, request_hash: str
 
 # --- Health Endpoints ---
 
+def _external_preflight_required() -> bool:
+    return settings.APP_ENV.strip().lower() in {"staging", "prod", "production"}
+
+
+def _http_ok_status(code: int) -> bool:
+    return 200 <= code < 300
+
+
+async def _check_llm_credentials() -> Dict[str, Any]:
+    base = (settings.LLM_API_BASE_URL or "").strip().rstrip("/")
+    api_key = (settings.LLM_API_KEY or "").strip()
+    if not base:
+        return {"ok": False, "reason": "llm_base_url_missing"}
+    if not api_key:
+        return {"ok": False, "reason": "llm_api_key_missing"}
+    try:
+        async with httpx.AsyncClient(timeout=settings.PREFLIGHT_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{base}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if _http_ok_status(response.status_code):
+            return {"ok": True}
+        if response.status_code in {401, 403}:
+            return {"ok": False, "reason": "llm_auth_failed"}
+        return {"ok": False, "reason": f"llm_http_{response.status_code}"}
+    except httpx.HTTPError:
+        return {"ok": False, "reason": "llm_unreachable"}
+
+
+async def _check_telegram_credentials() -> Dict[str, Any]:
+    token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
+    if not token:
+        return {"ok": True, "skipped": True, "reason": "telegram_token_not_configured"}
+    base = (settings.TELEGRAM_API_BASE or "https://api.telegram.org").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=settings.PREFLIGHT_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{base}/bot{token}/getMe")
+        if not _http_ok_status(response.status_code):
+            if response.status_code in {401, 403}:
+                return {"ok": False, "reason": "telegram_auth_failed"}
+            return {"ok": False, "reason": f"telegram_http_{response.status_code}"}
+        payload = response.json() if response.content else {}
+        if isinstance(payload, dict) and payload.get("ok") is True:
+            return {"ok": True}
+        return {"ok": False, "reason": "telegram_auth_failed"}
+    except (httpx.HTTPError, ValueError):
+        return {"ok": False, "reason": "telegram_unreachable"}
+
+
+async def _compute_preflight_report() -> Dict[str, Any]:
+    llm = await _check_llm_credentials()
+    telegram = await _check_telegram_credentials()
+    checks = {"llm": llm, "telegram": telegram}
+    return {
+        "ok": all(isinstance(item, dict) and item.get("ok") is True for item in checks.values()),
+        "checks": checks,
+        "checked_at": utc_now().isoformat(),
+    }
+
+
+async def _get_preflight_report(force: bool = False) -> Dict[str, Any]:
+    now = utc_now()
+    async with _preflight_lock:
+        checked_at = _preflight_cache.get("checked_at")
+        cached = _preflight_cache.get("report")
+        fresh = (
+            isinstance(checked_at, datetime)
+            and isinstance(cached, dict)
+            and (now - checked_at).total_seconds() < max(1, settings.PREFLIGHT_CACHE_SECONDS)
+        )
+        if not force and fresh:
+            return cached
+        report = await _compute_preflight_report()
+        _preflight_cache["checked_at"] = now
+        _preflight_cache["report"] = report
+        return report
+
+
 @app.get("/health/live")
 async def health_live():
     return {"status": "ok"}
@@ -1757,7 +1829,33 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
         await redis_client.ping()
     except Exception:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Infrastructure unreachable")
+    if _external_preflight_required():
+        report = await _get_preflight_report()
+        if not report.get("ok"):
+            failing = [
+                name
+                for name, item in (report.get("checks") or {}).items()
+                if not (isinstance(item, dict) and item.get("ok") is True)
+            ]
+            fail_key = failing[0] if failing else "unknown"
+            reason = ((report.get("checks") or {}).get(fail_key) or {}).get("reason", "preflight_failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Preflight failed: {fail_key}:{reason}",
+            )
     return {"status": "ready"}
+
+
+@app.get("/health/preflight")
+async def health_preflight():
+    if not _external_preflight_required():
+        return {"status": "skipped", "reason": "preflight_not_required_in_env", "env": settings.APP_ENV}
+    report = await _get_preflight_report()
+    return {
+        "status": "ok" if report.get("ok") else "failed",
+        "checked_at": report.get("checked_at"),
+        "checks": report.get("checks", {}),
+    }
 
 @app.get("/health/metrics", dependencies=[Depends(get_authenticated_user)])
 async def health_metrics(db: AsyncSession = Depends(get_db)):
@@ -2103,7 +2201,7 @@ async def _handle_telegram_draft_flow(
         text,
         extraction,
         grounding,
-        allow_heuristic_resolution=used_extract_fallback,
+        allow_heuristic_resolution=False,
     )
     extraction = _sanitize_create_extraction(
         message=text,
@@ -2286,7 +2384,9 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
             grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=payload.chat_id, message=payload.message)
             extraction = await adapter.extract_structured_updates(payload.message, grounding=grounding)
             extraction = _apply_intent_fallbacks(payload.message, extraction, grounding)
-            extraction = _sanitize_completion_extraction(payload.message, extraction, grounding)
+            extraction = _sanitize_completion_extraction(
+                payload.message, extraction, grounding, allow_heuristic_resolution=False
+            )
             extraction = _sanitize_create_extraction(payload.message, extraction)
             extraction = _sanitize_targeted_task_actions(payload.message, extraction, grounding)
             extraction = _resolve_relative_due_date_overrides(payload.message, extraction)
