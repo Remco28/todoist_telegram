@@ -128,8 +128,22 @@ Rule: provider suggests, backend decides, backend writes.
   - safety policy checks,
   - transactional execution,
   - retries/fallback handling.
-- Phrase heuristics may exist only as temporary emergency fallback and must be logged when used.
+- Phrase heuristics must not be used to guess destructive or mutating intent.
+- Any fallback path may only recover from schema/format issues; it must not infer broad writes from token coincidence.
 - Every applied write must be traceable to a concrete proposed action in stored draft payload.
+- For task mutations (`update`, `complete`, `archive`), execution is ID-first (`target_task_id` required).
+- Unresolved targets and low-confidence plans route to clarification mode, not guessed writes.
+
+## Clarification Mode
+- Clarification is a first-class response type for conversational action handling.
+- Trigger conditions:
+  - low planner confidence,
+  - unresolved mutation targets,
+  - non-actionable planner/critic outputs after sanitization.
+- Behavior:
+  - ask one concrete follow-up question,
+  - do not create or apply ambiguous mutations,
+  - preserve audit trace for operator review.
 
 ## Telegram Identity Flow
 1. API user requests one-time Telegram link token.

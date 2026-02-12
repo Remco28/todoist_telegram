@@ -34,6 +34,8 @@ These gaps are now explicit priorities for the next phases.
 - LLM never writes directly to the database; backend validates and writes.
 - Telegram interactions must resolve to real user identity (no hardcoded principal paths).
 - Provider responses must be schema-validated with safe fallback paths.
+- Task mutations (`update`, `complete`, `archive`) must be ID-first and never guessed by title.
+- Ambiguous conversational intent must trigger clarification, not best-guess writes.
 
 ## Guiding Principles
 - Backend-first: stable core, replaceable interfaces.
@@ -44,6 +46,7 @@ These gaps are now explicit priorities for the next phases.
 - Prompt contract owned by backend and versioned in repo.
 - LLM-first action reasoning: planner + critic prompts should drive conversational action logic; hardcoded phrase routing is temporary fallback only.
 - Deterministic executor only: backend validates and executes proposed actions, but does not own conversational interpretation.
+- Fail-safe over fail-open: unresolved targets or low-confidence plans ask a concrete clarifying question.
 
 ## v1 Scope
 - Capture free-form messages and auto-structure them.

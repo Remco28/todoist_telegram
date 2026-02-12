@@ -32,6 +32,7 @@ Keep model behavior consistent, auditable, and token-efficient across providers.
   - `actions[]` (typed operations with entity refs where possible)
   - `confidence` (0-1)
   - `needs_confirmation` (bool)
+  - mutation actions should include `target_task_id` whenever referencing existing tasks.
 - `action_critic` should return:
   - `approved` (bool)
   - `issues[]` (duplicates, conflicts, missing target refs, risky bulk updates)
@@ -42,6 +43,8 @@ Keep model behavior consistent, auditable, and token-efficient across providers.
 - If invalid: retry with corrective instruction.
 - If still invalid: fail safely and log for review.
 - Executor does not infer meaning from raw user text; it only executes validated proposed actions.
+- Executor enforces ID-first mutation policy: `update/complete/archive` without valid `target_task_id` are unresolved and must route to clarify mode.
+- Fallback behavior is schema-recovery only; no heuristic broad writes.
 
 ## Versioning
 - Each prompt template has `prompt_version`.

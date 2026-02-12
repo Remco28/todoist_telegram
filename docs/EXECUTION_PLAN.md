@@ -1,6 +1,6 @@
 # Execution Plan
 
-## Current Execution Status (2026-02-11)
+## Current Execution Status (2026-02-12)
 - Phase 1 implementation and revision cycle completed.
 - Phase 2 memory engine implementation and revision cycle completed.
 - Phase 3 planning engine implementation and revision cycle completed.
@@ -13,9 +13,10 @@
 - Phase 10 Telegram identity unification completed.
 - Phase 11 Todoist bidirectional reconciliation completed.
 - Phase 12 staging validation and release readiness completed.
-- Phase 13 production rollout and operations baseline is in progress.
-- Next feature phase is defined: Phase 14 conversational intent routing + confirmation UX.
-- Advisory alignment complete: next priorities are Provider Realization (Phase 9), Telegram Identity Unification (Phase 10), and Todoist Reconciliation (Phase 11).
+- Phase 13 production rollout and operations baseline completed.
+- Phase 14 conversational intent routing + confirmation UX completed.
+- Phase 15 advisory hardening completed.
+- Next feature phase: Phase 16 first-principles alignment (ID-first mutations, clarify mode, fallback cleanup, preflight).
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -25,24 +26,18 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Execute production rollout using the staging-proven Docker deployment path.
-2. Publish production rollout, secret rotation, and operations baseline runbooks.
-3. Validate first production smoke evidence (capture/query/sync/reconcile).
-4. Confirm backup automation and restore readiness with operator evidence.
+1. Implement Phase 16 ID-first mutation gating for task update/complete/archive paths.
+2. Implement explicit clarification mode for unresolved or low-confidence action intents.
+3. Remove unsafe heuristic guessing in planner fallback paths.
+4. Add app-level preflight checks for DB/Redis/LLM/Telegram credentials.
 
-## Priority Backlog (Immediately After Phase 13)
+## Priority Backlog (After Phase 16)
 1. Implement LLM-first action planner for free-form messages (`intent`, `scope`, `actions`, `confidence`).
 2. Add LLM critic pass for proposed actions (duplicates, contradictions, unresolved refs, risky bulk ops).
 3. Keep deterministic executor as validation/policy/transaction layer only.
 4. Add draft proposal lifecycle (`draft`, `confirmed`, `discarded`) with TTL.
 5. Add confirmation dialogue (`yes`, `edit`, `no`) before durable writes and Todoist sync.
 6. Keep `/ask` as optional fallback; normal UX should remain natural conversation.
-
-## Priority Backlog (Next After Phase 8)
-1. Implement real provider calls in `LLMAdapter` while preserving strict output contracts.
-2. Remove Telegram hardcoded identity and ship chat-to-user secure linking flow.
-3. Add Todoist pull/reconcile path to prevent local/remote drift.
-4. Unify policy enforcement across API and Telegram interfaces.
 
 ## Definition of Done (v1)
 - You can send raw thoughts via Telegram.
@@ -68,18 +63,6 @@
   - Mitigation: health checks, alerts, backups, restore testing.
 
 ## Immediate Next Session Plan
-1. Implement Phase 13 rollout/operations documentation deliverables.
-2. Bring up production services in Coolify with isolated production infra.
-3. Run production smoke and backup/restore readiness checks; capture sign-off evidence.
-
-## Phase 13 Production Exit Gates
-1. Deployment:
-   - Production API and worker are deployed from `main` using Dockerfile path.
-   - `alembic upgrade head` succeeds in production.
-2. Validation:
-   - `/health/live` and `/health/ready` pass.
-   - Production smoke flow passes (capture/query/sync/reconcile).
-3. Operations:
-   - `ops/PROD_ROLLOUT_CHECKLIST.md` sign-off fields completed.
-   - `ops/SECRETS_ROTATION_RUNBOOK.md` published and reviewed.
-   - Backup/restore readiness evidence logged in `comms/log.md`.
+1. Execute Phase 16 implementation against `comms/tasks/2026-02-12-phase-16-first-principles-alignment-spec.md`.
+2. Run focused regression tests on Telegram action parsing and mutation safety.
+3. Run production smoke after deploy and capture evidence in `comms/log.md`.

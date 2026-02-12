@@ -1,6 +1,6 @@
 # Phased Plan
 
-## Current Status (2026-02-11)
+## Current Status (2026-02-12)
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
@@ -14,8 +14,10 @@
 - Phase 10: Completed
 - Phase 11: Completed
 - Phase 12: Completed
-- Phase 13: In progress
-- Phase 14: Planned
+- Phase 13: Completed
+- Phase 14: Completed
+- Phase 15: Completed
+- Phase 16: Planned
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -194,3 +196,27 @@
 - `yes` applies draft transactionally and triggers immediate Todoist sync.
 - `edit` revises draft; `no` discards draft.
 - Audit events capture proposal generation, approval, apply result, and sync enqueue.
+
+## Phase 15: Advisory Remediation and Reliability Hardening
+### Goals
+- Harden planner/critic authority and remove fragile behavior paths.
+- Modularize Telegram webhook flow for maintainability and safer formatting.
+- Improve sync/time/ops reliability and regression coverage.
+
+### Exit Criteria
+- Planner path is primary and tested against malformed responses.
+- Telegram action flow has regression tests for high-risk cases.
+- Production smoke remains green after hardening changes.
+
+## Phase 16: First-Principles Alignment (Safety, Clarity, Operability)
+### Goals
+- Enforce ID-first updates for task mutations (`update/complete/archive`).
+- Add explicit clarification mode for unresolved/low-confidence action intents.
+- Remove unsafe heuristic guessing from fallback paths.
+- Add startup credential/dependency preflight checks.
+
+### Exit Criteria
+- No title-based mutation fallback exists for task mutations.
+- Ambiguous action messages route to clarify, not guessed writes.
+- Preflight/readiness clearly signals invalid critical credentials.
+- Regression tests cover ambiguity and mutation safety gates.

@@ -42,9 +42,14 @@
 ## Query Safety Rules
 - Query mode is read-only by default.
 - Any detected write intent must route to action mode.
-- Ambiguous intents can return a clarification prompt or low-risk default behavior.
+- Ambiguous action intents must return a clarification prompt (no guessed mutation writes).
 
 ## Recent Context Cache (Optional)
 - On read-only answers, store a short list of surfaced entity ids for quick follow-ups.
 - Limit retention to a short window.
 - Do not treat this cache as canonical memory; it only helps reference resolution.
+
+## No-Action Message Handling
+- Non-action conversational text may be retained for context and summarization according to retention policy.
+- Retention of non-action text must not bypass write safety rules.
+- No-action text should improve later understanding, not trigger autonomous writes.
