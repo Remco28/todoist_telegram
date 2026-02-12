@@ -788,6 +788,32 @@ def _is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:
     return True
 
 
+def _unresolved_mutation_titles(extraction: Dict[str, Any]) -> List[str]:
+    if not isinstance(extraction, dict):
+        return []
+    tasks = extraction.get("tasks", [])
+    if not isinstance(tasks, list):
+        return []
+    unresolved: List[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        action = str(task.get("action") or "").lower()
+        status = str(task.get("status") or "").lower()
+        requires_target = action in {"update", "complete", "archive"} or status in {"done", "archived"}
+        target_task_id = task.get("target_task_id")
+        if not requires_target:
+            continue
+        if isinstance(target_task_id, str) and target_task_id.strip():
+            continue
+        title = task.get("title")
+        if isinstance(title, str) and title.strip():
+            unresolved.append(title.strip())
+        else:
+            unresolved.append("unnamed task")
+    return unresolved
+
+
 def _autopilot_decision(message: str, extraction: Dict[str, Any], planned: Any) -> tuple[bool, str]:
     if not _has_actionable_entities(extraction):
         return False, "no_actionable_entities"
@@ -1281,13 +1307,15 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
     entity_map = {}
     for t_data in extraction.get("tasks", []):
         title_norm = t_data["title"].lower().strip()
-        action = t_data.get("action")
+        action = str(t_data.get("action") or "").strip().lower()
+        status_hint = str(t_data.get("status") or "").strip().lower()
+        requires_target = action in {"update", "complete", "archive"} or status_hint in {"done", "archived"}
         existing = None
         target_task_id = t_data.get("target_task_id")
         if isinstance(target_task_id, str) and target_task_id.strip():
             target_stmt = select(Task).where(Task.user_id == user_id, Task.id == target_task_id.strip())
             existing = (await db.execute(target_stmt)).scalar_one_or_none()
-        if existing is None and action != "create":
+        if existing is None and not requires_target and action != "create":
             stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
             existing = (await db.execute(stmt)).scalar_one_or_none()
         if existing:
@@ -1331,7 +1359,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             touched_task_ids.append(existing.id)
             applied.tasks_updated += 1
         else:
-            if action in {"archive", "complete", "noop"}:
+            if requires_target or action in {"noop"}:
                 db.add(
                     EventLog(
                         id=str(uuid.uuid4()),
@@ -2084,6 +2112,16 @@ async def _handle_telegram_draft_flow(
     )
     extraction = _sanitize_targeted_task_actions(text, extraction, grounding)
     extraction = _resolve_relative_due_date_overrides(text, extraction)
+    unresolved_mutations = _unresolved_mutation_titles(extraction)
+    if unresolved_mutations:
+        unresolved_preview = ", ".join(escape_html(t) for t in unresolved_mutations[:3])
+        await send_message(
+            chat_id,
+            "I need one clarification before applying changes:\n"
+            f"• Which existing task should I update for: {unresolved_preview}?\n\n"
+            "Reply with the task id, or ask me to list open tasks.",
+        )
+        return
     if not _has_actionable_entities(extraction):
         if completion_request:
             await send_message(

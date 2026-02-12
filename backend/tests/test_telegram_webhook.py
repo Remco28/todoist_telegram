@@ -357,6 +357,42 @@ def test_non_command_marketplace_text_does_not_trigger_completion_mode(app_no_db
         assert extraction["tasks"][0]["title"] == "Give away cigars on Facebook Marketplace"
 
 
+def test_non_command_unresolved_mutation_requests_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.93,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "update", "title": "Respond to Gil tonight"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Update my reminder for Gil"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        apply_capture.assert_not_awaited()
+        assert mock_send.await_count >= 1
+        msg = mock_send.await_args_list[-1].args[1]
+        assert "I need one clarification before applying changes" in msg
+        assert "Which existing task should I update" in msg
+
+
 def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send):
     planned = {
         "intent": "action",
