@@ -1,6 +1,6 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode,
+    escape_html, format_today_plan, format_focus_mode, format_query_answer,
 )
 
 
@@ -60,3 +60,12 @@ class TestFormattersEscapeHtmlContent:
         assert escape_html(">") == "&gt;"
         assert escape_html("&") == "&amp;"
         assert escape_html("safe text") == "safe text"
+
+    def test_format_query_answer_escapes_dynamic_content(self):
+        answer = "Use <script>alert(1)</script> & keep moving."
+        follow_up = "Need <more> details?"
+        result = format_query_answer(answer, follow_up)
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in result
+        assert "&amp; keep moving." in result
+        assert "&lt;more&gt; details?" in result
+        assert "<script>" not in result

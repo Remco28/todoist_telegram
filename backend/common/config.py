@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     MEMORY_HOT_TURNS_LIMIT: int = 8
     MEMORY_RELATED_ENTITIES_LIMIT: int = 25
     TRANSCRIPT_RETENTION_DAYS: int = 30
+    MEMORY_PRECISE_TOKEN_ESTIMATOR: bool = False
 
     # Phase 3 Planning and Query Settings
     PLAN_TOP_N_TODAY: int = 6

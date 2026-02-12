@@ -173,7 +173,7 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
     ) as apply_capture:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("buy groceries"), headers=_headers())
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
+        create_draft.assert_not_awaited()
         apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
         assert "did not find clear actions" in mock_send.await_args.args[1].lower()
@@ -248,7 +248,7 @@ def test_non_command_reference_completion_uses_recent_task_refs(app_no_db, mock_
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
         return_value={"tasks": [], "goals": [], "problems": [], "links": []},
-    ):
+    ) as extract_fallback:
         resp = _post(
             app_no_db,
             WEBHOOK_URL,
@@ -315,6 +315,68 @@ def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
         assert extraction["tasks"][1]["action"] == "complete"
 
 
+def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.4,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    extracted = {
+        "tasks": [{"title": "Follow up with accountant", "action": "create"}],
+        "goals": [],
+        "problems": [],
+        "links": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock, return_value=extracted
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Add a reminder to call accountant"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extract_fallback.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"][0]["title"] == "Follow up with accountant"
+
+
+def test_non_command_planner_valid_does_not_use_intent_fallbacks(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.9,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "create", "title": "Plan weekend"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main._apply_intent_fallbacks"
+    ) as apply_fallbacks:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Plan my weekend"), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        apply_fallbacks.assert_not_called()
+
+
 def test_completion_request_filters_out_non_completion_planner_actions(app_no_db, mock_send):
     planned = {
         "intent": "action",
@@ -352,7 +414,7 @@ def test_completion_request_filters_out_non_completion_planner_actions(app_no_db
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
         return_value={"tasks": [], "goals": [], "problems": [], "links": []},
-    ):
+    ) as extract_fallback:
         resp = _post(
             app_no_db,
             WEBHOOK_URL,
@@ -366,9 +428,10 @@ def test_completion_request_filters_out_non_completion_planner_actions(app_no_db
         assert extraction["problems"] == []
         assert extraction["links"] == []
         ids = {t["target_task_id"] for t in extraction["tasks"]}
-        assert ids == {"tsk_1", "tsk_2", "tsk_3"}
+        assert ids == {"tsk_1"}
         titles = {t["title"] for t in extraction["tasks"]}
         assert "Do 100 pushups" not in titles
+        extract_fallback.assert_not_awaited()
 
 
 def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no_db, mock_send):
@@ -537,12 +600,9 @@ def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, m
             headers=_headers(),
         )
         assert resp.status_code == 200
+        apply_capture.assert_not_awaited()
         create_draft.assert_not_awaited()
-        apply_capture.assert_awaited_once()
-        sent_extraction = apply_capture.await_args.kwargs["extraction"]
-        assert sent_extraction["tasks"][0]["action"] == "create"
-        assert "Mark Wahlberg movie" in sent_extraction["tasks"][0]["title"]
-        assert "applied automatically" in mock_send.await_args.args[1].lower()
+        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
 
 
 def test_tonight_forces_local_today_due_date(app_no_db, mock_send):

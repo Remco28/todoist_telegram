@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from common.models import TaskStatus, GoalStatus, ProblemStatus, LinkType, EntityType
@@ -217,7 +217,6 @@ class TodoistSyncStatusResponse(BaseModel):
     last_attempt_at: Optional[str] = None
     last_reconcile_at: Optional[str] = None
     reconcile_error_count: int = 0
-
 
 
 

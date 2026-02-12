@@ -2,18 +2,45 @@ import json
 from typing import List, Optional, Dict, Any
 from sqlalchemy import select, or_, and_, not_
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
 
 from common.config import settings
 from common.models import InboxItem, MemorySummary, Task, Goal, Problem, EntityLink, EntityType
 
-def estimate_tokens(text: str) -> int:
-    """
-    Simple heuristic-based token estimator (approx 4 chars per token).
-    """
+def _estimate_tokens_heuristic(text: str) -> int:
     if not text:
         return 0
     return len(text) // 4 + 1
+
+
+def _estimate_tokens_precise(text: str) -> Optional[int]:
+    if not text:
+        return 0
+    try:
+        import tiktoken  # type: ignore
+    except Exception:
+        return None
+    try:
+        encoder = tiktoken.get_encoding("cl100k_base")
+        return len(encoder.encode(text))
+    except Exception:
+        return None
+
+
+def estimate_tokens(text: str) -> int:
+    if settings.MEMORY_PRECISE_TOKEN_ESTIMATOR:
+        precise = _estimate_tokens_precise(text)
+        if precise is not None:
+            return precise
+    return _estimate_tokens_heuristic(text)
+
+
+def token_estimator_mode() -> str:
+    if not settings.MEMORY_PRECISE_TOKEN_ESTIMATOR:
+        return "heuristic"
+    precise = _estimate_tokens_precise("mode_probe")
+    if precise is None:
+        return "heuristic_fallback"
+    return "precise_cl100k_base"
 
 def get_system_policy() -> str:
     return (
@@ -104,6 +131,7 @@ def enforce_budget(
     
     budget_truncated_core = False
     trunc_msg = "... [truncated]"
+    estimator_mode = token_estimator_mode()
     
     def build_draft(s, h, e, q):
         parts = [policy]
@@ -162,6 +190,7 @@ def enforce_budget(
         "context": final_payload,
         "metadata": {
             "estimated_used": estimate_tokens(final_payload),
+            "token_estimator": estimator_mode,
             "budget_truncated_core": budget_truncated_core,
             "counts": {
                 "hot_turns": len(current_hot),
@@ -196,6 +225,7 @@ async def assemble_context(
         },
         "sources": enforced["metadata"]["counts"],
         "metadata": {
+            "token_estimator": enforced["metadata"]["token_estimator"],
             "budget_truncated_core": enforced["metadata"]["budget_truncated_core"]
         },
         "context": enforced["context"]

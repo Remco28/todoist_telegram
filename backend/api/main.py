@@ -537,7 +537,13 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
     return actions
 
 
-def _sanitize_completion_extraction(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_completion_extraction(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+    *,
+    allow_heuristic_resolution: bool = True,
+) -> Dict[str, Any]:
     if not _is_completion_request(message):
         return extraction if isinstance(extraction, dict) else {"tasks": [], "goals": [], "problems": [], "links": []}
 
@@ -585,22 +591,23 @@ def _sanitize_completion_extraction(message: str, extraction: Dict[str, Any], gr
                 }
             )
 
-    resolved_tasks = _resolve_completion_actions(message, grounding)
-    if not sanitized_tasks:
-        sanitized_tasks = resolved_tasks
-    elif resolved_tasks:
-        sanitized_ids = {
-            task.get("target_task_id")
-            for task in sanitized_tasks
-            if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
-        }
-        resolved_ids = {
-            task.get("target_task_id")
-            for task in resolved_tasks
-            if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
-        }
-        if sanitized_ids and sanitized_ids.issubset(resolved_ids):
+    if allow_heuristic_resolution:
+        resolved_tasks = _resolve_completion_actions(message, grounding)
+        if not sanitized_tasks:
             sanitized_tasks = resolved_tasks
+        elif resolved_tasks:
+            sanitized_ids = {
+                task.get("target_task_id")
+                for task in sanitized_tasks
+                if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
+            }
+            resolved_ids = {
+                task.get("target_task_id")
+                for task in resolved_tasks
+                if isinstance(task, dict) and isinstance(task.get("target_task_id"), str)
+            }
+            if sanitized_ids and sanitized_ids.issubset(resolved_ids):
+                sanitized_tasks = resolved_tasks
 
     return {"tasks": sanitized_tasks, "goals": [], "problems": [], "links": []}
 
@@ -640,7 +647,12 @@ def _derive_create_action_from_message(message: str) -> Optional[Dict[str, Any]]
     return {"title": title, "action": "create"}
 
 
-def _sanitize_create_extraction(message: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_create_extraction(
+    message: str,
+    extraction: Dict[str, Any],
+    *,
+    allow_heuristic_derivation: bool = True,
+) -> Dict[str, Any]:
     if not _is_create_request(message):
         return extraction if isinstance(extraction, dict) else {"tasks": [], "goals": [], "problems": [], "links": []}
 
@@ -666,7 +678,7 @@ def _sanitize_create_extraction(message: str, extraction: Dict[str, Any]) -> Dic
                     item[key] = task.get(key)
             sanitized_tasks.append(item)
 
-    if not sanitized_tasks:
+    if not sanitized_tasks and allow_heuristic_derivation:
         derived = _derive_create_action_from_message(message)
         if derived:
             sanitized_tasks = [derived]
@@ -965,7 +977,7 @@ async def _create_action_draft(
             user_id=user_id,
             event_type="action_draft_created",
             payload_json={"draft_id": draft.id, "chat_id": chat_id},
-            created_at=datetime.utcnow(),
+            created_at=utc_now(),
         )
     )
     await db.commit()
@@ -982,7 +994,7 @@ async def _discard_action_draft(draft: ActionDraft, user_id: str, request_id: st
             user_id=user_id,
             event_type="action_draft_discarded",
             payload_json={"draft_id": draft.id},
-            created_at=datetime.utcnow(),
+            created_at=utc_now(),
         )
     )
     await db.commit()
@@ -1012,7 +1024,7 @@ async def _revise_action_draft(
             user_id=user_id,
             event_type="action_draft_revised",
             payload_json={"draft_id": draft.id},
-            created_at=datetime.utcnow(),
+            created_at=utc_now(),
         )
     )
     await db.commit()
@@ -1043,7 +1055,7 @@ async def _confirm_action_draft(
             user_id=user_id,
             event_type="action_draft_confirmed",
             payload_json={"draft_id": draft.id},
-            created_at=datetime.utcnow(),
+            created_at=utc_now(),
         )
     )
     await db.commit()
@@ -1078,7 +1090,7 @@ async def _confirm_action_draft(
                     "summary_error": summary_error,
                     "sync_error": sync_error,
                 },
-                created_at=datetime.utcnow(),
+                created_at=utc_now(),
             )
         )
         await db.commit()
@@ -1270,7 +1282,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
     db.add(InboxItem(
         id=inbox_item_id, user_id=user_id, chat_id=chat_id, source=source,
         client_msg_id=client_msg_id, message_raw=message, message_norm=message.strip(),
-        received_at=datetime.utcnow()
+        received_at=utc_now()
     ))
 
     entity_map = {}
@@ -1310,18 +1322,18 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 existing.urgency_score = _infer_urgency_score(existing.due_date, existing.priority)
             if action == "archive":
                 existing.status = TaskStatus.archived
-                existing.archived_at = datetime.utcnow()
+                existing.archived_at = utc_now()
             elif action == "complete":
                 existing.status = TaskStatus.done
-                existing.completed_at = datetime.utcnow()
+                existing.completed_at = utc_now()
             elif "status" in t_data and t_data.get("status"):
                 existing.status = t_data.get("status")
                 status_value = t_data.get("status")
                 if status_value == TaskStatus.done or status_value == "done":
-                    existing.completed_at = datetime.utcnow()
+                    existing.completed_at = utc_now()
                 else:
                     existing.completed_at = None
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = utc_now()
             entity_map[(EntityType.task, title_norm)] = existing.id
             touched_task_ids.append(existing.id)
             applied.tasks_updated += 1
@@ -1334,7 +1346,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                         user_id=user_id,
                         event_type="task_action_skipped_missing_target",
                         payload_json={"title": t_data.get("title"), "action": action},
-                        created_at=datetime.utcnow(),
+                        created_at=utc_now(),
                     )
                 )
                 continue
@@ -1348,7 +1360,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 else _infer_urgency_score(_parse_due_date(t_data.get("due_date")), t_data.get("priority")),
                 notes=t_data.get("notes") if isinstance(t_data.get("notes"), str) else None,
                 due_date=_parse_due_date(t_data.get("due_date")),
-                source_inbox_item_id=inbox_item_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow()
+                source_inbox_item_id=inbox_item_id, created_at=utc_now(), updated_at=utc_now()
             ))
             entity_map[(EntityType.task, title_norm)] = task_id
             touched_task_ids.append(task_id)
@@ -1361,7 +1373,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
         if existing: entity_map[(EntityType.goal, title_norm)] = existing.id
         else:
             goal_id = f"gol_{uuid.uuid4().hex[:12]}"
-            db.add(Goal(id=goal_id, user_id=user_id, title=g_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+            db.add(Goal(id=goal_id, user_id=user_id, title=g_data["title"], title_norm=title_norm, created_at=utc_now(), updated_at=utc_now()))
             entity_map[(EntityType.goal, title_norm)] = goal_id
             applied.goals_created += 1
 
@@ -1372,7 +1384,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
         if existing: entity_map[(EntityType.problem, title_norm)] = existing.id
         else:
             prob_id = f"prb_{uuid.uuid4().hex[:12]}"
-            db.add(Problem(id=prob_id, user_id=user_id, title=p_data["title"], title_norm=title_norm, created_at=datetime.utcnow(), updated_at=datetime.utcnow()))
+            db.add(Problem(id=prob_id, user_id=user_id, title=p_data["title"], title_norm=title_norm, created_at=utc_now(), updated_at=utc_now()))
             entity_map[(EntityType.problem, title_norm)] = prob_id
             applied.problems_created += 1
 
@@ -1384,7 +1396,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             from_id = entity_map.get((from_type, l_data["from_title"].lower().strip()))
             to_id = entity_map.get((to_type, l_data["to_title"].lower().strip()))
             if from_id and to_id:
-                db.add(EntityLink(id=f"lnk_{uuid.uuid4().hex[:12]}", user_id=user_id, from_entity_type=from_type, from_entity_id=from_id, to_entity_type=to_type, to_entity_id=to_id, link_type=link_type, created_at=datetime.utcnow()))
+                db.add(EntityLink(id=f"lnk_{uuid.uuid4().hex[:12]}", user_id=user_id, from_entity_type=from_type, from_entity_id=from_id, to_entity_type=to_type, to_entity_id=to_id, link_type=link_type, created_at=utc_now()))
                 applied.links_created += 1
         except Exception as e:
             db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
@@ -1415,7 +1427,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             payload = json.loads(cached)
         else:
             state = await collect_planning_state(db, user_id)
-            payload = build_plan_payload(state, datetime.utcnow())
+            payload = build_plan_payload(state, utc_now())
             payload = render_fallback_plan_explanation(payload)
         
         await send_message(chat_id, format_today_plan(payload))
@@ -1432,7 +1444,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             payload = json.loads(cached)
         else:
             state = await collect_planning_state(db, user_id)
-            payload = build_plan_payload(state, datetime.utcnow())
+            payload = build_plan_payload(state, utc_now())
         
         await send_message(chat_id, format_focus_mode(payload))
 
@@ -1442,7 +1454,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             return
         
         task_id = args.strip()
-        stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(status=TaskStatus.done, completed_at=datetime.utcnow())
+        stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(status=TaskStatus.done, completed_at=utc_now())
         res = await db.execute(stmt)
         if res.rowcount > 0:
             await db.commit()
@@ -1706,7 +1718,7 @@ async def save_idempotency(user_id: str, idempotency_key: str, request_hash: str
         ik = IdempotencyKey(
             id=str(uuid.uuid4()), user_id=user_id, idempotency_key=idempotency_key,
             request_hash=request_hash, response_status=status_code, response_body=response_body,
-            created_at=datetime.utcnow(), expires_at=datetime.utcnow() + timedelta(hours=settings.IDEMPOTENCY_TTL_HOURS)
+            created_at=utc_now(), expires_at=utc_now() + timedelta(hours=settings.IDEMPOTENCY_TTL_HOURS)
         )
         db.add(ik)
         await db.commit()
@@ -1729,7 +1741,7 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
 @app.get("/health/metrics", dependencies=[Depends(get_authenticated_user)])
 async def health_metrics(db: AsyncSession = Depends(get_db)):
     window_hours = settings.OPERATIONS_METRICS_WINDOW_HOURS
-    window_cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    window_cutoff = utc_now() - timedelta(hours=window_hours)
 
     queue_depth = {
         "default_queue": await redis_client.llen("default_queue"),
@@ -1785,7 +1797,7 @@ async def health_metrics(db: AsyncSession = Depends(get_db)):
 
 @app.get("/health/costs/daily", dependencies=[Depends(get_authenticated_user)])
 async def health_costs_daily(user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
-    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
     rows = (await db.execute(
         select(PromptRun).where(
@@ -1855,6 +1867,307 @@ async def health_costs_daily(user_id: str = Depends(get_authenticated_user), db:
 
 # --- Telegram Integration ---
 
+
+async def _handle_telegram_callback_update(data: Dict[str, Any], db: AsyncSession) -> None:
+    chat_id = data["chat_id"]
+    callback_query_id = data.get("callback_query_id")
+    callback_data = data.get("callback_data", "")
+    request_id = f"tg_{uuid.uuid4().hex[:8]}"
+
+    user_id = await _resolve_telegram_user(chat_id, db)
+    if not user_id:
+        if callback_query_id:
+            await answer_callback_query(callback_query_id, "Chat is not linked.")
+        return
+
+    open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
+    action, draft_id = _parse_draft_callback(callback_data)
+    if callback_query_id:
+        await answer_callback_query(callback_query_id)
+    if not open_draft or not action or draft_id != open_draft.id:
+        await send_message(chat_id, "This proposal is no longer active. Send a new message to continue.")
+        return
+
+    if action == "confirm":
+        applied = await _confirm_action_draft(
+            draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
+        )
+        await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+    elif action == "discard":
+        await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
+        await send_message(chat_id, "Discarded the pending proposal.")
+    elif action == "edit":
+        _draft_set_awaiting_edit_input(open_draft, True)
+        open_draft.updated_at = _draft_now()
+        open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
+        await db.commit()
+        await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
+
+
+async def _handle_telegram_draft_flow(
+    chat_id: str,
+    text: str,
+    client_msg_id: Optional[str],
+    user_id: str,
+    db: AsyncSession,
+) -> None:
+    request_id = f"tg_{uuid.uuid4().hex[:8]}"
+    open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
+    draft_action, draft_arg = _parse_draft_reply(text)
+    awaiting_edit_input = bool(open_draft and _draft_is_awaiting_edit_input(open_draft))
+
+    if open_draft and draft_action == "confirm":
+        applied = await _confirm_action_draft(
+            draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
+        )
+        await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+        return
+    if open_draft and draft_action == "discard":
+        await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
+        await send_message(chat_id, "Discarded the pending proposal.")
+        return
+    if open_draft and draft_action == "edit":
+        if not draft_arg:
+            _draft_set_awaiting_edit_input(open_draft, True)
+            open_draft.updated_at = _draft_now()
+            open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
+            await db.commit()
+            await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
+            return
+        extraction = await _revise_action_draft(
+            draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
+        )
+        await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
+        await db.commit()
+        return
+    if open_draft and awaiting_edit_input and draft_action is None and not is_query_like_text(text):
+        extraction = await _revise_action_draft(
+            draft=open_draft, user_id=user_id, request_id=request_id, edit_text=text, db=db
+        )
+        await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
+        await db.commit()
+        return
+    if open_draft and draft_action is None and not is_query_like_text(text):
+        await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
+        return
+
+    grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id, message=text)
+    planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
+    intent = planned.get("intent") if isinstance(planned, dict) else None
+    actions = planned.get("actions") if isinstance(planned, dict) else None
+
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="telegram_action_planned",
+            payload_json={
+                "chat_id": chat_id,
+                "intent": intent,
+                "confidence": planned.get("confidence") if isinstance(planned, dict) else None,
+                "scope": planned.get("scope") if isinstance(planned, dict) else None,
+                "actions_count": len(actions) if isinstance(actions, list) else 0,
+            },
+            created_at=utc_now(),
+        )
+    )
+    await db.commit()
+
+    if intent == "query":
+        response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
+        discussed_task_ids = [
+            row.get("id")
+            for row in (grounding.get("tasks") if isinstance(grounding, dict) else [])
+            if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+        ]
+        await _remember_recent_tasks(
+            db=db,
+            user_id=user_id,
+            chat_id=chat_id,
+            task_ids=discussed_task_ids[:6],
+            reason="query_context",
+            ttl_hours=12,
+        )
+        await db.commit()
+        await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
+        return
+
+    planner_actions_valid = intent == "action" and isinstance(actions, list) and len(actions) > 0
+    used_extract_fallback = False
+    if planner_actions_valid:
+        extraction = _actions_to_extraction(actions)
+    else:
+        used_extract_fallback = True
+        db.add(
+            EventLog(
+                id=str(uuid.uuid4()),
+                request_id=request_id,
+                user_id=user_id,
+                event_type="action_fallback_heuristic_used",
+                payload_json={"chat_id": chat_id, "reason": "planner_invalid_or_empty"},
+                created_at=utc_now(),
+            )
+        )
+        await db.commit()
+        extraction = await adapter.extract_structured_updates(text, grounding=grounding)
+
+    critic = await adapter.critique_actions(
+        text,
+        context={"grounding": grounding, "chat_id": chat_id},
+        proposal={"intent": intent, "actions": actions},
+    )
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="telegram_action_critic_result",
+            payload_json={
+                "chat_id": chat_id,
+                "approved": critic.get("approved"),
+                "issues": critic.get("issues"),
+            },
+            created_at=utc_now(),
+        )
+    )
+    await db.commit()
+
+    revised_actions = critic.get("revised_actions") if isinstance(critic, dict) else None
+    if isinstance(revised_actions, list):
+        extraction = _actions_to_extraction(revised_actions)
+    completion_request = _is_completion_request(text)
+    if isinstance(critic, dict) and critic.get("approved") is False and not completion_request:
+        issues = critic.get("issues") if isinstance(critic.get("issues"), list) else []
+        issue_text = "\n".join([f"• {escape_html(str(i))}" for i in issues[:3]]) if issues else "• Proposal needs clarification."
+        await send_message(
+            chat_id,
+            "I need one clarification before applying changes:\n"
+            f"{issue_text}\n\n"
+            "Reply with more detail, and I will revise the proposal.",
+        )
+        return
+
+    if used_extract_fallback:
+        extraction = _apply_intent_fallbacks(text, extraction, grounding)
+    extraction = _sanitize_completion_extraction(
+        text,
+        extraction,
+        grounding,
+        allow_heuristic_resolution=used_extract_fallback,
+    )
+    extraction = _sanitize_create_extraction(
+        message=text,
+        extraction=extraction,
+        allow_heuristic_derivation=used_extract_fallback,
+    )
+    extraction = _sanitize_targeted_task_actions(text, extraction, grounding)
+    extraction = _resolve_relative_due_date_overrides(text, extraction)
+    if not _has_actionable_entities(extraction):
+        if completion_request:
+            await send_message(
+                chat_id,
+                "I could not find open matching tasks to complete. They may already be done.\n"
+                "Ask me to list open tasks, then try again.",
+            )
+            return
+        if used_extract_fallback:
+            db.add(
+                EventLog(
+                    id=str(uuid.uuid4()),
+                    request_id=request_id,
+                    user_id=user_id,
+                    event_type="action_fallback_heuristic_used",
+                    payload_json={"chat_id": chat_id, "reason": "planner_and_extract_empty"},
+                    created_at=utc_now(),
+                )
+            )
+            await db.commit()
+        await send_message(
+            chat_id,
+            "I did not find clear actions to apply yet.\n"
+            "Reply with more details, or ask a question directly.",
+        )
+        return
+
+    _validate_extraction_payload(extraction)
+    auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)
+    db.add(
+        EventLog(
+            id=str(uuid.uuid4()),
+            request_id=request_id,
+            user_id=user_id,
+            event_type="telegram_autopilot_decision",
+            payload_json={
+                "chat_id": chat_id,
+                "auto_apply": auto_apply,
+                "reason": auto_reason,
+                "confidence": _planner_confidence(planned),
+            },
+            created_at=utc_now(),
+        )
+    )
+    await db.commit()
+    if auto_apply:
+        _, applied = await _apply_capture(
+            db=db,
+            user_id=user_id,
+            chat_id=chat_id,
+            source=settings.TELEGRAM_DEFAULT_SOURCE,
+            message=text,
+            extraction=extraction,
+            request_id=request_id,
+            client_msg_id=client_msg_id,
+            commit=True,
+            enqueue_summary=True,
+        )
+        try:
+            await _enqueue_todoist_sync_job(user_id=user_id)
+        except Exception as exc:
+            logger.error("Failed to enqueue todoist sync after autopilot apply: %s", exc)
+        await send_message(chat_id, "✅ Applied automatically. " + format_capture_ack(applied.model_dump()))
+        return
+
+    draft = await _create_action_draft(
+        db=db,
+        user_id=user_id,
+        chat_id=chat_id,
+        message=text,
+        extraction=extraction,
+        request_id=request_id,
+    )
+    await _send_or_edit_draft_preview(chat_id, draft, _format_action_draft_preview(extraction))
+    await db.commit()
+
+
+async def _handle_telegram_message_update(data: Dict[str, Any], db: AsyncSession) -> None:
+    chat_id = data["chat_id"]
+    text = data.get("text", "")
+    username = data.get("username")
+    client_msg_id = data.get("client_msg_id")
+
+    command, args = extract_command(text)
+    if command:
+        if command == "/start":
+            if args and await _consume_telegram_link_token(chat_id, username, args, db):
+                await send_message(chat_id, "Telegram linked successfully. You can now send thoughts and commands.")
+            else:
+                await send_message(chat_id, "Link failed. Request a new link token from the API and try again.")
+            return
+
+        user_id = await _resolve_telegram_user(chat_id, db)
+        if not user_id:
+            await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
+            return
+        await handle_telegram_command(command, args, chat_id, user_id, db)
+        return
+
+    user_id = await _resolve_telegram_user(chat_id, db)
+    if not user_id:
+        await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
+        return
+    await _handle_telegram_draft_flow(chat_id=chat_id, text=text, client_msg_id=client_msg_id, user_id=user_id, db=db)
+
 @app.post("/v1/integrations/telegram/link_token", response_model=TelegramLinkTokenCreateResponse)
 async def create_telegram_link_token(
     user_id: str = Depends(get_authenticated_user),
@@ -1888,252 +2201,14 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         logger.warning("Ignoring telegram message from disallowed sender chat_id=%s username=%s", chat_id, username)
         return {"status": "ignored"}
 
-    if update_kind == "callback":
-        callback_query_id = data.get("callback_query_id")
-        callback_data = data.get("callback_data", "")
-        request_id = f"tg_{uuid.uuid4().hex[:8]}"
-        user_id = await _resolve_telegram_user(chat_id, db)
-        if not user_id:
-            if callback_query_id:
-                await answer_callback_query(callback_query_id, "Chat is not linked.")
-            return {"status": "ok"}
-        open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
-        action, draft_id = _parse_draft_callback(callback_data)
-        if callback_query_id:
-            await answer_callback_query(callback_query_id)
-        if not open_draft or not action or draft_id != open_draft.id:
-            await send_message(chat_id, "This proposal is no longer active. Send a new message to continue.")
-            return {"status": "ok"}
-        if action == "confirm":
-            applied = await _confirm_action_draft(
-                draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
-            )
-            await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
-        elif action == "discard":
-            await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
-            await send_message(chat_id, "Discarded the pending proposal.")
-        elif action == "edit":
-            _draft_set_awaiting_edit_input(open_draft, True)
-            open_draft.updated_at = _draft_now()
-            open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
-            await db.commit()
-            await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
-        return {"status": "ok"}
-    
-    # 3. Command Routing
-    command, args = extract_command(text)
-    if command:
-        if command == "/start":
-            if args and await _consume_telegram_link_token(chat_id, username, args, db):
-                await send_message(chat_id, "Telegram linked successfully. You can now send thoughts and commands.")
-            else:
-                await send_message(chat_id, "Link failed. Request a new link token from the API and try again.")
-            return {"status": "ok"}
-
-        user_id = await _resolve_telegram_user(chat_id, db)
-        if not user_id:
-            await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
-            return {"status": "ok"}
-        await handle_telegram_command(command, args, chat_id, user_id, db)
-    else:
-        user_id = await _resolve_telegram_user(chat_id, db)
-        if not user_id:
-            await send_message(chat_id, "This chat is not linked yet. Use /start <token> from your generated link token.")
-            return {"status": "ok"}
-
-        # 4. Non-command text -> draft confirm flow + intent routing.
-        request_id = f"tg_{uuid.uuid4().hex[:8]}"
-        try:
-            open_draft = await _get_open_action_draft(user_id=user_id, chat_id=chat_id, db=db)
-            draft_action, draft_arg = _parse_draft_reply(text)
-            awaiting_edit_input = bool(open_draft and _draft_is_awaiting_edit_input(open_draft))
-
-            if open_draft and draft_action == "confirm":
-                applied = await _confirm_action_draft(
-                    draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
-                )
-                await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
-            elif open_draft and draft_action == "discard":
-                await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
-                await send_message(chat_id, "Discarded the pending proposal.")
-            elif open_draft and draft_action == "edit":
-                if not draft_arg:
-                    _draft_set_awaiting_edit_input(open_draft, True)
-                    open_draft.updated_at = _draft_now()
-                    open_draft.expires_at = _draft_now() + timedelta(seconds=ACTION_DRAFT_TTL_SECONDS)
-                    await db.commit()
-                    await send_message(chat_id, "Reply with your changes in one message, and I will revise the proposal.")
-                    return {"status": "ok"}
-                extraction = await _revise_action_draft(
-                    draft=open_draft, user_id=user_id, request_id=request_id, edit_text=draft_arg, db=db
-                )
-                await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
-                await db.commit()
-            elif open_draft and awaiting_edit_input and draft_action is None and not is_query_like_text(text):
-                extraction = await _revise_action_draft(
-                    draft=open_draft, user_id=user_id, request_id=request_id, edit_text=text, db=db
-                )
-                await _send_or_edit_draft_preview(chat_id, open_draft, _format_action_draft_preview(extraction))
-                await db.commit()
-            elif open_draft and draft_action is None and not is_query_like_text(text):
-                await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
-            else:
-                grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id, message=text)
-                planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
-                intent = planned.get("intent") if isinstance(planned, dict) else None
-                actions = planned.get("actions") if isinstance(planned, dict) else None
-
-                db.add(
-                    EventLog(
-                        id=str(uuid.uuid4()),
-                        request_id=request_id,
-                        user_id=user_id,
-                        event_type="telegram_action_planned",
-                        payload_json={
-                            "chat_id": chat_id,
-                            "intent": intent,
-                            "confidence": planned.get("confidence") if isinstance(planned, dict) else None,
-                            "scope": planned.get("scope") if isinstance(planned, dict) else None,
-                            "actions_count": len(actions) if isinstance(actions, list) else 0,
-                        },
-                        created_at=datetime.utcnow(),
-                    )
-                )
-                await db.commit()
-
-                if intent == "query":
-                    response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
-                    discussed_task_ids = [
-                        row.get("id")
-                        for row in (grounding.get("tasks") if isinstance(grounding, dict) else [])
-                        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
-                    ]
-                    await _remember_recent_tasks(
-                        db=db,
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        task_ids=discussed_task_ids[:6],
-                        reason="query_context",
-                        ttl_hours=12,
-                    )
-                    await db.commit()
-                    await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
-                    return {"status": "ok"}
-
-                extraction = _actions_to_extraction(actions)
-                critic = await adapter.critique_actions(
-                    text,
-                    context={"grounding": grounding, "chat_id": chat_id},
-                    proposal={"intent": intent, "actions": actions},
-                )
-                db.add(
-                    EventLog(
-                        id=str(uuid.uuid4()),
-                        request_id=request_id,
-                        user_id=user_id,
-                        event_type="telegram_action_critic_result",
-                        payload_json={
-                            "chat_id": chat_id,
-                            "approved": critic.get("approved"),
-                            "issues": critic.get("issues"),
-                        },
-                        created_at=datetime.utcnow(),
-                    )
-                )
-                await db.commit()
-
-                revised_actions = critic.get("revised_actions") if isinstance(critic, dict) else None
-                if isinstance(revised_actions, list):
-                    extraction = _actions_to_extraction(revised_actions)
-                completion_request = _is_completion_request(text)
-                if isinstance(critic, dict) and critic.get("approved") is False and not completion_request:
-                    issues = critic.get("issues") if isinstance(critic.get("issues"), list) else []
-                    issue_text = "\n".join([f"• {escape_html(str(i))}" for i in issues[:3]]) if issues else "• Proposal needs clarification."
-                    await send_message(
-                        chat_id,
-                        "I need one clarification before applying changes:\n"
-                        f"{issue_text}\n\n"
-                        "Reply with more detail, and I will revise the proposal.",
-                    )
-                    return {"status": "ok"}
-
-                # Compatibility fallback while planner quality matures.
-                if not _has_actionable_entities(extraction):
-                    extraction = await adapter.extract_structured_updates(text, grounding=grounding)
-                extraction = _apply_intent_fallbacks(text, extraction, grounding)
-                extraction = _sanitize_completion_extraction(text, extraction, grounding)
-                extraction = _sanitize_create_extraction(text, extraction)
-                extraction = _sanitize_targeted_task_actions(text, extraction, grounding)
-                extraction = _resolve_relative_due_date_overrides(text, extraction)
-                if not _has_actionable_entities(extraction):
-                    if completion_request:
-                        await send_message(
-                            chat_id,
-                            "I could not find open matching tasks to complete. They may already be done.\n"
-                            "Ask me to list open tasks, then try again.",
-                        )
-                        return {"status": "ok"}
-                    db.add(
-                        EventLog(
-                            id=str(uuid.uuid4()),
-                            request_id=request_id,
-                            user_id=user_id,
-                            event_type="action_fallback_heuristic_used",
-                            payload_json={"chat_id": chat_id, "reason": "planner_and_extract_empty"},
-                            created_at=datetime.utcnow(),
-                        )
-                    )
-                    await db.commit()
-                _validate_extraction_payload(extraction)
-                auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)
-                db.add(
-                    EventLog(
-                        id=str(uuid.uuid4()),
-                        request_id=request_id,
-                        user_id=user_id,
-                        event_type="telegram_autopilot_decision",
-                        payload_json={
-                            "chat_id": chat_id,
-                            "auto_apply": auto_apply,
-                            "reason": auto_reason,
-                            "confidence": _planner_confidence(planned),
-                        },
-                        created_at=datetime.utcnow(),
-                    )
-                )
-                await db.commit()
-                if auto_apply:
-                    _, applied = await _apply_capture(
-                        db=db,
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        source=settings.TELEGRAM_DEFAULT_SOURCE,
-                        message=text,
-                        extraction=extraction,
-                        request_id=request_id,
-                        client_msg_id=client_msg_id,
-                        commit=True,
-                        enqueue_summary=True,
-                    )
-                    try:
-                        await _enqueue_todoist_sync_job(user_id=user_id)
-                    except Exception as exc:
-                        logger.error("Failed to enqueue todoist sync after autopilot apply: %s", exc)
-                    await send_message(chat_id, "✅ Applied automatically. " + format_capture_ack(applied.model_dump()))
-                    return {"status": "ok"}
-                draft = await _create_action_draft(
-                    db=db,
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    message=text,
-                    extraction=extraction,
-                    request_id=request_id,
-                )
-                await _send_or_edit_draft_preview(chat_id, draft, _format_action_draft_preview(extraction))
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Telegram routing failed: {e}")
-            await send_message(chat_id, "Sorry, I had trouble processing that message. Please try again later.")
+    try:
+        if update_kind == "callback":
+            await _handle_telegram_callback_update(data, db)
+        else:
+            await _handle_telegram_message_update(data, db)
+    except Exception as e:
+        logger.error(f"Telegram routing failed: {e}")
+        await send_message(chat_id, "Sorry, I had trouble processing that message. Please try again later.")
 
     return {"status": "ok"}
 
@@ -2165,14 +2240,14 @@ async def capture_thought(request: Request, payload: ThoughtCaptureRequest, user
                 prompt_version=settings.PROMPT_VERSION_EXTRACT, latency_ms=latency, status="success",
                 input_tokens=usage["input_tokens"], cached_input_tokens=usage["cached_input_tokens"],
                 output_tokens=usage["output_tokens"],
-                created_at=datetime.utcnow()
+                created_at=utc_now()
             ))
             break
         except Exception as e:
             db.add(PromptRun(
                 id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="extract",
                 provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_EXTRACT,
-                prompt_version=settings.PROMPT_VERSION_EXTRACT, status="error", error_code=type(e).__name__, created_at=datetime.utcnow()
+                prompt_version=settings.PROMPT_VERSION_EXTRACT, status="error", error_code=type(e).__name__, created_at=utc_now()
             ))
             if attempt_num == 2:
                 await db.commit()
@@ -2204,7 +2279,7 @@ async def update_task(request: Request, task_id: str, payload: TaskUpdate, user_
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
     update_data = payload.model_dump(exclude_unset=True)
     if not update_data: raise HTTPException(status_code=400, detail="No fields to update")
-    if "status" in update_data: update_data["completed_at"] = datetime.utcnow() if update_data["status"] == TaskStatus.done else None
+    if "status" in update_data: update_data["completed_at"] = utc_now() if update_data["status"] == TaskStatus.done else None
     stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(**update_data)
     if (await db.execute(stmt)).rowcount == 0: raise HTTPException(status_code=404, detail="Task not found")
     await db.commit()
@@ -2244,7 +2319,7 @@ async def update_goal(request: Request, goal_id: str, payload: GoalUpdate, user_
 async def create_link(request: Request, payload: LinkCreate, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
     if hasattr(request.state, "idempotent_response"): return request.state.idempotent_response
     link_id = f"lnk_{uuid.uuid4().hex[:12]}"
-    db.add(EntityLink(id=link_id, user_id=user_id, from_entity_type=payload.from_entity_type, from_entity_id=payload.from_entity_id, to_entity_type=payload.to_entity_type, to_entity_id=payload.to_entity_id, link_type=payload.link_type, created_at=datetime.utcnow()))
+    db.add(EntityLink(id=link_id, user_id=user_id, from_entity_type=payload.from_entity_type, from_entity_id=payload.from_entity_id, to_entity_type=payload.to_entity_type, to_entity_id=payload.to_entity_id, link_type=payload.link_type, created_at=utc_now()))
     await db.commit()
     resp = {"id": link_id}
     await save_idempotency(user_id, request.state.idempotency_key, request.state.request_hash, 200, resp)
@@ -2280,7 +2355,7 @@ async def get_today_plan(chat_id: str, user_id: str = Depends(get_authenticated_
             logger.warning(f"Cached plan invalid: {e}")
     
     state = await collect_planning_state(db, user_id)
-    payload = build_plan_payload(state, datetime.utcnow())
+    payload = build_plan_payload(state, utc_now())
     try:
         validated = PlanResponseV1(**render_fallback_plan_explanation(payload))
         return validated
@@ -2294,7 +2369,7 @@ async def get_today_plan(chat_id: str, user_id: str = Depends(get_authenticated_
         # Create a emergency minimal valid payload if even the deterministic builder failed somehow
         emergency_payload = {
             "schema_version": "plan.v1", "plan_window": "today", 
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": utc_now().isoformat().replace("+00:00", "Z"),
             "today_plan": [], "next_actions": [], "blocked_items": []
         }
         return PlanResponseV1(**emergency_payload)
@@ -2315,11 +2390,11 @@ async def query_ask(payload: QueryAskRequest, user_id: str = Depends(get_authent
             prompt_version=settings.PROMPT_VERSION_QUERY, latency_ms=int((time.time()-start_time)*1000),
             input_tokens=usage["input_tokens"], cached_input_tokens=usage["cached_input_tokens"],
             output_tokens=usage["output_tokens"],
-            status="success", created_at=datetime.utcnow()
+            status="success", created_at=utc_now()
         ))
     except Exception as e:
         logger.error(f"Query failure: {e}")
-        db.add(PromptRun(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="query", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_QUERY, prompt_version=settings.PROMPT_VERSION_QUERY, status="error", error_code=type(e).__name__, created_at=datetime.utcnow()))
+        db.add(PromptRun(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, operation="query", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_QUERY, prompt_version=settings.PROMPT_VERSION_QUERY, status="error", error_code=type(e).__name__, created_at=utc_now()))
         db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="query_fallback_used", payload_json={"error": str(e)}))
         query_response = QueryResponseV1(answer="I'm sorry, I couldn't process your request.", confidence=0.0)
     await db.commit()

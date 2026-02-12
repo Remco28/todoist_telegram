@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKUP_DIR="${ROOT_DIR}/ops/backups"
+BACKUP_DIR="${BACKUP_DIR:-${ROOT_DIR}/ops/backups}"
 mkdir -p "${BACKUP_DIR}"
+BACKUP_DIR="$(cd "${BACKUP_DIR}" && pwd)"
 
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_DELETE_MAX_FILES="${BACKUP_DELETE_MAX_FILES:-500}"
 DATABASE_URL="${DATABASE_URL:-}"
 
 if [[ -z "${DATABASE_URL}" ]]; then
@@ -49,4 +51,27 @@ else
   echo "Created Postgres backup: ${OUT_FILE}"
 fi
 
-find "${BACKUP_DIR}" -type f -mtime +"${RETENTION_DAYS}" -print -delete
+# Prune expired backups with guardrails.
+if [[ -z "${BACKUP_DIR}" || "${BACKUP_DIR}" == "/" ]]; then
+  echo "Skipping retention prune: unsafe BACKUP_DIR='${BACKUP_DIR}'." >&2
+  exit 0
+fi
+
+mapfile -t EXPIRED_FILES < <(find "${BACKUP_DIR}" -maxdepth 1 -type f -mtime +"${RETENTION_DAYS}" -print)
+EXPIRED_COUNT="${#EXPIRED_FILES[@]}"
+if (( EXPIRED_COUNT == 0 )); then
+  exit 0
+fi
+if (( EXPIRED_COUNT > BACKUP_DELETE_MAX_FILES )); then
+  echo "Skipping retention prune: candidate count ${EXPIRED_COUNT} exceeds BACKUP_DELETE_MAX_FILES=${BACKUP_DELETE_MAX_FILES}." >&2
+  exit 0
+fi
+
+for expired in "${EXPIRED_FILES[@]}"; do
+  if [[ "${expired}" != "${BACKUP_DIR}/"* ]]; then
+    echo "Skipping unexpected prune candidate: ${expired}" >&2
+    continue
+  fi
+  echo "${expired}"
+  rm -f -- "${expired}"
+done

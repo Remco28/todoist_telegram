@@ -52,8 +52,7 @@ def test_sync_recovery_from_failed_create():
         fake_db = AsyncMock()
         fake_db.execute = AsyncMock(
             side_effect=[
-                _FakeResult(items=[task]),      # tasks query
-                _FakeResult(items=[mapping]),   # mappings query
+                MagicMock(all=MagicMock(return_value=[(task, mapping)])),
             ]
         )
         fake_db.commit = AsyncMock()
@@ -90,8 +89,7 @@ def test_sync_recovery_done_task_creates_then_closes():
         fake_db = AsyncMock()
         fake_db.execute = AsyncMock(
             side_effect=[
-                _FakeResult(items=[task]),
-                _FakeResult(items=[mapping]),
+                MagicMock(all=MagicMock(return_value=[(task, mapping)])),
             ]
         )
         fake_db.commit = AsyncMock()
@@ -109,6 +107,33 @@ def test_sync_recovery_done_task_creates_then_closes():
         assert mapping.sync_state == "synced"
         todoist.create_task.assert_awaited_once()
         todoist.close_task.assert_awaited_once_with("td_2")
+
+    asyncio.run(_run())
+
+
+def test_sync_skips_unchanged_synced_tasks():
+    async def _run():
+        fake_db = AsyncMock()
+        fake_db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(all=MagicMock(return_value=[])),
+            ]
+        )
+        fake_db.commit = AsyncMock()
+        fake_db.add = MagicMock()
+
+        todoist = AsyncMock()
+        todoist.create_task.return_value = {"id": "td_new"}
+        todoist.update_task.return_value = {}
+        todoist.close_task.return_value = True
+
+        with patch("worker.main.AsyncSessionLocal", _session_factory(fake_db)), patch("worker.main.todoist_adapter", todoist):
+            await handle_todoist_sync("job_noop", {"user_id": "usr_dev"}, {"attempt": 1})
+
+        todoist.create_task.assert_not_awaited()
+        todoist.update_task.assert_not_awaited()
+        todoist.close_task.assert_not_awaited()
+        fake_db.commit.assert_awaited_once()
 
     asyncio.run(_run())
 

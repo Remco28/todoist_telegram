@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, date, timezone
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select, delete, not_
+from sqlalchemy import select, delete, not_, and_, or_
 
 from common.config import settings
 from common.models import (
     Base, MemorySummary, EventLog, InboxItem, PromptRun, 
-    Task, Goal, Problem, TodoistTaskMap, TaskStatus
+    Task, Goal, Problem, TodoistTaskMap, TaskStatus, ActionDraft
 )
 from common.adapter import adapter
 from common.todoist import todoist_adapter
@@ -145,17 +145,31 @@ async def handle_todoist_sync(job_id: str, payload: dict, job_data: dict):
     any_task_failed = False
     
     async with AsyncSessionLocal() as db:
-        # 1. Fetch eligible tasks (non-archived)
-        stmt = select(Task).where(Task.user_id == user_id, Task.status != TaskStatus.archived)
-        tasks = (await db.execute(stmt)).scalars().all()
-        
-        # 2. Fetch existing mappings
-        stmt_map = select(TodoistTaskMap).where(TodoistTaskMap.user_id == user_id)
-        mappings = (await db.execute(stmt_map)).scalars().all()
-        task_map = {m.local_task_id: m for m in mappings}
-        
-        for task in tasks:
-            mapping = task_map.get(task.id)
+        # 1. Fetch only tasks that currently need sync.
+        stmt = (
+            select(Task, TodoistTaskMap)
+            .outerjoin(
+                TodoistTaskMap,
+                and_(
+                    TodoistTaskMap.user_id == Task.user_id,
+                    TodoistTaskMap.local_task_id == Task.id,
+                ),
+            )
+            .where(
+                Task.user_id == user_id,
+                Task.status != TaskStatus.archived,
+                or_(
+                    TodoistTaskMap.local_task_id.is_(None),
+                    TodoistTaskMap.todoist_task_id.is_(None),
+                    TodoistTaskMap.sync_state != "synced",
+                    TodoistTaskMap.last_synced_at.is_(None),
+                    Task.updated_at > TodoistTaskMap.last_synced_at,
+                ),
+            )
+        )
+        task_mapping_rows = (await db.execute(stmt)).all()
+
+        for task, mapping in task_mapping_rows:
             
             try:
                 # Common payload for create/update
@@ -552,7 +566,7 @@ async def handle_memory_summarize(job_id, payload):
             id=str(uuid.uuid4()), request_id=f"job_{job_id}", user_id=user_id,
             operation="summarize", provider=settings.LLM_PROVIDER, model=settings.LLM_MODEL_SUMMARIZE,
             prompt_version=settings.PROMPT_VERSION_SUMMARIZE, latency_ms=latency, status="success",
-            created_at=datetime.utcnow()
+            created_at=utc_now()
         ))
         
         # 3. Write MemorySummary
@@ -562,7 +576,7 @@ async def handle_memory_summarize(job_id, payload):
             summary_type="session", summary_text=summary["summary_text"],
             facts_json=summary.get("facts", []), 
             source_event_ids=source_event_ids,
-            created_at=datetime.utcnow()
+            created_at=utc_now()
         ))
         
         # 4. Log event
@@ -580,7 +594,7 @@ async def handle_memory_compact(job_id, payload):
     scope = "user" if target_user_id else "global"
     logger.info(f"Starting memory compaction (scope: {scope})...")
     
-    retention_cutoff = datetime.utcnow() - timedelta(days=settings.TRANSCRIPT_RETENTION_DAYS)
+    retention_cutoff = utc_now() - timedelta(days=settings.TRANSCRIPT_RETENTION_DAYS)
     
     async with AsyncSessionLocal() as db:
         # 1. Identify eligible old rows (older than cutoff)
@@ -601,6 +615,13 @@ async def handle_memory_compact(job_id, payload):
                 Task.source_inbox_item_id.in_(eligible_ids)
             )
             referenced_ids = set((await db.execute(referenced_stmt)).scalars().all())
+            draft_ref_stmt = select(ActionDraft.source_inbox_item_id).where(
+                ActionDraft.source_inbox_item_id.in_(eligible_ids),
+                ActionDraft.status == "draft",
+                ActionDraft.expires_at >= utc_now(),
+            )
+            draft_referenced_ids = set((await db.execute(draft_ref_stmt)).scalars().all())
+            referenced_ids.update(draft_referenced_ids)
             skipped_referenced_rows = len(referenced_ids)
             
             # 3. Delete only non-referenced rows
