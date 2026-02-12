@@ -137,7 +137,7 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert mocked.await_args.args[0] == "/today"
 
 
-def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_db, mock_extract, mock_send):
+def test_non_command_text_low_confidence_requests_clarification(app_no_db, mock_extract, mock_send):
     mock_extract.extract_structured_updates.return_value = {
         "tasks": [{"title": "Task A"}],
         "goals": [{"title": "Goal A"}],
@@ -157,10 +157,10 @@ def test_non_command_text_creates_action_draft_and_prompts_confirmation(app_no_d
     ) as apply_capture:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("plain text"), headers=_headers())
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
+        create_draft.assert_not_awaited()
         apply_capture.assert_not_awaited()
         mock_send.assert_awaited_once()
-        assert "proposed updates" in mock_send.await_args.args[1].lower()
+        assert "i need one clarification before applying changes" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
@@ -414,10 +414,9 @@ def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send)
     ) as extract_fallback:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Add a reminder to call accountant"), headers=_headers())
         assert resp.status_code == 200
-        create_draft.assert_awaited_once()
+        create_draft.assert_not_awaited()
         extract_fallback.assert_awaited_once()
-        extraction = create_draft.await_args.kwargs["extraction"]
-        assert extraction["tasks"][0]["title"] == "Follow up with accountant"
+        assert "i need one clarification before applying changes" in mock_send.await_args.args[1].lower()
 
 
 def test_non_command_planner_unusable_actions_uses_extract_fallback(app_no_db, mock_send):
@@ -739,7 +738,7 @@ def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, m
 
 
 def test_tonight_forces_local_today_due_date(app_no_db, mock_send):
-    planned = {"intent": "action", "scope": "single", "confidence": 0.3, "needs_confirmation": True, "actions": []}
+    planned = {"intent": "action", "scope": "single", "confidence": 0.8, "needs_confirmation": True, "actions": []}
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
@@ -767,7 +766,7 @@ def test_tonight_forces_local_today_due_date(app_no_db, mock_send):
 
 
 def test_tomorrow_night_does_not_force_today_due_date(app_no_db, mock_send):
-    planned = {"intent": "action", "scope": "single", "confidence": 0.3, "needs_confirmation": True, "actions": []}
+    planned = {"intent": "action", "scope": "single", "confidence": 0.8, "needs_confirmation": True, "actions": []}
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
@@ -792,6 +791,40 @@ def test_tomorrow_night_does_not_force_today_due_date(app_no_db, mock_send):
         assert resp.status_code == 200
         extraction = create_draft.await_args.kwargs["extraction"]
         assert extraction["tasks"][0]["due_date"] == "2026-02-13"
+
+
+def test_low_confidence_actionable_plan_requests_clarification_instead_of_draft(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.3,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "create", "title": "Call landlord"}],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Call landlord about leak"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        apply_capture.assert_not_awaited()
+        assert "i need one clarification before applying changes" in mock_send.await_args.args[1].lower()
+        assert "not fully confident" in mock_send.await_args.args[1].lower()
 
 
 def test_unrelated_targeted_update_is_rewritten_to_create(app_no_db, mock_send):

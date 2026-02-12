@@ -47,6 +47,7 @@ from common.telegram import (
 ACTION_DRAFT_TTL_SECONDS = 1800
 AUTOPILOT_COMPLETION_CONFIDENCE = 0.70
 AUTOPILOT_ACTION_CONFIDENCE = 0.90
+CLARIFY_ACTION_CONFIDENCE = 0.50
 COMPLETION_INTENT_TOKENS = ("mark", "complete", "completed", "close", "closed")
 
 
@@ -834,6 +835,27 @@ def _autopilot_decision(message: str, extraction: Dict[str, Any], planned: Any) 
     if _is_low_risk_action_extraction(extraction):
         return True, "low_risk_action_high_confidence"
     return False, "not_low_risk_action"
+
+
+def _build_low_confidence_clarification(extraction: Dict[str, Any]) -> str:
+    tasks = extraction.get("tasks", []) if isinstance(extraction, dict) else []
+    titles = [
+        task.get("title", "").strip()
+        for task in tasks
+        if isinstance(task, dict) and isinstance(task.get("title"), str) and task.get("title").strip()
+    ]
+    if titles:
+        preview = ", ".join(escape_html(t) for t in titles[:3])
+        return (
+            "I need one clarification before applying changes:\n"
+            f"• I am not fully confident yet. Should I proceed with: {preview}?\n\n"
+            "Reply yes to apply, or edit ... to revise."
+        )
+    return (
+        "I need one clarification before applying changes:\n"
+        "• I am not fully confident about the intended action.\n\n"
+        "Reply with one more detail and I will revise."
+    )
 
 
 def _apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
@@ -2248,6 +2270,10 @@ async def _handle_telegram_draft_flow(
         return
 
     _validate_extraction_payload(extraction)
+    planner_confidence = _planner_confidence(planned)
+    if planner_confidence < CLARIFY_ACTION_CONFIDENCE:
+        await send_message(chat_id, _build_low_confidence_clarification(extraction))
+        return
     auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)
     db.add(
         EventLog(
@@ -2259,7 +2285,7 @@ async def _handle_telegram_draft_flow(
                 "chat_id": chat_id,
                 "auto_apply": auto_apply,
                 "reason": auto_reason,
-                "confidence": _planner_confidence(planned),
+                "confidence": planner_confidence,
             },
             created_at=utc_now(),
         )
