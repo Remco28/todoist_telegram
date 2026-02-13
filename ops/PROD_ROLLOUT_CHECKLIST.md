@@ -25,6 +25,7 @@
   - `TODOIST_API_BASE` (optional override; default `https://api.todoist.com/api/v1`)
   - `TELEGRAM_BOT_TOKEN` (if Telegram enabled)
   - `TELEGRAM_WEBHOOK_SECRET` (if Telegram enabled)
+  - `UVICORN_WORKERS` (recommended `1` on small VPS)
 4. Run backup before deploy:
   - `DATABASE_URL="<prod_db_url>" BACKUP_RETENTION_DAYS=14 ./ops/backup_db.sh`
 5. Confirm off-server backup schedule exists (recommended):
@@ -39,6 +40,7 @@
 3. Verify API health:
   - `GET /health/live`
   - `GET /health/ready`
+  - Confirm API runtime process count matches expectation (`UVICORN_WORKERS=1` by default).
 4. Deploy worker service in Coolify.
 5. Confirm worker startup log contains:
   - `Worker started, listening for jobs...`
@@ -63,6 +65,8 @@ Use a production test chat scope (for example `prod-smoke`) and a valid bearer t
   - Expect `200` and valid JSON payload.
 6. Worker evidence:
   - Confirm worker processed smoke job IDs (or emitted retry events only if upstream failed transiently).
+7. Resource sanity:
+  - Confirm host memory returns to steady baseline after rollout (no sustained >85% RAM).
 
 ## Rollback Trigger Conditions
 - `/health/ready` remains failing after deploy.

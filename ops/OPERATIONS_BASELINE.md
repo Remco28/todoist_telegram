@@ -24,9 +24,12 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
   - `dead_letter_queue` depth > 0 and increasing.
   - `moved_to_dlq` increases continuously over 15 minutes.
   - API 5xx sustained for core endpoints (`capture`, `query`, `sync`).
+  - Host RAM sustained >85% for more than 10 minutes.
+  - Any container repeatedly killed/restarted due to OOM.
 - Warning:
   - `retry_scheduled` spikes but stabilizes within 15 minutes.
   - queue depth rises temporarily during batch sync windows.
+  - Host RAM sustained >75% outside deploy windows.
 
 ## Alert Channels
 - Minimum:
@@ -41,6 +44,7 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
 3. Confirm worker service is running.
 4. Spot-check one query response quality.
 5. If Todoist enabled, spot-check `/v1/sync/todoist/status`.
+6. Check host memory and restart counters in Coolify.
 
 ## Weekly Operator Checklist
 1. Confirm backups were created in the expected schedule.
@@ -50,6 +54,15 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
 4. Review token/cost endpoint:
   - `GET /health/costs/daily`
 5. Validate Telegram link flow (if enabled).
+6. Prune unused Docker images/layers on host.
+
+## Small VPS Runtime Defaults
+- API should run with a single process by default:
+  - `UVICORN_WORKERS=1`
+- Keep deploy-time memory headroom:
+  - baseline target ~60-75% RAM usage
+  - sustained >85% should trigger remediation
+- Swap should remain enabled on low-cost VPS tiers.
 
 ## Incident First Actions
 1. Identify scope:

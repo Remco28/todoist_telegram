@@ -32,6 +32,23 @@ QUERY_PREFIXES = (
     "are there",
 )
 
+_INTERNAL_ID_PATTERNS = (
+    re.compile(r"\[(?:tsk|gol|prb|lnk)_[A-Za-z0-9]+\]"),
+    re.compile(r"\((?:tsk|gol|prb|lnk)_[A-Za-z0-9]+\)"),
+    re.compile(r"\b(?:tsk|gol|prb|lnk)_[A-Za-z0-9]+\b"),
+)
+
+
+def strip_internal_ids(text: str) -> str:
+    cleaned = text or ""
+    for pattern in _INTERNAL_ID_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    # Normalize spacing around punctuation after removal.
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    return cleaned.strip()
+
 def verify_telegram_secret(headers: Dict[str, str]) -> bool:
     if not settings.TELEGRAM_WEBHOOK_SECRET:
         return True
@@ -153,45 +170,57 @@ async def send_message(chat_id: str, text: str, reply_markup: Optional[Dict[str,
         return {"ok": False, "error": "token_missing"}
 
     url = f"{settings.TELEGRAM_API_BASE}/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-    safe_text = (text or "")[:TELEGRAM_TEXT_MAX_LEN]
+    chunks = split_telegram_text(text or "", TELEGRAM_TEXT_MAX_LEN)
+    if not chunks:
+        chunks = [""]
 
     try:
         async with httpx.AsyncClient(timeout=settings.TELEGRAM_COMMAND_TIMEOUT_SECONDS) as client:
-            # First try with HTML formatting.
-            payload: Dict[str, Any] = {
-                "chat_id": chat_id,
-                "text": safe_text,
-                "parse_mode": "HTML",
-            }
-            if isinstance(reply_markup, dict):
-                payload["reply_markup"] = reply_markup
-            resp = await client.post(url, json=payload)
-            if resp.status_code < 400:
-                return resp.json()
+            # Send in chunks to avoid Telegram hard length cap.
+            last_json: Dict[str, Any] = {"ok": True}
+            total_chunks = len(chunks)
+            for idx, chunk in enumerate(chunks):
+                prefix = f"<i>Part {idx + 1}/{total_chunks}</i>\n\n" if total_chunks > 1 else ""
+                safe_text = prefix + chunk
 
-            # Common 400 case is parse issues; retry once with plain text.
-            logger.warning(
-                "Telegram send failed with HTML mode (status=%s, body=%s). Retrying without parse_mode.",
-                resp.status_code,
-                resp.text,
-            )
-            payload = {
-                "chat_id": chat_id,
-                "text": safe_text,
-            }
-            if isinstance(reply_markup, dict):
-                payload["reply_markup"] = reply_markup
-            resp = await client.post(url, json=payload)
-            if resp.status_code < 400:
-                return resp.json()
+                payload: Dict[str, Any] = {
+                    "chat_id": chat_id,
+                    "text": safe_text,
+                    "parse_mode": "HTML",
+                }
+                # Keep inline controls on the final chunk only.
+                if isinstance(reply_markup, dict) and idx == total_chunks - 1:
+                    payload["reply_markup"] = reply_markup
+                resp = await client.post(url, json=payload)
+                if resp.status_code < 400:
+                    last_json = resp.json()
+                    continue
 
-            logger.error(
-                "Failed to send Telegram message (status=%s, body=%s)",
-                resp.status_code,
-                resp.text,
-            )
-            resp.raise_for_status()
-            return {"ok": False, "error": "telegram_send_failed"}
+                # Common 400 case is parse issues; retry once with plain text.
+                logger.warning(
+                    "Telegram send failed with HTML mode (status=%s, body=%s). Retrying without parse_mode.",
+                    resp.status_code,
+                    resp.text,
+                )
+                payload = {
+                    "chat_id": chat_id,
+                    "text": re.sub(r"</?i>", "", prefix) + chunk,
+                }
+                if isinstance(reply_markup, dict) and idx == total_chunks - 1:
+                    payload["reply_markup"] = reply_markup
+                resp = await client.post(url, json=payload)
+                if resp.status_code < 400:
+                    last_json = resp.json()
+                    continue
+
+                logger.error(
+                    "Failed to send Telegram message (status=%s, body=%s)",
+                    resp.status_code,
+                    resp.text,
+                )
+                resp.raise_for_status()
+                return {"ok": False, "error": "telegram_send_failed"}
+            return last_json
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return {"ok": False, "error": str(e)}
@@ -231,7 +260,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
         lines.append("Nothing on your plan for today! Add a thought to get started.")
     else:
         for idx, item in enumerate(today_plan):
-            lines.append(f"{idx+1}. <code>{escape_html(item['task_id'])}</code>: {escape_html(item['title'])}")
+            lines.append(f"{idx+1}. {escape_html(item['title'])}")
             if item.get("reason"):
                 lines.append(f"   <i>{escape_html(item['reason'])}</i>")
 
@@ -245,7 +274,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def format_plan_refresh_ack(job_id: str) -> str:
-    return f"🔄 Plan refresh enqueued. (ID: <code>{job_id}</code>)\nI'll update you when it's ready!"
+    return "🔄 Plan refresh enqueued.\nI'll update you when it's ready!"
 
 def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
     """
@@ -259,7 +288,6 @@ def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
     lines = ["<b>🎯 Current Focus</b>", ""]
     for idx, item in enumerate(top_items):
         lines.append(f"<b>{idx+1}. {escape_html(item['title'])}</b>")
-        lines.append(f"   ID: <code>{escape_html(item['task_id'])}</code>")
         
     return "\n".join(lines)
 
@@ -281,20 +309,59 @@ def format_capture_ack(applied: Dict[str, int]) -> str:
 
 
 def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:
-    raw = (answer or "").strip()
+    raw = strip_internal_ids((answer or "").strip())
     if not raw:
         return "I don't have an answer yet."
 
-    # Break into readable lines by sentence boundaries.
-    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", raw) if c.strip()]
-    if not chunks:
-        chunks = [raw]
-
     lines = ["<b>Answer</b>", ""]
-    for chunk in chunks[:8]:
-        lines.append(f"• {escape_html(chunk)}")
-    if len(chunks) > 8:
-        lines.append("• ...")
+
+    # Keep model line structure when present; otherwise split into sentence bullets.
+    structured_lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(structured_lines) > 1:
+        for line in structured_lines:
+            lines.append(escape_html(line))
+    else:
+        chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", raw) if c.strip()]
+        for chunk in chunks:
+            lines.append(f"• {escape_html(chunk)}")
+
     if follow_up:
-        lines.extend(["", f"<i>Follow-up:</i> {escape_html(follow_up)}"])
+        lines.extend(["", f"<i>Follow-up:</i> {escape_html(strip_internal_ids(follow_up))}"])
     return "\n".join(lines)
+
+
+def split_telegram_text(text: str, max_len: int = TELEGRAM_TEXT_MAX_LEN) -> List[str]:
+    """Split long text into Telegram-safe chunks while preferring line boundaries."""
+    if len(text) <= max_len:
+        return [text]
+
+    lines = text.splitlines(keepends=True)
+    chunks: List[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for line in lines:
+        if len(line) > max_len:
+            flush()
+            remaining = line
+            while len(remaining) > max_len:
+                split_at = remaining.rfind(" ", 0, max_len)
+                if split_at <= 0:
+                    split_at = max_len
+                chunks.append(remaining[:split_at])
+                remaining = remaining[split_at:]
+            if remaining:
+                current = remaining
+            continue
+
+        if len(current) + len(line) > max_len:
+            flush()
+        current += line
+
+    flush()
+    return chunks if chunks else [text[:max_len]]

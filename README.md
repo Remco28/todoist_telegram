@@ -212,6 +212,10 @@ Examples:
 - "What tasks are still open?"
 - Reply `yes` to apply a proposal.
 
+Note:
+- Telegram has a hard per-message size limit (~4096 chars).
+- This app auto-splits long replies into multiple ordered messages so content is not truncated.
+
 ## 4) Restrict Bot Access to Only You
 Set at least one of these env vars:
 - `TELEGRAM_ALLOWED_CHAT_IDS`
@@ -242,6 +246,7 @@ TELEGRAM_ALLOWED_USERNAMES=<your_username_without_@>
 ### Required env vars (API + worker)
 - `DATABASE_URL`
 - `REDIS_URL`
+- `UVICORN_WORKERS` (recommended `1` on small VPS)
 - `APP_AUTH_BEARER_TOKENS` (or `APP_AUTH_TOKEN_USER_MAP`)
 - `LLM_API_BASE_URL`
 - `LLM_API_KEY`

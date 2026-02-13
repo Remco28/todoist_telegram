@@ -115,9 +115,9 @@ async def select_related_entities(db: AsyncSession, user_id: str, query: str, li
 
     # Format
     res = []
-    for t in tasks[:limit//2]: res.append(f"Task [{t.id}]: {t.title} (Status: {t.status.value})")
-    for g in goals[:limit//4]: res.append(f"Goal [{g.id}]: {g.title} (Status: {g.status.value})")
-    for p in problems[:limit//4]: res.append(f"Problem [{p.id}]: {p.title} (Status: {p.status.value})")
+    for t in tasks[:limit//2]: res.append(f"Task: {t.title} (Status: {t.status.value})")
+    for g in goals[:limit//4]: res.append(f"Goal: {g.title} (Status: {g.status.value})")
+    for p in problems[:limit//4]: res.append(f"Problem: {p.title} (Status: {p.status.value})")
     return res
 
 def enforce_budget(

@@ -1066,7 +1066,7 @@ def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     assert job["topic"] == "plan.refresh"
     assert "job_id" in job
     mock_send.assert_awaited_once()
-    assert job["job_id"] in mock_send.await_args.args[1]
+    assert "Plan refresh enqueued" in mock_send.await_args.args[1]
 
 
 def test_command_ask_returns_query_answer(mock_send, mock_db):

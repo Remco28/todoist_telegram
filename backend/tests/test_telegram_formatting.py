@@ -1,6 +1,6 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_query_answer,
+    escape_html, format_today_plan, format_focus_mode, format_query_answer, split_telegram_text, strip_internal_ids
 )
 
 
@@ -40,7 +40,6 @@ class TestFormattersEscapeHtmlContent:
 
         # Structural Telegram tags preserved
         assert "<b>" in result
-        assert "<code>" in result
         assert "<i>" in result
 
     def test_format_focus_mode_escapes_titles(self):
@@ -69,3 +68,27 @@ class TestFormattersEscapeHtmlContent:
         assert "&amp; keep moving." in result
         assert "&lt;more&gt; details?" in result
         assert "<script>" not in result
+
+    def test_format_query_answer_strips_internal_ids(self):
+        answer = "Open tasks: Do French homework [tsk_09847f2cf427], Memorize a script (tsk_481377db4bff), and tsk_10d09b42639c."
+        result = format_query_answer(answer)
+        assert "tsk_09847f2cf427" not in result
+        assert "tsk_481377db4bff" not in result
+        assert "tsk_10d09b42639c" not in result
+
+    def test_strip_internal_ids_removes_known_prefixes(self):
+        text = "Task [tsk_123] supports goal (gol_456) and problem prb_789."
+        cleaned = strip_internal_ids(text)
+        assert cleaned == "Task supports goal and problem."
+
+    def test_split_telegram_text_preserves_full_content(self):
+        text = ("A" * 2000) + "\n" + ("B" * 2000) + "\n" + ("C" * 2000)
+        chunks = split_telegram_text(text, max_len=4096)
+        assert len(chunks) == 2
+        assert "".join(chunks) == text
+
+    def test_split_telegram_text_splits_single_long_line(self):
+        text = "x" * 9000
+        chunks = split_telegram_text(text, max_len=4096)
+        assert len(chunks) == 3
+        assert "".join(chunks) == text
