@@ -49,6 +49,25 @@ def strip_internal_ids(text: str) -> str:
     cleaned = re.sub(r"\(\s*\)", "", cleaned)
     return cleaned.strip()
 
+
+def render_markdownish_text(text: str) -> str:
+    """Render a small markdown-like subset safely for Telegram HTML mode.
+
+    Currently supports:
+    - **bold**
+    """
+    if not text:
+        return ""
+    parts: List[str] = []
+    tokens = re.split(r"(\*\*[^*\n][^*\n]*\*\*)", text)
+    for token in tokens:
+        if token.startswith("**") and token.endswith("**") and len(token) > 4:
+            inner = token[2:-2]
+            parts.append(f"<b>{escape_html(inner)}</b>")
+        else:
+            parts.append(escape_html(token))
+    return "".join(parts)
+
 def verify_telegram_secret(headers: Dict[str, str]) -> bool:
     if not settings.TELEGRAM_WEBHOOK_SECRET:
         return True
@@ -319,11 +338,11 @@ def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:
     structured_lines = [line.strip() for line in raw.splitlines() if line.strip()]
     if len(structured_lines) > 1:
         for line in structured_lines:
-            lines.append(escape_html(line))
+            lines.append(render_markdownish_text(line))
     else:
         chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", raw) if c.strip()]
         for chunk in chunks:
-            lines.append(f"• {escape_html(chunk)}")
+            lines.append(f"• {render_markdownish_text(chunk)}")
 
     if follow_up:
         lines.extend(["", f"<i>Follow-up:</i> {escape_html(strip_internal_ids(follow_up))}"])

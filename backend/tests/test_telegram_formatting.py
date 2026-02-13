@@ -1,6 +1,6 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_query_answer, split_telegram_text, strip_internal_ids
+    escape_html, format_today_plan, format_focus_mode, format_query_answer, split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
 
@@ -80,6 +80,16 @@ class TestFormattersEscapeHtmlContent:
         text = "Task [tsk_123] supports goal (gol_456) and problem prb_789."
         cleaned = strip_internal_ids(text)
         assert cleaned == "Task supports goal and problem."
+
+    def test_render_markdownish_text_converts_bold(self):
+        rendered = render_markdownish_text("Top priority: **Plan Tuesday dinner** tonight.")
+        assert "<b>Plan Tuesday dinner</b>" in rendered
+        assert "**Plan Tuesday dinner**" not in rendered
+
+    def test_render_markdownish_text_escapes_html_inside_bold(self):
+        rendered = render_markdownish_text("Use **<script>alert(1)</script>** safely.")
+        assert "<b>&lt;script&gt;alert(1)&lt;/script&gt;</b>" in rendered
+        assert "<script>" not in rendered
 
     def test_split_telegram_text_preserves_full_content(self):
         text = ("A" * 2000) + "\n" + ("B" * 2000) + "\n" + ("C" * 2000)
