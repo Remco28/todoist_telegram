@@ -322,9 +322,9 @@ def format_capture_ack(applied: Dict[str, int]) -> str:
     if applied.get("links_created"): parts.append(f"{applied['links_created']} link(s) created")
     
     if not parts:
-        return "Thought logged. No actionable entities extracted."
-    
-    return "✅ Captured: " + ", ".join(parts) + "."
+        return "<i>Logged. No changes made.</i>"
+
+    return "<b>" + escape_html(", ".join(parts)) + ".</b>"
 
 
 def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:

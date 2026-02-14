@@ -939,7 +939,7 @@ def test_non_command_yes_applies_open_draft(app_no_db, mock_send):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("yes"), headers=_headers())
         assert resp.status_code == 200
         confirm_draft.assert_awaited_once()
-        assert "applied" in mock_send.await_args.args[1].lower()
+        assert "task(s) created" in mock_send.await_args.args[1].lower()
 
 
 def test_callback_confirm_applies_open_draft(app_no_db, mock_send):
@@ -953,7 +953,7 @@ def test_callback_confirm_applies_open_draft(app_no_db, mock_send):
         assert resp.status_code == 200
         ack.assert_awaited_once()
         confirm_draft.assert_awaited_once()
-        assert "applied" in mock_send.await_args.args[1].lower()
+        assert "task(s) created" in mock_send.await_args.args[1].lower()
 
 
 def test_callback_edit_prompts_for_edit_text(app_no_db, mock_send):

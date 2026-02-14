@@ -2033,7 +2033,7 @@ async def _handle_telegram_callback_update(data: Dict[str, Any], db: AsyncSessio
         applied = await _confirm_action_draft(
             draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
         )
-        await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+        await send_message(chat_id, format_capture_ack(applied.model_dump()))
     elif action == "discard":
         await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
         await send_message(chat_id, "Discarded the pending proposal.")
@@ -2061,7 +2061,7 @@ async def _handle_telegram_draft_flow(
         applied = await _confirm_action_draft(
             draft=open_draft, user_id=user_id, chat_id=chat_id, request_id=request_id, db=db
         )
-        await send_message(chat_id, "✅ Applied. " + format_capture_ack(applied.model_dump()))
+        await send_message(chat_id, format_capture_ack(applied.model_dump()))
         return
     if open_draft and draft_action == "discard":
         await _discard_action_draft(open_draft, user_id=user_id, request_id=request_id, db=db)
@@ -2308,7 +2308,7 @@ async def _handle_telegram_draft_flow(
             await _enqueue_todoist_sync_job(user_id=user_id)
         except Exception as exc:
             logger.error("Failed to enqueue todoist sync after autopilot apply: %s", exc)
-        await send_message(chat_id, "✅ Applied automatically. " + format_capture_ack(applied.model_dump()))
+        await send_message(chat_id, format_capture_ack(applied.model_dump()))
         return
 
     draft = await _create_action_draft(
