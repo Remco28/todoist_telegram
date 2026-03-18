@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
 
 from api.main import app, get_db, get_todoist_sync_status
-from common.models import Task, TaskStatus, TodoistTaskMap
+from common.models import EventLog, Task, TaskStatus, TodoistTaskMap
 from worker.main import handle_todoist_sync, handle_todoist_reconcile
 
 
@@ -331,8 +331,20 @@ def test_reconcile_remote_missing_marks_mapping_error_and_event():
 
 def test_status_endpoint_shape_and_transition_expectation():
     async def _run():
+        recent_error_events = [
+            EventLog(
+                id="ev_sync_fail",
+                request_id="job_sync",
+                user_id="usr_dev",
+                event_type="todoist_sync_task_failed",
+                entity_type="task",
+                entity_id="tsk_1",
+                payload_json={"error": "timeout", "todoist_task_id": "td_1"},
+                created_at=datetime(2026, 2, 10, 1, 3, 0),
+            )
+        ]
         fake_db = AsyncMock()
-        # total, pending, error, last_synced, last_attempt, last_reconcile, reconcile_errors
+        # total, pending, error, last_synced, last_attempt, last_reconcile, reconcile_errors, recent_errors
         fake_db.execute = AsyncMock(
             side_effect=[
                 _FakeResult(scalar=1),
@@ -342,6 +354,7 @@ def test_status_endpoint_shape_and_transition_expectation():
                 _FakeResult(scalar=datetime(2026, 2, 10, 1, 2, 3)),
                 _FakeResult(scalar=None),
                 _FakeResult(scalar=2),
+                _FakeResult(items=recent_error_events),
             ]
         )
 
@@ -352,6 +365,8 @@ def test_status_endpoint_shape_and_transition_expectation():
         assert before.last_attempt_at is not None
         assert before.last_reconcile_at is None
         assert before.reconcile_error_count == 2
+        assert before.recent_errors[0]["event_type"] == "todoist_sync_task_failed"
+        assert before.recent_errors[0]["todoist_task_id"] == "td_1"
 
         fake_db_2 = AsyncMock()
         fake_db_2.execute = AsyncMock(
@@ -363,6 +378,7 @@ def test_status_endpoint_shape_and_transition_expectation():
                 _FakeResult(scalar=datetime(2026, 2, 10, 2, 3, 4)),
                 _FakeResult(scalar=datetime(2026, 2, 10, 2, 5, 4)),
                 _FakeResult(scalar=0),
+                _FakeResult(items=[]),
             ]
         )
         after = await get_todoist_sync_status(user_id="usr_dev", db=fake_db_2)
@@ -372,5 +388,6 @@ def test_status_endpoint_shape_and_transition_expectation():
         assert after.last_attempt_at is not None
         assert after.last_reconcile_at is not None
         assert after.reconcile_error_count == 0
+        assert after.recent_errors == []
 
     asyncio.run(_run())

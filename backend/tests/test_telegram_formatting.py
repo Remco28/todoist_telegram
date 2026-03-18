@@ -1,6 +1,7 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_query_answer, split_telegram_text, strip_internal_ids, render_markdownish_text
+    escape_html, format_today_plan, format_focus_mode, format_query_answer, format_capture_ack,
+    split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
 
@@ -54,11 +55,42 @@ class TestFormattersEscapeHtmlContent:
         assert "&amp;" in result
         assert "<with>" not in result
 
+    def test_format_today_plan_includes_freshness_line(self):
+        payload = {"generated_at": "2026-03-18T18:40:00Z", "today_plan": []}
+        result = format_today_plan(payload)
+        assert "Updated: 2026-03-18 18:40 UTC" in result
+
+    def test_format_focus_mode_includes_freshness_line(self):
+        payload = {
+            "generated_at": "2026-03-18T18:40:00Z",
+            "today_plan": [{"task_id": "tsk_1", "title": "Task A"}],
+        }
+        result = format_focus_mode(payload)
+        assert "Updated: 2026-03-18 18:40 UTC" in result
+
     def test_escape_html_covers_required_chars(self):
         assert escape_html("<") == "&lt;"
         assert escape_html(">") == "&gt;"
         assert escape_html("&") == "&amp;"
         assert escape_html("safe text") == "safe text"
+
+    def test_format_capture_ack_prefers_itemized_summary(self):
+        result = format_capture_ack(
+            {
+                "tasks_created": 1,
+                "tasks_updated": 2,
+                "items": [
+                    {"group": "completed", "label": "Remind Amy about the backpack"},
+                    {"group": "updated", "label": "Reach out to Ben and Jason"},
+                    {"group": "created", "label": "Decide our intentions regarding Ginseng ordering"},
+                ],
+            }
+        )
+        assert "Applied changes" in result
+        assert "Completed" in result
+        assert "Updated" in result
+        assert "Created" in result
+        assert "1 task(s) created" not in result
 
     def test_format_query_answer_escapes_dynamic_content(self):
         answer = "Use <script>alert(1)</script> & keep moving."

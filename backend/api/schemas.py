@@ -10,12 +10,17 @@ class ThoughtCaptureRequest(BaseModel):
     client_msg_id: Optional[str] = None
     requested_mode: str = "auto"
 
+class AppliedChangeItem(BaseModel):
+    group: str = Field(..., min_length=1, max_length=40)
+    label: str = Field(..., min_length=1, max_length=240)
+
 class AppliedChanges(BaseModel):
     tasks_created: int = 0
     tasks_updated: int = 0
     problems_created: int = 0
     goals_created: int = 0
     links_created: int = 0
+    items: List[AppliedChangeItem] = Field(default_factory=list, max_length=40)
 
 class ThoughtCaptureResponse(BaseModel):
     status: str
@@ -175,49 +180,14 @@ class TelegramLinkTokenCreateResponse(BaseModel):
 
 
 class TodoistSyncStatusResponse(BaseModel):
-
-
-
-
-
-
-
     total_mapped: int
-
-
-
-
-
-
-
     pending_sync: int
-
-
-
-
-
-
-
     error_count: int
-
-
-
-
-
-
-
     last_synced_at: Optional[str] = None
-
-
-
-
-
-
-
     last_attempt_at: Optional[str] = None
     last_reconcile_at: Optional[str] = None
     reconcile_error_count: int = 0
-
+    recent_errors: List[Dict[str, Optional[str]]] = Field(default_factory=list, max_length=5)
 
 
 

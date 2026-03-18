@@ -1,6 +1,7 @@
 import logging
 import re
 import httpx
+from datetime import datetime, timezone
 from html import escape as _html_escape
 from typing import Optional, Tuple, Dict, Any, List
 from common.config import settings
@@ -268,11 +269,37 @@ def is_query_like_text(text: str) -> bool:
     return any(collapsed.startswith(prefix + " ") or collapsed == prefix for prefix in QUERY_PREFIXES)
 
 
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _format_plan_freshness(plan_payload: Dict[str, Any]) -> Optional[str]:
+    generated_at = _parse_iso_datetime(plan_payload.get("generated_at"))
+    if not generated_at:
+        return None
+    return generated_at.astimezone(timezone.utc).strftime("Updated: %Y-%m-%d %H:%M UTC")
+
+
 def format_today_plan(plan_payload: Dict[str, Any]) -> str:
     """
     Converts PlanResponseV1 to human-friendly Telegram text.
     """
-    lines = ["<b>📅 Your Today Plan</b>", ""]
+    lines = ["<b>📅 Your Today Plan</b>"]
+    freshness = _format_plan_freshness(plan_payload)
+    if freshness:
+        lines.append(f"<i>{escape_html(freshness)}</i>")
+    lines.append("")
     
     today_plan = plan_payload.get("today_plan", [])
     if not today_plan:
@@ -293,7 +320,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def format_plan_refresh_ack(job_id: str) -> str:
-    return "🔄 Plan refresh enqueued.\nI'll update you when it's ready!"
+    return "🔄 Plan refresh enqueued.\nUse <code>/today</code> in a few seconds to view the refreshed plan."
 
 def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
     """
@@ -304,16 +331,58 @@ def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
         return "Nothing to focus on right now. Use /plan to refresh."
     
     top_items = today_plan[:3]
-    lines = ["<b>🎯 Current Focus</b>", ""]
+    lines = ["<b>🎯 Current Focus</b>"]
+    freshness = _format_plan_freshness(plan_payload)
+    if freshness:
+        lines.append(f"<i>{escape_html(freshness)}</i>")
+    lines.append("")
     for idx, item in enumerate(top_items):
         lines.append(f"<b>{idx+1}. {escape_html(item['title'])}</b>")
         
     return "\n".join(lines)
 
-def format_capture_ack(applied: Dict[str, int]) -> str:
+def format_capture_ack(applied: Dict[str, Any]) -> str:
     """
     Summarizes applied changes for capture/thought.
     """
+    items = applied.get("items")
+    if isinstance(items, list):
+        normalized_items = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and isinstance(item.get("group"), str)
+            and isinstance(item.get("label"), str)
+            and item.get("label").strip()
+        ]
+        if normalized_items:
+            headings = {
+                "created": "Created",
+                "updated": "Updated",
+                "completed": "Completed",
+                "archived": "Archived",
+                "goal_created": "Goals",
+                "problem_created": "Problems",
+                "link_created": "Links",
+            }
+            shown = normalized_items[:6]
+            lines = ["<b>Applied changes</b>"]
+            seen_groups: List[str] = []
+            for item in shown:
+                if item["group"] not in seen_groups:
+                    seen_groups.append(item["group"])
+            for group in seen_groups:
+                group_items = [item for item in shown if item["group"] == group]
+                if not group_items:
+                    continue
+                lines.extend(["", f"<b>{headings.get(group, 'Changes')}</b>"])
+                for item in group_items:
+                    lines.append(f"• {escape_html(item['label'].strip())}")
+            overflow = len(normalized_items) - len(shown)
+            if overflow > 0:
+                lines.extend(["", f"<i>+{overflow} more change(s)</i>"])
+            return "\n".join(lines)
+
     parts = []
     if applied.get("tasks_created"): parts.append(f"{applied['tasks_created']} task(s) created")
     if applied.get("tasks_updated"): parts.append(f"{applied['tasks_updated']} task(s) updated")

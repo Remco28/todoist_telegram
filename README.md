@@ -212,6 +212,13 @@ Examples:
 - "What tasks are still open?"
 - Reply `yes` to apply a proposal.
 
+Useful Telegram commands:
+- `/today` to view the current ranked plan.
+- `/focus` to view the top 3 current tasks.
+- `/plan` to refresh the plan, then `/today` to view it.
+- `/done 2` to complete the second item from your most recent `/today` or `/focus` list.
+- `/done tsk_123` to complete a task directly by id.
+
 Note:
 - Telegram has a hard per-message size limit (~4096 chars).
 - This app auto-splits long replies into multiple ordered messages so content is not truncated.

@@ -67,6 +67,14 @@ def test_health_metrics_returns_operational_shape(mock_redis):
                 payload_json={"topic": "plan.refresh"},
                 created_at=datetime(2026, 2, 10, 2, 0, 0),
             ),
+            EventLog(
+                id="ev5",
+                request_id="r5",
+                user_id="usr_dev",
+                event_type="worker_topic_completed",
+                payload_json={"topic": "sync.todoist.reconcile"},
+                created_at=datetime(2026, 2, 10, 3, 0, 0),
+            ),
         ]
 
         fake_db = AsyncMock()
@@ -99,6 +107,7 @@ def test_health_metrics_returns_operational_shape(mock_redis):
                 assert body["last_success_by_topic"]["memory.summarize"] is not None
                 assert body["last_success_by_topic"]["plan.refresh"] is not None
                 assert body["last_success_by_topic"]["sync.todoist"] is None
+                assert body["last_success_by_topic"]["sync.todoist.reconcile"] is not None
         finally:
             app.dependency_overrides.clear()
 

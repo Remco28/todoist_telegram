@@ -30,7 +30,7 @@ from common.adapter import adapter
 from common.memory import assemble_context
 from common.planner import collect_planning_state, build_plan_payload, render_fallback_plan_explanation
 from api.schemas import (
-    ThoughtCaptureRequest, ThoughtCaptureResponse, AppliedChanges,
+    ThoughtCaptureRequest, ThoughtCaptureResponse, AppliedChanges, AppliedChangeItem,
     TaskUpdate, GoalUpdate, ProblemUpdate, LinkCreate,
     PlanRefreshRequest, PlanRefreshResponse, PlanResponseV1,
     QueryAskRequest, QueryResponseV1,
@@ -201,36 +201,119 @@ async def _send_or_edit_draft_preview(chat_id: str, draft: ActionDraft, text: st
         _draft_set_proposal_message_id(draft, result["message_id"])
 
 
+def _truncate_preview_text(value: Any, limit: int = 80) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _task_preview_group(task: Dict[str, Any]) -> tuple[str, str, str]:
+    action = str(task.get("action") or "").strip().lower()
+    status = str(task.get("status") or "").strip().lower()
+    if action == "complete" or status == "done":
+        return "completed", "Mark complete", "Complete task"
+    if action == "archive" or status == "archived":
+        return "archived", "Archive", "Archive task"
+    if action == "update" or task.get("target_task_id"):
+        return "updated", "Update existing task", "Update task"
+    return "created", "Create new task", "Create task"
+
+
+def _task_preview_details(task: Dict[str, Any]) -> List[str]:
+    details: List[str] = []
+    status_value = str(task.get("status") or "").strip().lower()
+    if status_value and status_value not in {"done", "archived", "open"}:
+        details.append(f"status -> {status_value}")
+    if isinstance(task.get("due_date"), str) and task.get("due_date").strip():
+        details.append(f"due -> {task.get('due_date').strip()[:10]}")
+    notes = task.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        details.append(f"notes -> {_truncate_preview_text(notes)}")
+    if isinstance(task.get("priority"), int):
+        details.append(f"priority -> {task['priority']}")
+    if isinstance(task.get("impact_score"), int):
+        details.append(f"impact -> {task['impact_score']}")
+    if isinstance(task.get("urgency_score"), int):
+        details.append(f"urgency -> {task['urgency_score']}")
+    return details
+
+
 def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
-    tasks = [t.get("title", "").strip() for t in extraction.get("tasks", []) if isinstance(t, dict) and isinstance(t.get("title"), str)]
+    task_groups: Dict[str, List[tuple[str, List[str]]]] = {
+        "created": [],
+        "updated": [],
+        "completed": [],
+        "archived": [],
+    }
     goals = [g.get("title", "").strip() for g in extraction.get("goals", []) if isinstance(g, dict) and isinstance(g.get("title"), str)]
     problems = [p.get("title", "").strip() for p in extraction.get("problems", []) if isinstance(p, dict) and isinstance(p.get("title"), str)]
-    links_count = len(extraction.get("links", [])) if isinstance(extraction.get("links"), list) else 0
+    links = [
+        link for link in extraction.get("links", [])
+        if isinstance(link, dict)
+        and isinstance(link.get("from_title"), str)
+        and isinstance(link.get("to_title"), str)
+        and isinstance(link.get("link_type"), str)
+    ]
 
-    if not tasks and not goals and not problems and links_count == 0:
+    for task in extraction.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        title = task.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        key, heading, verb = _task_preview_group(task)
+        details = _task_preview_details(task)
+        task_groups[key].append((f"<b>{verb}:</b> {escape_html(title.strip())}", details))
+
+    if not any(task_groups.values()) and not goals and not problems and not links:
         return (
             "I did not find clear actions to apply yet.\n"
             "Reply with more details, or ask a question directly."
         )
 
-    lines = ["<b>Proposed updates:</b>"]
-    if tasks:
-        lines.append("")
-        lines.append("<b>Tasks</b>")
-        for title in tasks[:6]:
-            lines.append(f"• {escape_html(title)}")
-        if len(tasks) > 6:
-            lines.append(f"• +{len(tasks) - 6} more task(s)")
-    if goals:
-        lines.append("")
-        lines.append(f"<b>Goals</b>: {len(goals)}")
-    if problems:
-        lines.append(f"<b>Problems</b>: {len(problems)}")
-    if links_count:
-        lines.append(f"<b>Links</b>: {links_count}")
+    lines = ["<b>Proposed changes</b>"]
+    ordered_groups = [
+        ("completed", "Mark complete"),
+        ("updated", "Update existing task"),
+        ("created", "Create new task"),
+        ("archived", "Archive"),
+    ]
+    for key, heading in ordered_groups:
+        items = task_groups[key]
+        if not items:
+            continue
+        lines.extend(["", f"<b>{heading}</b>"])
+        for preview, details in items[:4]:
+            lines.append(f"• {preview}")
+            if details:
+                lines.append(f"  <i>{escape_html('; '.join(details))}</i>")
+        if len(items) > 4:
+            lines.append(f"• +{len(items) - 4} more task(s)")
 
-    lines.append("")
-    lines.append("Reply with <code>yes</code> to apply, <code>edit ...</code> to revise, or <code>no</code> to discard.")
+    if goals:
+        lines.extend(["", "<b>Goals</b>"])
+        for title in goals[:3]:
+            lines.append(f"• <b>Create goal:</b> {escape_html(title)}")
+        if len(goals) > 3:
+            lines.append(f"• +{len(goals) - 3} more goal(s)")
+    if problems:
+        lines.extend(["", "<b>Problems</b>"])
+        for title in problems[:3]:
+            lines.append(f"• <b>Create problem:</b> {escape_html(title)}")
+        if len(problems) > 3:
+            lines.append(f"• +{len(problems) - 3} more problem(s)")
+    if links:
+        lines.extend(["", "<b>Links</b>"])
+        for link in links[:3]:
+            lines.append(
+                "• <b>Create link:</b> "
+                f"{escape_html(link['from_title'].strip())} {escape_html(link['link_type'].strip())} {escape_html(link['to_title'].strip())}"
+            )
+        if len(links) > 3:
+            lines.append(f"• +{len(links) - 3} more link(s)")
+
+    lines.extend(["", "Tap <code>Yes</code> to apply these exact changes, <code>Edit</code> to revise them, or <code>No</code> to discard."])
     return "\n".join(lines)
 
 
@@ -1273,6 +1356,101 @@ async def _remember_recent_tasks(
         )
 
 
+def _recent_display_reason(view_name: str, batch_id: str, ordinal: int) -> str:
+    return f"task_display:{view_name}:{batch_id}:{ordinal}"
+
+
+def _parse_recent_display_reason(reason: Any) -> tuple[str, str, int] | None:
+    if not isinstance(reason, str):
+        return None
+    parts = reason.split(":")
+    if len(parts) != 4 or parts[0] != "task_display":
+        return None
+    try:
+        ordinal = int(parts[3])
+    except ValueError:
+        return None
+    return parts[1], parts[2], ordinal
+
+
+async def _remember_displayed_tasks(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    task_ids: List[str],
+    view_name: str,
+    ttl_hours: int = 12,
+) -> None:
+    now = utc_now()
+    expires_at = now + timedelta(hours=max(1, ttl_hours))
+    batch_id = uuid.uuid4().hex[:8]
+    unique_ids: List[str] = []
+    seen: set[str] = set()
+    for task_id in task_ids:
+        if isinstance(task_id, str) and task_id and task_id not in seen:
+            seen.add(task_id)
+            unique_ids.append(task_id)
+    for ordinal, task_id in enumerate(unique_ids[:12], start=1):
+        db.add(
+            RecentContextItem(
+                id=f"rcx_{uuid.uuid4().hex[:12]}",
+                user_id=user_id,
+                chat_id=chat_id,
+                entity_type=EntityType.task,
+                entity_id=task_id,
+                reason=_recent_display_reason(view_name, batch_id, ordinal),
+                surfaced_at=now + timedelta(microseconds=ordinal),
+                expires_at=expires_at,
+            )
+        )
+
+
+async def _resolve_displayed_task_id(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    ordinal: int,
+) -> Optional[str]:
+    if ordinal < 1:
+        return None
+    now = utc_now()
+    rows = (
+        await db.execute(
+            select(RecentContextItem)
+            .where(
+                RecentContextItem.user_id == user_id,
+                RecentContextItem.chat_id == chat_id,
+                RecentContextItem.entity_type == EntityType.task,
+                RecentContextItem.expires_at >= now,
+                RecentContextItem.reason.like("task_display:%"),
+            )
+            .order_by(RecentContextItem.surfaced_at.desc())
+            .limit(24)
+        )
+    ).scalars().all()
+    latest_batch_id: Optional[str] = None
+    batch_items: Dict[int, str] = {}
+    for row in rows:
+        parsed = _parse_recent_display_reason(row.reason)
+        if not parsed:
+            continue
+        _, batch_id, row_ordinal = parsed
+        if latest_batch_id is None:
+            latest_batch_id = batch_id
+        if batch_id != latest_batch_id:
+            continue
+        if row_ordinal not in batch_items and isinstance(row.entity_id, str):
+            batch_items[row_ordinal] = row.entity_id
+    return batch_items.get(ordinal)
+
+
+def _append_applied_item(applied: AppliedChanges, group: str, label: str) -> None:
+    cleaned = str(label or "").strip()
+    if not cleaned or len(applied.items) >= 40:
+        return
+    applied.items.append(AppliedChangeItem(group=group, label=_truncate_preview_text(cleaned, limit=240)))
+
+
 def _parse_due_date(value: Any) -> Optional[date]:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -1371,6 +1549,12 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             entity_map[(EntityType.task, title_norm)] = existing.id
             touched_task_ids.append(existing.id)
             applied.tasks_updated += 1
+            if action == "archive" or status_hint == "archived":
+                _append_applied_item(applied, "archived", existing.title)
+            elif action == "complete" or status_hint == "done":
+                _append_applied_item(applied, "completed", existing.title)
+            else:
+                _append_applied_item(applied, "updated", existing.title)
         else:
             if requires_target or action in {"noop"}:
                 db.add(
@@ -1399,6 +1583,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             entity_map[(EntityType.task, title_norm)] = task_id
             touched_task_ids.append(task_id)
             applied.tasks_created += 1
+            _append_applied_item(applied, "created", t_data["title"])
 
     for g_data in extraction.get("goals", []):
         title_norm = g_data["title"].lower().strip()
@@ -1410,6 +1595,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             db.add(Goal(id=goal_id, user_id=user_id, title=g_data["title"], title_norm=title_norm, created_at=utc_now(), updated_at=utc_now()))
             entity_map[(EntityType.goal, title_norm)] = goal_id
             applied.goals_created += 1
+            _append_applied_item(applied, "goal_created", g_data["title"])
 
     for p_data in extraction.get("problems", []):
         title_norm = p_data["title"].lower().strip()
@@ -1421,6 +1607,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             db.add(Problem(id=prob_id, user_id=user_id, title=p_data["title"], title_norm=title_norm, created_at=utc_now(), updated_at=utc_now()))
             entity_map[(EntityType.problem, title_norm)] = prob_id
             applied.problems_created += 1
+            _append_applied_item(applied, "problem_created", p_data["title"])
 
     for l_data in extraction.get("links", []):
         try:
@@ -1432,6 +1619,11 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             if from_id and to_id:
                 db.add(EntityLink(id=f"lnk_{uuid.uuid4().hex[:12]}", user_id=user_id, from_entity_type=from_type, from_entity_id=from_id, to_entity_type=to_type, to_entity_id=to_id, link_type=link_type, created_at=utc_now()))
                 applied.links_created += 1
+                _append_applied_item(
+                    applied,
+                    "link_created",
+                    f"{l_data['from_title'].strip()} {l_data['link_type'].strip()} {l_data['to_title'].strip()}",
+                )
         except Exception as e:
             db.add(EventLog(id=str(uuid.uuid4()), request_id=request_id, user_id=user_id, event_type="link_validation_failed", payload_json={"entry": l_data, "error": str(e)}))
 
@@ -1463,8 +1655,16 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             state = await collect_planning_state(db, user_id)
             payload = build_plan_payload(state, utc_now())
             payload = render_fallback_plan_explanation(payload)
-        
-        await send_message(chat_id, format_today_plan(payload))
+        sent = await send_message(chat_id, format_today_plan(payload))
+        if not (isinstance(sent, dict) and sent.get("ok") is True):
+            return
+        task_ids = [
+            item.get("task_id")
+            for item in payload.get("today_plan", [])
+            if isinstance(item, dict) and isinstance(item.get("task_id"), str)
+        ]
+        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "today")
+        await db.commit()
 
     elif command == "/plan":
         job_id = str(uuid.uuid4())
@@ -1479,22 +1679,46 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         else:
             state = await collect_planning_state(db, user_id)
             payload = build_plan_payload(state, utc_now())
-        
-        await send_message(chat_id, format_focus_mode(payload))
+        sent = await send_message(chat_id, format_focus_mode(payload))
+        if not (isinstance(sent, dict) and sent.get("ok") is True):
+            return
+        task_ids = [
+            item.get("task_id")
+            for item in payload.get("today_plan", [])[:3]
+            if isinstance(item, dict) and isinstance(item.get("task_id"), str)
+        ]
+        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "focus")
+        await db.commit()
 
     elif command == "/done":
         if not args:
-            await send_message(chat_id, "Please provide a task ID. Example: <code>/done tsk_123</code>")
+            await send_message(chat_id, "Please provide a task id or list number. Example: <code>/done 2</code> or <code>/done tsk_123</code>")
             return
-        
-        task_id = args.strip()
-        stmt = update(Task).where(Task.id == task_id, Task.user_id == user_id).values(status=TaskStatus.done, completed_at=utc_now())
-        res = await db.execute(stmt)
-        if res.rowcount > 0:
-            await db.commit()
-            await send_message(chat_id, f"Task <code>{escape_html(task_id)}</code> marked as done.")
-        else:
-            await send_message(chat_id, f"Task <code>{escape_html(task_id)}</code> not found or not owned by you.")
+
+        task_ref = args.strip()
+        task_id = task_ref
+        if task_ref.isdigit():
+            task_id = await _resolve_displayed_task_id(db, user_id, chat_id, int(task_ref))
+            if not task_id:
+                await send_message(
+                    chat_id,
+                    "I could not match that list number from your most recent <code>/today</code> or <code>/focus</code> view.\n"
+                    "Use <code>/today</code> first, then retry <code>/done &lt;number&gt;</code>, or use <code>/done tsk_123</code>.",
+                )
+                return
+
+        task = (
+            await db.execute(select(Task).where(Task.id == task_id, Task.user_id == user_id))
+        ).scalar_one_or_none()
+        if not task:
+            await send_message(chat_id, f"Task <code>{escape_html(task_ref)}</code> not found or not owned by you.")
+            return
+
+        task.status = TaskStatus.done
+        task.completed_at = utc_now()
+        task.updated_at = utc_now()
+        await db.commit()
+        await send_message(chat_id, f"Marked as done: <b>{escape_html(task.title)}</b>.")
 
     elif command == "/ask":
         question = (args or "").strip()
@@ -1505,7 +1729,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
 
     else:
-        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id&gt; - Mark task as done\n/ask &lt;question&gt; - Ask a read-only question"
+        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id|number&gt; - Mark a shown task as done\n/ask &lt;question&gt; - Ask a read-only question"
         await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
 
 
@@ -1904,7 +2128,7 @@ async def health_metrics(db: AsyncSession = Depends(get_db)):
         elif event.event_type == "worker_moved_to_dlq":
             dlq_count += 1
 
-    tracked_topics = ("memory.summarize", "plan.refresh", "sync.todoist")
+    tracked_topics = ("memory.summarize", "plan.refresh", "sync.todoist", "sync.todoist.reconcile")
     last_success_by_topic: Dict[str, Optional[str]] = {topic: None for topic in tracked_topics}
     completed_events = (await db.execute(
         select(EventLog).where(
@@ -2670,6 +2894,37 @@ async def get_todoist_sync_status(user_id: str = Depends(get_authenticated_user)
             )
         )
     ).scalar()
+    recent_error_events = (
+        await db.execute(
+            select(EventLog)
+            .where(
+                EventLog.user_id == user_id,
+                EventLog.event_type.in_([
+                    "todoist_sync_task_failed",
+                    "todoist_reconcile_task_failed",
+                    "todoist_reconcile_remote_missing",
+                ]),
+            )
+            .order_by(EventLog.created_at.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+    recent_errors: List[Dict[str, Optional[str]]] = []
+    for event in recent_error_events:
+        payload = event.payload_json if isinstance(event.payload_json, dict) else {}
+        if event.event_type == "todoist_reconcile_remote_missing":
+            reason = "remote_task_missing"
+        else:
+            reason = payload.get("error")
+        recent_errors.append(
+            {
+                "event_type": event.event_type,
+                "local_task_id": event.entity_id,
+                "todoist_task_id": payload.get("todoist_task_id"),
+                "reason": str(reason or "unknown_error"),
+                "occurred_at": event.created_at.isoformat() if event.created_at else None,
+            }
+        )
 
     return TodoistSyncStatusResponse(
         total_mapped=total_mapped or 0,
@@ -2679,6 +2934,7 @@ async def get_todoist_sync_status(user_id: str = Depends(get_authenticated_user)
         last_attempt_at=last_attempt.isoformat() if last_attempt else None,
         last_reconcile_at=last_reconcile.isoformat() if last_reconcile else None,
         reconcile_error_count=reconcile_error_count or 0,
+        recent_errors=recent_errors,
     )
 
 

@@ -9,7 +9,7 @@ These tests validate:
 import asyncio
 import json
 from datetime import datetime, date
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from httpx import ASGITransport, AsyncClient
 
@@ -17,9 +17,11 @@ from api.main import (
     handle_telegram_command,
     _draft_set_awaiting_edit_input,
     _draft_set_proposal_message_id,
+    _format_action_draft_preview,
 )
 from api.schemas import AppliedChanges, QueryResponseV1
 from common.config import settings
+from common.models import Task, TaskStatus
 
 WEBHOOK_URL = "/v1/integrations/telegram/webhook"
 VALID_SECRET = "test_secret"
@@ -978,7 +980,7 @@ def test_edit_button_then_plain_message_revises_draft(app_no_db, mock_send):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Change this to task B"), headers=_headers())
         assert resp.status_code == 200
         revise_draft.assert_awaited_once()
-        assert "proposed updates" in mock_send.await_args.args[1].lower()
+        assert "proposed changes" in mock_send.await_args.args[1].lower()
 
 
 def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send):
@@ -1067,6 +1069,7 @@ def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     assert "job_id" in job
     mock_send.assert_awaited_once()
     assert "Plan refresh enqueued" in mock_send.await_args.args[1]
+    assert "Use <code>/today</code>" in mock_send.await_args.args[1]
 
 
 def test_command_ask_returns_query_answer(mock_send, mock_db):
@@ -1093,19 +1096,87 @@ def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
     assert "Task 5" not in text
 
 
+def test_command_focus_does_not_store_recent_display_if_send_fails(mock_redis, mock_send, mock_db):
+    mock_redis.get.return_value = json.dumps({
+        "today_plan": [
+            {"task_id": "tsk_1", "title": "Task 1"},
+            {"task_id": "tsk_2", "title": "Task 2"},
+        ]
+    })
+    mock_send.return_value = {"ok": False}
+    with patch("api.main.redis_client", mock_redis), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+        asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
+    remember.assert_not_awaited()
+    mock_db.commit.assert_not_awaited()
+
+
 def test_command_done_updates_owned_task_only(mock_db, mock_send):
-    result = AsyncMock()
-    result.rowcount = 1
+    result = Mock()
+    result.scalar_one_or_none.return_value = Task(
+        id="tsk_x",
+        user_id="usr_abc",
+        title="Buy paint rollers",
+        title_norm="buy paint rollers",
+        status=TaskStatus.open,
+    )
     mock_db.execute.return_value = result
     asyncio.run(handle_telegram_command("/done", "tsk_x", "12345", "usr_abc", mock_db))
     mock_db.commit.assert_awaited_once()
-    assert "marked as done" in mock_send.await_args.args[1]
+    assert "Marked as done" in mock_send.await_args.args[1]
+    assert "Buy paint rollers" in mock_send.await_args.args[1]
 
 
 def test_command_done_rejects_non_owned_or_unknown(mock_db, mock_send):
-    result = AsyncMock()
-    result.rowcount = 0
+    result = Mock()
+    result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = result
     asyncio.run(handle_telegram_command("/done", "tsk_other", "12345", "usr_abc", mock_db))
     mock_db.commit.assert_not_awaited()
     assert "not found" in mock_send.await_args.args[1].lower()
+
+
+def test_command_done_supports_recent_focus_ordinal(mock_db, mock_send):
+    result = Mock()
+    result.scalar_one_or_none.return_value = Task(
+        id="tsk_focus_2",
+        user_id="usr_abc",
+        title="Call contractor",
+        title_norm="call contractor",
+        status=TaskStatus.open,
+    )
+    mock_db.execute.return_value = result
+    with patch("api.main._resolve_displayed_task_id", new_callable=AsyncMock, return_value="tsk_focus_2") as resolve_task:
+        asyncio.run(handle_telegram_command("/done", "2", "12345", "usr_abc", mock_db))
+    resolve_task.assert_awaited_once_with(mock_db, "usr_abc", "12345", 2)
+    mock_db.commit.assert_awaited_once()
+    assert "Call contractor" in mock_send.await_args.args[1]
+
+
+def test_command_done_rejects_unknown_ordinal_without_mutation(mock_db, mock_send):
+    with patch("api.main._resolve_displayed_task_id", new_callable=AsyncMock, return_value=None):
+        asyncio.run(handle_telegram_command("/done", "99", "12345", "usr_abc", mock_db))
+    mock_db.execute.assert_not_awaited()
+    mock_db.commit.assert_not_awaited()
+    assert "most recent <code>/today</code> or <code>/focus</code>" in mock_send.await_args.args[1]
+
+
+def test_action_draft_preview_groups_mixed_task_actions():
+    preview = _format_action_draft_preview(
+        {
+            "tasks": [
+                {"action": "complete", "title": "Remind Amy to find the compact backpack"},
+                {"action": "update", "title": "Reach out to Ben and Jason", "notes": "Still unresolved issues", "due_date": "2026-03-25", "target_task_id": "tsk_1"},
+                {"action": "create", "title": "Decide our intentions regarding Ginseng ordering"},
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        }
+    )
+    assert "Mark complete" in preview
+    assert "Update existing task" in preview
+    assert "Create new task" in preview
+    assert "Complete task:" in preview
+    assert "Update task:" in preview
+    assert "due -&gt; 2026-03-25" in preview
+    assert "notes -&gt; Still unresolved issues" in preview
