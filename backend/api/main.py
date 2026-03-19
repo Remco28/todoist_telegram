@@ -40,7 +40,7 @@ from api.schemas import (
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message, edit_message, answer_callback_query, build_draft_reply_markup,
     format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
-    escape_html, is_query_like_text, format_query_answer
+    escape_html, is_query_like_text, format_query_answer, user_facing_task_title
 )
 
 # --- Shared Capture Pipeline ---
@@ -1863,26 +1863,43 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
         await _enqueue_summary_job(user_id=user_id, chat_id=chat_id, inbox_item_id=inbox_item_id)
     return inbox_item_id, applied
 
+
+def _plan_cache_key(user_id: str, chat_id: str) -> str:
+    return f"plan:today:{user_id}:{chat_id}"
+
+
+def _telegram_plan_payload(payload: Dict[str, Any], *, served_from_cache: bool) -> Dict[str, Any]:
+    decorated = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    decorated["_served_from_cache"] = bool(served_from_cache)
+    return decorated
+
+
+async def _invalidate_today_plan_cache(user_id: str, chat_id: str) -> None:
+    await redis_client.delete(_plan_cache_key(user_id, chat_id))
+
 # --- Internal Helpers for Integration Routing ---
 
 async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, user_id: str, db: AsyncSession):
 
     if command == "/today":
         # Simulate GET /v1/plan/get_today logic
-        cache_key = f"plan:today:{user_id}:{chat_id}"
+        cache_key = _plan_cache_key(user_id, chat_id)
         cached = await redis_client.get(cache_key)
+        served_from_cache = False
         if cached:
             payload = json.loads(cached)
+            served_from_cache = True
         else:
             state = await collect_planning_state(db, user_id)
             payload = build_plan_payload(state, utc_now())
             payload = render_fallback_plan_explanation(payload)
-        sent = await send_message(chat_id, format_today_plan(payload))
+        telegram_payload = _telegram_plan_payload(payload, served_from_cache=served_from_cache)
+        sent = await send_message(chat_id, format_today_plan(telegram_payload))
         if not (isinstance(sent, dict) and sent.get("ok") is True):
             return
         task_ids = [
             item.get("task_id")
-            for item in payload.get("today_plan", [])
+            for item in telegram_payload.get("today_plan", [])
             if isinstance(item, dict) and isinstance(item.get("task_id"), str)
         ]
         await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "today")
@@ -1894,19 +1911,22 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         await send_message(chat_id, format_plan_refresh_ack(job_id))
 
     elif command == "/focus":
-        cache_key = f"plan:today:{user_id}:{chat_id}"
+        cache_key = _plan_cache_key(user_id, chat_id)
         cached = await redis_client.get(cache_key)
+        served_from_cache = False
         if cached:
             payload = json.loads(cached)
+            served_from_cache = True
         else:
             state = await collect_planning_state(db, user_id)
             payload = build_plan_payload(state, utc_now())
-        sent = await send_message(chat_id, format_focus_mode(payload))
+        telegram_payload = _telegram_plan_payload(payload, served_from_cache=served_from_cache)
+        sent = await send_message(chat_id, format_focus_mode(telegram_payload))
         if not (isinstance(sent, dict) and sent.get("ok") is True):
             return
         task_ids = [
             item.get("task_id")
-            for item in payload.get("today_plan", [])[:3]
+            for item in telegram_payload.get("today_plan", [])[:3]
             if isinstance(item, dict) and isinstance(item.get("task_id"), str)
         ]
         await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "focus")
@@ -1914,7 +1934,12 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
 
     elif command == "/done":
         if not args:
-            await send_message(chat_id, "Please provide a task id or list number. Example: <code>/done 2</code> or <code>/done tsk_123</code>")
+            await send_message(
+                chat_id,
+                "Reply with a list number from your latest <code>/today</code> or <code>/focus</code> view.\n"
+                "Example: <code>/done 2</code>.\n"
+                "Advanced: you can still use <code>/done tsk_123</code> if needed.",
+            )
             return
 
         task_ref = args.strip()
@@ -1925,7 +1950,8 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
                 await send_message(
                     chat_id,
                     "I could not match that list number from your most recent <code>/today</code> or <code>/focus</code> view.\n"
-                    "Use <code>/today</code> first, then retry <code>/done &lt;number&gt;</code>, or use <code>/done tsk_123</code>.",
+                    "Use <code>/today</code> first, then retry <code>/done &lt;number&gt;</code>.\n"
+                    "Advanced: you can still use <code>/done tsk_123</code> if needed.",
                 )
                 return
 
@@ -1940,7 +1966,11 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         task.completed_at = utc_now()
         task.updated_at = utc_now()
         await db.commit()
-        await send_message(chat_id, f"Marked as done: <b>{escape_html(task.title)}</b>.")
+        try:
+            await _invalidate_today_plan_cache(user_id, chat_id)
+        except Exception as exc:
+            logger.error("Failed to invalidate today plan cache after /done for user %s chat %s: %s", user_id, chat_id, exc)
+        await send_message(chat_id, f"Marked as done: <b>{escape_html(user_facing_task_title(task.title))}</b>.")
 
     elif command == "/ask":
         question = (args or "").strip()
@@ -1951,7 +1981,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
 
     else:
-        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;id|number&gt; - Mark a shown task as done\n/ask &lt;question&gt; - Ask a read-only question"
+        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;number&gt; - Mark an item from your latest list as done\n/ask &lt;question&gt; - Ask a read-only question"
         await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
 
 

@@ -3,6 +3,9 @@
 ## Mission
 Build an AI-powered personal execution system where you can send free-form thoughts and the system organizes them into tasks, problems, goals, and prioritized plans.
 
+## Product Intent
+This product is a Telegram-native executive assistant that lets a user think out loud, ask questions, and make lightweight changes conversationally, while the system turns that into reliable structured state, plans, and reminders behind the scenes.
+
 ## Product Direction
 - Primary interface: Telegram bot.
 - Core system: backend API + database + workers on Hetzner/Coolify.
@@ -15,6 +18,7 @@ Build an AI-powered personal execution system where you can send free-form thoug
 - Apply mode: backend writes transactionally, then enqueues immediate Todoist sync.
 - Query mode: read-only answers from stored state, no writes.
 - Command prefixes are optional for normal use; user should be able to chat naturally.
+- User-facing UX should feel conversational and human-centered; internal concepts like cache state, task ids, mutation verbs, and downstream sync mechanics must stay hidden unless explicitly needed for recovery or operator debugging.
 
 ## Current Reality Check (2026-02-10)
 - The deterministic backend core is in place and stable.
@@ -47,6 +51,8 @@ These gaps are now explicit priorities for the next phases.
 - LLM-first action reasoning: planner + critic prompts should drive conversational action logic; hardcoded phrase routing is temporary fallback only.
 - Deterministic executor only: backend validates and executes proposed actions, but does not own conversational interpretation.
 - Fail-safe over fail-open: unresolved targets or low-confidence plans ask a concrete clarifying question.
+- Commands are escape hatches, not the primary mental model. If normal conversational use feels brittle, the product is not meeting its intent even if slash commands exist.
+- Human-readable state is the product surface. Plan items, confirmations, and acknowledgements must describe the user's real tasks and outcomes, not expose internal rewrite instructions or implementation artifacts.
 
 ## v1 Scope
 - Capture free-form messages and auto-structure them.

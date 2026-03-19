@@ -1,6 +1,6 @@
 # Execution Plan
 
-## Current Execution Status (2026-02-12)
+## Current Execution Status (2026-03-19)
 - Phase 1 implementation and revision cycle completed.
 - Phase 2 memory engine implementation and revision cycle completed.
 - Phase 3 planning engine implementation and revision cycle completed.
@@ -17,7 +17,8 @@
 - Phase 14 conversational intent routing + confirmation UX completed.
 - Phase 15 advisory hardening completed.
 - Phase 16 first-principles alignment completed (ID-first mutations, clarify mode, fallback cleanup, preflight).
-- Next feature phase: Phase 17 reliability automation + memory continuity.
+- Phase 17 Telegram UX clarity and operator QoL completed.
+- Next feature phase: Phase 18 conversation-first Telegram UX integrity.
 
 ## Implementation Tracks
 - Track A: Data + migrations
@@ -27,12 +28,13 @@
 - Track E: Deployment and operations
 
 ## Priority Backlog (Now)
-1. Add scheduled reconcile automation so Todoist-side changes flow back without manual API calls.
-2. Add passive memory capture for non-action conversational text.
-3. Run and document monthly restore drill against R2 backups.
-4. Add lightweight alerting/checks for missed backup schedule runs.
+1. Keep `/today` and recent conversational context aligned after Telegram-side mutations.
+2. Remove system-internal task wording from user-facing plan surfaces.
+3. Reduce raw-command and internal-id leakage in Telegram help and recovery text.
+4. Add scheduled reconcile automation so Todoist-side changes flow back without manual API calls.
+5. Add passive memory capture for non-action conversational text.
 
-## Priority Backlog (After Phase 17)
+## Priority Backlog (After Phase 18)
 1. Improve planner/entity resolution quality using better grounding ranking.
 2. Add optional semantic retrieval layer for larger long-term context.
 3. Extend user-facing explainability for action decisions and clarification prompts.

@@ -27,6 +27,7 @@ def mock_redis():
     r = AsyncMock()
     r.rpush = AsyncMock(return_value=1)
     r.get = AsyncMock(return_value=None)
+    r.delete = AsyncMock(return_value=1)
     r.setex = AsyncMock(return_value=True)
     r.ping = AsyncMock(return_value=True)
     return r

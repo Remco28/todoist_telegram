@@ -1,6 +1,6 @@
 # Phased Plan
 
-## Current Status (2026-02-12)
+## Current Status (2026-03-19)
 - Phase 0: Completed
 - Phase 1: Completed
 - Phase 2: Completed
@@ -18,7 +18,8 @@
 - Phase 14: Completed
 - Phase 15: Completed
 - Phase 16: Completed
-- Phase 17: Planned
+- Phase 17: Completed
+- Phase 18: Planned
 
 ## Phase 0: Foundation and Contracts
 ### Goals
@@ -218,6 +219,34 @@
 
 ### Exit Criteria
 - No title-based mutation fallback exists for task mutations.
+
+## Phase 17: Telegram UX Clarity and Operator QoL
+### Goals
+- Make Telegram draft previews and apply acknowledgements explicit and action-centered.
+- Make `/plan`, `/today`, and `/focus` truthful about freshness and behavior.
+- Add `/done <number>` using recent visible list context.
+- Improve Todoist status and health metrics with actionable recent errors.
+
+### Exit Criteria
+- Telegram previews and apply results state what will change and what changed.
+- `/plan` no longer promises behavior the product does not deliver.
+- `/done 2` works from the most recently shown `/today` or `/focus` list.
+- Sync status and health metrics expose actionable recent failure information.
+
+## Phase 18: Conversation-First Telegram UX Integrity
+### Goals
+- Keep visible Telegram state aligned with just-applied mutations so the bot does not contradict itself.
+- Remove system-internal or mutation-like task language from user-facing plan items.
+- Reduce command and internal-id leakage from Telegram guidance.
+- Make freshness cues human-meaningful and clearly indicate when a shown plan may be stale.
+- Strengthen conversation-first follow-ups so common requests can be expressed naturally without memorizing commands.
+
+### Exit Criteria
+- After completing or archiving a task from Telegram, the next `/today` view does not show stale contradictory items.
+- User-facing plan items describe real user tasks, not internal rewrite instructions like “move X to today”.
+- Help and recovery text defaults to human-facing affordances (ordinals, visible context) rather than raw internal ids.
+- Freshness text is understandable in normal user context and helps explain stale vs refreshed views.
+- Common follow-ups against a recently shown plan can be handled conversationally with reviewable proposals.
 - Ambiguous action messages route to clarify, not guessed writes.
 - Low-confidence actionable plans route to clarify instead of draft/apply.
 - Readiness reports critical credential failures before live traffic handling.

@@ -234,7 +234,7 @@ Useful Telegram commands:
 - `/focus` to view the top 3 current tasks.
 - `/plan` to refresh the plan, then `/today` to view it.
 - `/done 2` to complete the second item from your most recent `/today` or `/focus` list.
-- `/done tsk_123` to complete a task directly by id.
+- `/done tsk_123` to complete a task directly by id if you already know it.
 - `/ask What tasks are blocked?` to ask a read-only question.
 
 Note:

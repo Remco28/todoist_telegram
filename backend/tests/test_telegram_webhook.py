@@ -1164,7 +1164,7 @@ def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, m
     text = mock_send.await_args.args[1]
     assert "Your Today Plan" in text
     assert "Review live /today behavior" in text
-    assert "Updated:" in text
+    assert "Updated " in text
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_1"], "today")
     mock_db.commit.assert_awaited_once()
 
@@ -1207,7 +1207,17 @@ def test_command_focus_does_not_store_recent_display_if_send_fails(mock_redis, m
     mock_db.commit.assert_not_awaited()
 
 
-def test_command_done_updates_owned_task_only(mock_db, mock_send):
+def test_command_done_without_args_uses_ordinal_first_guidance(mock_db, mock_send):
+    asyncio.run(handle_telegram_command("/done", None, "12345", "usr_abc", mock_db))
+    mock_db.execute.assert_not_awaited()
+    mock_db.commit.assert_not_awaited()
+    text = mock_send.await_args.args[1]
+    assert "/done 2" in text
+    assert "latest <code>/today</code> or <code>/focus</code>" in text
+    assert "Advanced: you can still use <code>/done tsk_123</code>" in text
+
+
+def test_command_done_updates_owned_task_only(mock_db, mock_send, mock_redis):
     result = Mock()
     result.scalar_one_or_none.return_value = Task(
         id="tsk_x",
@@ -1217,8 +1227,10 @@ def test_command_done_updates_owned_task_only(mock_db, mock_send):
         status=TaskStatus.open,
     )
     mock_db.execute.return_value = result
-    asyncio.run(handle_telegram_command("/done", "tsk_x", "12345", "usr_abc", mock_db))
+    with patch("api.main.redis_client", mock_redis):
+        asyncio.run(handle_telegram_command("/done", "tsk_x", "12345", "usr_abc", mock_db))
     mock_db.commit.assert_awaited_once()
+    mock_redis.delete.assert_awaited_once_with("plan:today:usr_abc:12345")
     assert "Marked as done" in mock_send.await_args.args[1]
     assert "Buy paint rollers" in mock_send.await_args.args[1]
 
@@ -1232,7 +1244,7 @@ def test_command_done_rejects_non_owned_or_unknown(mock_db, mock_send):
     assert "not found" in mock_send.await_args.args[1].lower()
 
 
-def test_command_done_supports_recent_focus_ordinal(mock_db, mock_send):
+def test_command_done_supports_recent_focus_ordinal(mock_db, mock_send, mock_redis):
     result = Mock()
     result.scalar_one_or_none.return_value = Task(
         id="tsk_focus_2",
@@ -1243,9 +1255,11 @@ def test_command_done_supports_recent_focus_ordinal(mock_db, mock_send):
     )
     mock_db.execute.return_value = result
     with patch("api.main._resolve_displayed_task_id", new_callable=AsyncMock, return_value="tsk_focus_2") as resolve_task:
-        asyncio.run(handle_telegram_command("/done", "2", "12345", "usr_abc", mock_db))
+        with patch("api.main.redis_client", mock_redis):
+            asyncio.run(handle_telegram_command("/done", "2", "12345", "usr_abc", mock_db))
     resolve_task.assert_awaited_once_with(mock_db, "usr_abc", "12345", 2)
     mock_db.commit.assert_awaited_once()
+    mock_redis.delete.assert_awaited_once_with("plan:today:usr_abc:12345")
     assert "Call contractor" in mock_send.await_args.args[1]
 
 
@@ -1254,7 +1268,9 @@ def test_command_done_rejects_unknown_ordinal_without_mutation(mock_db, mock_sen
         asyncio.run(handle_telegram_command("/done", "99", "12345", "usr_abc", mock_db))
     mock_db.execute.assert_not_awaited()
     mock_db.commit.assert_not_awaited()
-    assert "most recent <code>/today</code> or <code>/focus</code>" in mock_send.await_args.args[1]
+    text = mock_send.await_args.args[1]
+    assert "most recent <code>/today</code> or <code>/focus</code>" in text
+    assert "Advanced: you can still use <code>/done tsk_123</code>" in text
 
 
 def test_action_draft_preview_groups_mixed_task_actions():

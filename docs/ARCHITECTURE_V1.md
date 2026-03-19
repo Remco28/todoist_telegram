@@ -9,6 +9,9 @@
 - Todoist Sync Worker
 - LLM Provider Adapter Layer
 
+## Product North Star
+The bot should feel like a conversational executive assistant, not a command shell. Users should be able to think out loud, ask questions, and make lightweight changes naturally; the backend is responsible for turning that conversation into reliable structured state without exposing internal ids, cache mechanics, or system-internal mutation language.
+
 ## Interaction Modes
 - Query mode (read-only): answer questions from stored graph + summaries.
 - Draft action mode (no-write): parse intent and generate a proposed mutation plan.
@@ -21,12 +24,14 @@
 - `query`: answer directly, no writes.
 - `action`: generate structured proposal and show confirmation summary.
  - natural-language routing is primary; slash commands are optional fallback controls.
+ - recent visible context (for example, a just-shown `/today` list) is part of the conversational state and should support follow-ups like "delete the first one" or "move that to tomorrow".
 3. Bot asks for confirmation (`yes`, `edit`, `no`):
 - `yes`: commit DB writes and enqueue immediate Todoist sync.
 - `edit`: regenerate proposal with user clarifications.
 - `no`: discard draft.
 4. All applied changes are logged with request id and proposal provenance.
 5. Rule: no autonomous durable writes from ambiguous conversational text without confirmation.
+6. Rule: user-facing summaries must surface real user tasks and outcomes, not internal rewrite instructions, raw ids, or stale cached state that contradicts a just-confirmed mutation.
 
 ## Runtime Model (Coolify)
 - `api` container: request handling, business logic, auth, tool endpoints.
@@ -201,6 +206,7 @@ Abstract provider-specific APIs behind one interface:
 - Keep short retention (for example, 24-72 hours).
 - Use for follow-up references like "those", "the second one", or "show me more on that task".
 - Keep database records as source of truth; this cache is only a convenience layer.
+- For Telegram, recent visible context is not just a retrieval hint; it is part of the UX contract and must stay aligned with the visible plan after mutations.
 
 ## Reliability and Security
 - API auth required (token/JWT).

@@ -4,6 +4,7 @@ import httpx
 from datetime import datetime, timezone
 from html import escape as _html_escape
 from typing import Optional, Tuple, Dict, Any, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from common.config import settings
 
 
@@ -38,6 +39,14 @@ _INTERNAL_ID_PATTERNS = (
     re.compile(r"\((?:tsk|gol|prb|lnk)_[A-Za-z0-9]+\)"),
     re.compile(r"\b(?:tsk|gol|prb|lnk)_[A-Za-z0-9]+\b"),
 )
+_TASK_TITLE_WRAPPER_PATTERNS = (
+    re.compile(
+        r"^(?:move|set|reschedule)\s+(?P<quote>['\"])?(?P<title>.+?)(?P=quote)?\s+(?:to|for)\s+"
+        r"(?:today|tomorrow|tonight|this week|next week|this month|next month)\.?$",
+        re.IGNORECASE,
+    ),
+)
+PLAN_STALE_WARNING_SECONDS = 300
 
 
 def strip_internal_ids(text: str) -> str:
@@ -68,6 +77,20 @@ def render_markdownish_text(text: str) -> str:
         else:
             parts.append(escape_html(token))
     return "".join(parts)
+
+
+def user_facing_task_title(title: Any) -> str:
+    text = re.sub(r"\s+", " ", str(title or "").strip())
+    if not text:
+        return ""
+    for pattern in _TASK_TITLE_WRAPPER_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        inner = re.sub(r"\s+", " ", (match.group("title") or "").strip())
+        if inner:
+            return inner
+    return text
 
 def verify_telegram_secret(headers: Dict[str, str]) -> bool:
     if not settings.TELEGRAM_WEBHOOK_SECRET:
@@ -284,11 +307,47 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
     return parsed
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _localize_datetime(value: datetime) -> datetime:
+    tz_name = (settings.APP_TIMEZONE or "").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = timezone.utc
+    return value.astimezone(tz)
+
+
+def _format_relative_seconds(seconds: int) -> str:
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        minutes = max(1, seconds // 60)
+        return f"{minutes} min ago" if minutes == 1 else f"{minutes} mins ago"
+    if seconds < 86400:
+        hours = max(1, seconds // 3600)
+        return f"{hours} hr ago" if hours == 1 else f"{hours} hrs ago"
+    days = max(1, seconds // 86400)
+    return f"{days} day ago" if days == 1 else f"{days} days ago"
+
+
+def _format_local_timestamp(value: datetime) -> str:
+    localized = _localize_datetime(value)
+    hour = localized.strftime("%I").lstrip("0") or "12"
+    return f"{localized.strftime('%b')} {localized.day}, {hour}:{localized.strftime('%M %p')} local"
+
+
 def _format_plan_freshness(plan_payload: Dict[str, Any]) -> Optional[str]:
     generated_at = _parse_iso_datetime(plan_payload.get("generated_at"))
     if not generated_at:
         return None
-    return generated_at.astimezone(timezone.utc).strftime("Updated: %Y-%m-%d %H:%M UTC")
+    age_seconds = max(0, int((_utc_now() - generated_at.astimezone(timezone.utc)).total_seconds()))
+    freshness = f"Updated {_format_relative_seconds(age_seconds)}"
+    if plan_payload.get("_served_from_cache") and age_seconds >= PLAN_STALE_WARNING_SECONDS:
+        freshness += " from cached plan"
+    return f"{freshness} ({_format_local_timestamp(generated_at)})"
 
 
 def format_today_plan(plan_payload: Dict[str, Any]) -> str:
@@ -306,7 +365,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
         lines.append("Nothing on your plan for today! Add a thought to get started.")
     else:
         for idx, item in enumerate(today_plan):
-            lines.append(f"{idx+1}. {escape_html(item['title'])}")
+            lines.append(f"{idx+1}. {escape_html(user_facing_task_title(item['title']))}")
             if item.get("reason"):
                 lines.append(f"   <i>{escape_html(item['reason'])}</i>")
 
@@ -315,7 +374,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("<b>🚧 Blocked Items</b>")
         for item in blocked:
-            lines.append(f"• {escape_html(item['title'])} (Reason: {', '.join(escape_html(b) for b in item['blocked_by'])})")
+            lines.append(f"• {escape_html(user_facing_task_title(item['title']))} (Reason: {', '.join(escape_html(b) for b in item['blocked_by'])})")
             
     return "\n".join(lines)
 
@@ -337,7 +396,7 @@ def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
         lines.append(f"<i>{escape_html(freshness)}</i>")
     lines.append("")
     for idx, item in enumerate(top_items):
-        lines.append(f"<b>{idx+1}. {escape_html(item['title'])}</b>")
+        lines.append(f"<b>{idx+1}. {escape_html(user_facing_task_title(item['title']))}</b>")
         
     return "\n".join(lines)
 

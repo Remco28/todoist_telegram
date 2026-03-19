@@ -1,4 +1,7 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
+from datetime import datetime, timezone
+from unittest.mock import patch
+
 from common.telegram import (
     escape_html, format_today_plan, format_focus_mode, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
@@ -55,18 +58,33 @@ class TestFormattersEscapeHtmlContent:
         assert "&amp;" in result
         assert "<with>" not in result
 
-    def test_format_today_plan_includes_freshness_line(self):
+    def test_format_today_plan_includes_human_freshness_line(self):
         payload = {"generated_at": "2026-03-18T18:40:00Z", "today_plan": []}
-        result = format_today_plan(payload)
-        assert "Updated: 2026-03-18 18:40 UTC" in result
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 18, 18, 40, 30, tzinfo=timezone.utc)):
+            result = format_today_plan(payload)
+        assert "Updated just now" in result
+        assert "Mar 18" in result
 
-    def test_format_focus_mode_includes_freshness_line(self):
+    def test_format_focus_mode_marks_stale_cached_plan(self):
         payload = {
             "generated_at": "2026-03-18T18:40:00Z",
+            "_served_from_cache": True,
             "today_plan": [{"task_id": "tsk_1", "title": "Task A"}],
         }
-        result = format_focus_mode(payload)
-        assert "Updated: 2026-03-18 18:40 UTC" in result
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 18, 18, 50, 0, tzinfo=timezone.utc)):
+            result = format_focus_mode(payload)
+        assert "Updated 10 mins ago from cached plan" in result
+
+    def test_format_today_plan_normalizes_wrapper_task_title(self):
+        payload = {
+            "today_plan": [
+                {"task_id": "tsk_1", "title": "Move 'Complete Worker\\'s Compensation form for employee' to today"},
+            ],
+        }
+        result = format_today_plan(payload)
+        assert "Complete Worker" in result
+        assert "Move &#x27;" not in result
+        assert "to today" not in result
 
     def test_escape_html_covers_required_chars(self):
         assert escape_html("<") == "&lt;"
