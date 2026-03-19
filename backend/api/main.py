@@ -49,6 +49,21 @@ AUTOPILOT_COMPLETION_CONFIDENCE = 0.70
 AUTOPILOT_ACTION_CONFIDENCE = 0.90
 CLARIFY_ACTION_CONFIDENCE = 0.50
 COMPLETION_INTENT_TOKENS = ("mark", "complete", "completed", "close", "closed")
+ARCHIVE_INTENT_TOKENS = ("delete", "remove", "drop", "archive", "discard", "cancel")
+ORDINAL_REFERENCE_WORDS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "eleventh": 11,
+    "twelfth": 12,
+}
 
 
 def _draft_now() -> datetime:
@@ -764,6 +779,170 @@ def _sanitize_create_extraction(
     return {"tasks": sanitized_tasks[:3], "goals": [], "problems": [], "links": []}
 
 
+def _extract_displayed_task_ordinal(message: str) -> Optional[int]:
+    raw = (message or "").strip().lower()
+    if not raw or is_query_like_text(raw):
+        return None
+    for word, ordinal in ORDINAL_REFERENCE_WORDS.items():
+        if _contains_word(raw, word):
+            return ordinal
+    patterns = (
+        r"\b(?:task|item|number)\s*(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:task|item|one)\b",
+        r"\b#\s*(\d{1,2})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw)
+        if not match:
+            continue
+        try:
+            ordinal = int(match.group(1))
+        except ValueError:
+            continue
+        if ordinal >= 1:
+            return ordinal
+    return None
+
+
+def _displayed_task_ref_by_ordinal(grounding: Dict[str, Any], ordinal: Optional[int]) -> Optional[Dict[str, Any]]:
+    if not isinstance(grounding, dict) or not isinstance(ordinal, int) or ordinal < 1:
+        return None
+    rows = grounding.get("displayed_task_refs")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("ordinal") == ordinal and isinstance(row.get("id"), str) and row.get("id"):
+            return row
+    return None
+
+
+def _is_archive_request(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw or is_query_like_text(raw):
+        return False
+    if "get rid of" in raw:
+        return True
+    return any(_contains_word(raw, token) for token in ARCHIVE_INTENT_TOKENS)
+
+
+def _derive_displayed_reference_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ordinal = _extract_displayed_task_ordinal(message)
+    row = _displayed_task_ref_by_ordinal(grounding, ordinal)
+    if not row:
+        return []
+
+    task_id = row.get("id")
+    title = row.get("title")
+    if not isinstance(task_id, str) or not task_id.strip():
+        return []
+    if not isinstance(title, str) or not title.strip():
+        return []
+
+    if _is_archive_request(message):
+        return [
+            {
+                "title": title.strip(),
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": task_id.strip(),
+            }
+        ]
+    if _is_completion_request(message):
+        return [
+            {
+                "title": title.strip(),
+                "action": "complete",
+                "status": "done",
+                "target_task_id": task_id.strip(),
+            }
+        ]
+    return []
+
+
+def _apply_displayed_task_reference_extraction(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+    *,
+    allow_heuristic_resolution: bool = True,
+) -> Dict[str, Any]:
+    if not isinstance(extraction, dict):
+        extraction = {"tasks": [], "goals": [], "problems": [], "links": []}
+
+    ordinal = _extract_displayed_task_ordinal(message)
+    row = _displayed_task_ref_by_ordinal(grounding, ordinal)
+    if not row:
+        return extraction
+
+    task_id = row.get("id")
+    title = row.get("title")
+    if not isinstance(task_id, str) or not task_id.strip():
+        return extraction
+    if not isinstance(title, str) or not title.strip():
+        return extraction
+
+    raw_tasks = extraction.get("tasks")
+    if isinstance(raw_tasks, list) and raw_tasks:
+        normalized_tasks: List[Any] = []
+        for task in raw_tasks:
+            if not isinstance(task, dict):
+                normalized_tasks.append(task)
+                continue
+            action = str(task.get("action") or "").lower()
+            status = str(task.get("status") or "").lower()
+            requires_target = action in {"update", "complete", "archive"} or status in {"done", "archived"}
+            if not requires_target:
+                normalized_tasks.append(task)
+                continue
+            normalized = dict(task)
+            target_task_id = normalized.get("target_task_id")
+            if not isinstance(target_task_id, str) or not target_task_id.strip():
+                normalized["target_task_id"] = task_id.strip()
+                title_value = normalized.get("title")
+                if not isinstance(title_value, str) or not title_value.strip():
+                    normalized["title"] = title.strip()
+            normalized_tasks.append(normalized)
+        out = dict(extraction)
+        out["tasks"] = normalized_tasks
+        if _has_actionable_entities(out):
+            return out
+
+    if allow_heuristic_resolution:
+        derived_tasks = _derive_displayed_reference_actions(message, grounding)
+        if derived_tasks:
+            return {"tasks": derived_tasks, "goals": [], "problems": [], "links": []}
+    return extraction
+
+
+def _is_explicit_displayed_reference_mutation(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+) -> bool:
+    ordinal = _extract_displayed_task_ordinal(message)
+    row = _displayed_task_ref_by_ordinal(grounding, ordinal)
+    if not row or not isinstance(extraction, dict):
+        return False
+    target_task_id = row.get("id")
+    if not isinstance(target_task_id, str) or not target_task_id.strip():
+        return False
+    tasks = extraction.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        action = str(task.get("action") or "").lower()
+        status = str(task.get("status") or "").lower()
+        if task.get("target_task_id") != target_task_id:
+            continue
+        if action in {"update", "complete", "archive"} or status in {"done", "archived"}:
+            return True
+    return False
+
+
 def _sanitize_targeted_task_actions(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extraction, dict):
         return {"tasks": [], "goals": [], "problems": [], "links": []}
@@ -1125,6 +1304,12 @@ async def _revise_action_draft(
     )
     extraction = _sanitize_create_extraction(revised_message, extraction)
     extraction = _sanitize_targeted_task_actions(revised_message, extraction, grounding)
+    extraction = _apply_displayed_task_reference_extraction(
+        revised_message,
+        extraction,
+        grounding,
+        allow_heuristic_resolution=True,
+    )
     extraction = _resolve_relative_due_date_overrides(revised_message, extraction)
     _validate_extraction_payload(extraction)
     draft.source_message = revised_message
@@ -1276,15 +1461,36 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
     )
     recent_rows = (await db.execute(recent_stmt)).scalars().all()
     recent_task_ids: List[str] = []
+    displayed_meta_by_ordinal: Dict[int, Dict[str, Any]] = {}
+    latest_display_batch_id: Optional[str] = None
     seen: set[str] = set()
     for row in recent_rows:
+        parsed_reason = _parse_recent_display_reason(row.reason)
+        if parsed_reason:
+            view_name, batch_id, ordinal = parsed_reason
+            if latest_display_batch_id is None:
+                latest_display_batch_id = batch_id
+            if batch_id == latest_display_batch_id and ordinal not in displayed_meta_by_ordinal and isinstance(row.entity_id, str) and row.entity_id:
+                displayed_meta_by_ordinal[ordinal] = {
+                    "id": row.entity_id,
+                    "ordinal": ordinal,
+                    "view_name": view_name,
+                }
         if row.entity_id not in seen:
             seen.add(row.entity_id)
             recent_task_ids.append(row.entity_id)
         if len(recent_task_ids) >= 8:
             break
-    if recent_task_ids:
-        recent_tasks_stmt = select(Task).where(Task.user_id == user_id, Task.id.in_(recent_task_ids))
+    displayed_task_ids = [meta["id"] for _, meta in sorted(displayed_meta_by_ordinal.items())]
+    combined_task_ids: List[str] = []
+    seen_combined: set[str] = set()
+    for task_id in recent_task_ids + displayed_task_ids:
+        if isinstance(task_id, str) and task_id and task_id not in seen_combined:
+            seen_combined.add(task_id)
+            combined_task_ids.append(task_id)
+    displayed_refs: List[Dict[str, Any]] = []
+    if combined_task_ids:
+        recent_tasks_stmt = select(Task).where(Task.user_id == user_id, Task.id.in_(combined_task_ids))
         recent_tasks = (await db.execute(recent_tasks_stmt)).scalars().all()
         task_by_id = {task.id: task for task in recent_tasks}
         for task_id in recent_task_ids:
@@ -1293,6 +1499,21 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
                 continue
             status = task.status.value if hasattr(task.status, "value") else str(task.status)
             recent_refs.append({"id": task.id, "title": task.title, "status": status})
+        for ordinal in sorted(displayed_meta_by_ordinal):
+            meta = displayed_meta_by_ordinal[ordinal]
+            task = task_by_id.get(meta["id"])
+            if not task:
+                continue
+            status = task.status.value if hasattr(task.status, "value") else str(task.status)
+            displayed_refs.append(
+                {
+                    "ordinal": ordinal,
+                    "id": task.id,
+                    "title": task.title,
+                    "status": status,
+                    "view_name": meta["view_name"],
+                }
+            )
 
     return {
         "chat_id": chat_id,
@@ -1303,6 +1524,7 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
         "timezone": settings.APP_TIMEZONE,
         "tasks": tasks,
         "recent_task_refs": recent_refs,
+        "displayed_task_refs": displayed_refs,
     }
 
 
@@ -2455,6 +2677,12 @@ async def _handle_telegram_draft_flow(
         allow_heuristic_derivation=used_extract_fallback,
     )
     extraction = _sanitize_targeted_task_actions(text, extraction, grounding)
+    extraction = _apply_displayed_task_reference_extraction(
+        text,
+        extraction,
+        grounding,
+        allow_heuristic_resolution=used_extract_fallback,
+    )
     extraction = _resolve_relative_due_date_overrides(text, extraction)
     unresolved_mutations = _unresolved_mutation_titles(extraction)
     if unresolved_mutations:
@@ -2495,7 +2723,8 @@ async def _handle_telegram_draft_flow(
 
     _validate_extraction_payload(extraction)
     planner_confidence = _planner_confidence(planned)
-    if planner_confidence < CLARIFY_ACTION_CONFIDENCE:
+    explicit_displayed_mutation = _is_explicit_displayed_reference_mutation(text, extraction, grounding)
+    if planner_confidence < CLARIFY_ACTION_CONFIDENCE and not explicit_displayed_mutation:
         await send_message(chat_id, _build_low_confidence_clarification(extraction))
         return
     auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)

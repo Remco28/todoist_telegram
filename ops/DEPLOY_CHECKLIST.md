@@ -11,7 +11,8 @@
    - `REDIS_URL`
    - `APP_AUTH_BEARER_TOKENS` or `APP_AUTH_TOKEN_USER_MAP`
    - `LLM_API_KEY` and model vars
-  - `TODOIST_TOKEN` (if sync enabled)
+   - `TODOIST_TOKEN` (if sync enabled)
+   - `TELEGRAM_BOT_TOKEN`
 5. Confirm current deployment health:
    - `GET /health/live`
    - `GET /health/ready`
@@ -26,7 +27,9 @@
    - `GET /health/ready`
    - `GET /health/metrics`
    - Trigger capture/query/plan/sync smoke flow (Phase 8 smoke test command).
-5. Confirm no sustained error growth in metrics (`retry_scheduled`, `moved_to_dlq`).
+5. If Telegram command definitions changed, register them:
+   - `cd /app && ./ops/register_telegram_commands.sh`
+6. Confirm no sustained error growth in metrics (`retry_scheduled`, `moved_to_dlq`).
 
 ## Rollback Sequence
 1. Roll back API and worker to the last known-good release in Coolify.
@@ -52,6 +55,7 @@
 ### Manual (Required)
 1. Telegram link flow sanity:
    - Generate link token, run `/start <token>`, verify linked command access.
+   - Type `/` in Telegram and confirm the command picker is populated.
 2. Query mode sanity:
    - Send one representative `/v1/query/ask` request and verify contract response.
 3. Todoist sync + reconcile sanity:

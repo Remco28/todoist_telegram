@@ -191,6 +191,23 @@ Verify:
 curl -sS "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
 ```
 
+### Step 1b: Register the Telegram command list
+This enables the `/` command picker and bot command menu in Telegram clients.
+
+```bash
+export TELEGRAM_BOT_TOKEN=<your_bot_token>
+./backend/ops/register_telegram_commands.sh
+```
+
+Dry-run the payload without calling Telegram:
+
+```bash
+export TELEGRAM_BOT_TOKEN=<your_bot_token>
+DRY_RUN=1 ./backend/ops/register_telegram_commands.sh
+```
+
+Operational details are in `ops/TELEGRAM_COMMANDS_RUNBOOK.md`.
+
 ### Step 2: Generate a link token from your API
 ```bash
 curl -sS -X POST "$BASE_URL/v1/integrations/telegram/link_token" \
@@ -218,6 +235,7 @@ Useful Telegram commands:
 - `/plan` to refresh the plan, then `/today` to view it.
 - `/done 2` to complete the second item from your most recent `/today` or `/focus` list.
 - `/done tsk_123` to complete a task directly by id.
+- `/ask What tasks are blocked?` to ask a read-only question.
 
 Note:
 - Telegram has a hard per-message size limit (~4096 chars).

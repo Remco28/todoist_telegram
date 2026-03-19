@@ -829,6 +829,76 @@ def test_low_confidence_actionable_plan_requests_clarification_instead_of_draft(
         assert "not fully confident" in mock_send.await_args.args[1].lower()
 
 
+def test_displayed_task_delete_reference_creates_archive_draft(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.1,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {
+                "id": "tsk_bad",
+                "title": "Move worker's compensation form to today",
+                "status": "open",
+            }
+        ],
+        "recent_task_refs": [
+            {
+                "id": "tsk_bad",
+                "title": "Move worker's compensation form to today",
+                "status": "open",
+            }
+        ],
+        "displayed_task_refs": [
+            {
+                "ordinal": 1,
+                "id": "tsk_bad",
+                "title": "Move worker's compensation form to today",
+                "status": "open",
+                "view_name": "today",
+            }
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Delete the first task. Move worker's comp doesn't seem like a real task."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Move worker's compensation form to today",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "tsk_bad",
+            }
+        ]
+
+
 def test_unrelated_targeted_update_is_rewritten_to_create(app_no_db, mock_send):
     planned = {
         "intent": "action",

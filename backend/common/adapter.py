@@ -357,6 +357,7 @@ class LLMAdapter:
             "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
             "Task fields may include notes, priority (1 highest, 4 lowest), impact_score (1-5), urgency_score (1-5), due_date.\n"
             "When dates are explicit or relative (for example tomorrow/next week/tonight), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_local and grounding.timezone (fallback grounding.current_date_utc).\n"
+            "If grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
             "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
             "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
@@ -391,6 +392,7 @@ class LLMAdapter:
             "scope must be one of single|subset|all_open|all_matching.\n"
             "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional notes, optional priority (1 highest, 4 lowest), optional impact_score (1-5), optional urgency_score (1-5), optional due_date.\n"
             "Resolve relative dates against context.grounding.current_date_local and context.grounding.timezone (fallback context.grounding.current_date_utc) and output due_date as YYYY-MM-DD.\n"
+            "If context.grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
             "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
             "Return only JSON."
         )
