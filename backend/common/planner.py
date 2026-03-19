@@ -1,4 +1,4 @@
-import json
+import re
 from datetime import datetime, date, timezone
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy import select
@@ -6,6 +6,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.config import settings
 from common.models import Task, Goal, EntityLink, TaskStatus, EntityType, LinkType, GoalStatus
+
+_TASK_TITLE_WRAPPER_PATTERNS = (
+    re.compile(
+        r"^(?:move|set|reschedule)\s+(?P<quote>['\"])?(?P<title>.+?)(?P=quote)?\s+(?:to|for)\s+"
+        r"(?:today|tomorrow|tonight|this week|next week|this month|next month)\.?$",
+        re.IGNORECASE,
+    ),
+)
+_TITLE_DEDUPE_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "onto",
+    "about",
+    "your",
+    "our",
+}
 
 
 def _as_utc_datetime(value: Any, fallback: Optional[datetime] = None) -> datetime:
@@ -16,6 +38,44 @@ def _as_utc_datetime(value: Any, fallback: Optional[datetime] = None) -> datetim
     if fallback is not None:
         return _as_utc_datetime(fallback)
     return datetime.now(timezone.utc)
+
+
+def _user_visible_title(title: Any) -> str:
+    text = re.sub(r"\s+", " ", str(title or "").strip())
+    if not text:
+        return ""
+    for pattern in _TASK_TITLE_WRAPPER_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        inner = re.sub(r"\s+", " ", (match.group("title") or "").strip())
+        if inner:
+            return inner
+    return text
+
+
+def _normalized_title_tokens(title: Any) -> List[str]:
+    visible = _user_visible_title(title).lower()
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", visible)
+    tokens = [token for token in cleaned.split() if len(token) >= 3 and token not in _TITLE_DEDUPE_STOPWORDS]
+    return tokens
+
+
+def _is_near_duplicate_title(left: Any, right: Any) -> bool:
+    left_tokens = set(_normalized_title_tokens(left))
+    right_tokens = set(_normalized_title_tokens(right))
+    if not left_tokens or not right_tokens:
+        return _user_visible_title(left).lower() == _user_visible_title(right).lower()
+    overlap = left_tokens & right_tokens
+    shorter_ratio = len(overlap) / max(1, min(len(left_tokens), len(right_tokens)))
+    longer_ratio = len(overlap) / max(1, max(len(left_tokens), len(right_tokens)))
+    return shorter_ratio >= 0.80 and longer_ratio >= 0.60
+
+
+def _title_information_score(title: Any) -> Tuple[int, int]:
+    visible = _user_visible_title(title)
+    tokens = _normalized_title_tokens(visible)
+    return (len(set(tokens)), len(visible))
 
 async def collect_planning_state(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     # 1. Fetch all tasks that are not archived
@@ -162,9 +222,23 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         x["task"].id
     ))
     
+    visible_candidates: List[Dict[str, Any]] = []
+    for st in scored_candidates:
+        duplicate_idx: Optional[int] = None
+        for idx, existing in enumerate(visible_candidates):
+            if _is_near_duplicate_title(st["task"].title, existing["task"].title):
+                duplicate_idx = idx
+                break
+        if duplicate_idx is None:
+            visible_candidates.append(st)
+            continue
+        existing = visible_candidates[duplicate_idx]
+        if _title_information_score(st["task"].title) > _title_information_score(existing["task"].title):
+            visible_candidates[duplicate_idx] = st
+
     today_plan = []
     why_this_order = []
-    for idx, st in enumerate(scored_candidates[:settings.PLAN_TOP_N_TODAY]):
+    for idx, st in enumerate(visible_candidates[:settings.PLAN_TOP_N_TODAY]):
         t = st["task"]
         rank = idx + 1
         today_plan.append({
@@ -179,7 +253,8 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         })
         
     next_actions = []
-    for idx, st in enumerate(scored_candidates[settings.PLAN_TOP_N_TODAY : settings.PLAN_TOP_N_TODAY + settings.PLAN_TOP_N_NEXT]):
+    next_slice = visible_candidates[settings.PLAN_TOP_N_TODAY : settings.PLAN_TOP_N_TODAY + settings.PLAN_TOP_N_NEXT]
+    for idx, st in enumerate(next_slice):
         t = st["task"]
         rank = settings.PLAN_TOP_N_TODAY + idx + 1
         next_actions.append({

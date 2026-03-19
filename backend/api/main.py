@@ -64,6 +64,8 @@ ORDINAL_REFERENCE_WORDS = {
     "eleventh": 11,
     "twelfth": 12,
 }
+PLAN_CACHE_TTL_SECONDS = 86400
+PLAN_AUTO_REFRESH_MAX_AGE_SECONDS = 300
 
 
 def _draft_now() -> datetime:
@@ -83,8 +85,76 @@ def _local_today() -> date:
     return _local_now().date()
 
 
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _contains_word(text: str, word: str) -> bool:
     return bool(re.search(rf"\b{re.escape(word)}\b", (text or "").lower()))
+
+
+def _normalize_query_text(text: str) -> str:
+    collapsed = re.sub(r"[^a-z0-9\s]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+def _classify_today_query_view(text: str) -> Optional[str]:
+    normalized = _normalize_query_text(text)
+    if not normalized:
+        return None
+    padded = f" {normalized} "
+    has_today_anchor = any(
+        phrase in padded
+        for phrase in (
+            " today ",
+            " for today ",
+            " tonight ",
+            " right now ",
+        )
+    )
+    if not has_today_anchor:
+        return None
+    focus_signals = (
+        "focus",
+        "priority",
+        "priorities",
+        "prioritize",
+        "top",
+        "most important",
+    )
+    if any(signal in normalized for signal in focus_signals):
+        return "focus"
+    today_signals = (
+        "what do i have to do",
+        "what do i need to do",
+        "what should i do",
+        "what should i work on",
+        "what tasks do i have",
+        "what tasks are on",
+        "what s on my plate",
+        "whats on my plate",
+        "what is on my plate",
+        "show me",
+        "list",
+        "agenda",
+        "plan",
+        "tasks",
+        "to do",
+    )
+    if any(signal in normalized for signal in today_signals):
+        return "today"
+    return None
 
 
 def _should_force_tonight_to_today(message: str) -> bool:
@@ -1627,6 +1697,23 @@ async def _remember_displayed_tasks(
         )
 
 
+def _task_ids_from_query_response(response: QueryResponseV1) -> List[str]:
+    raw_ids = response.surfaced_entity_ids if isinstance(response, QueryResponseV1) else None
+    if not isinstance(raw_ids, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        if not isinstance(value, str):
+            continue
+        task_id = value.strip()
+        if not task_id.startswith("tsk_") or task_id in seen:
+            continue
+        seen.add(task_id)
+        out.append(task_id)
+    return out
+
+
 async def _resolve_displayed_task_id(
     db: AsyncSession,
     user_id: str,
@@ -1868,6 +1955,20 @@ def _plan_cache_key(user_id: str, chat_id: str) -> str:
     return f"plan:today:{user_id}:{chat_id}"
 
 
+def _plan_payload_generated_at(payload: Dict[str, Any]) -> Optional[datetime]:
+    if not isinstance(payload, dict):
+        return None
+    return _parse_iso_datetime(payload.get("generated_at"))
+
+
+def _plan_payload_is_fresh(payload: Dict[str, Any], *, max_age_seconds: int = PLAN_AUTO_REFRESH_MAX_AGE_SECONDS) -> bool:
+    generated_at = _plan_payload_generated_at(payload)
+    if not generated_at:
+        return False
+    age_seconds = max(0, int((utc_now() - generated_at).total_seconds()))
+    return age_seconds <= max(1, max_age_seconds)
+
+
 def _telegram_plan_payload(payload: Dict[str, Any], *, served_from_cache: bool) -> Dict[str, Any]:
     decorated = copy.deepcopy(payload) if isinstance(payload, dict) else {}
     decorated["_served_from_cache"] = bool(served_from_cache)
@@ -1877,33 +1978,112 @@ def _telegram_plan_payload(payload: Dict[str, Any], *, served_from_cache: bool) 
 async def _invalidate_today_plan_cache(user_id: str, chat_id: str) -> None:
     await redis_client.delete(_plan_cache_key(user_id, chat_id))
 
+
+def _extract_plan_task_ids(plan_payload: Dict[str, Any], *, limit: Optional[int] = None) -> List[str]:
+    if not isinstance(plan_payload, dict):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    rows = plan_payload.get("today_plan")
+    if not isinstance(rows, list):
+        return out
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        task_id = item.get("task_id")
+        if not isinstance(task_id, str) or not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        out.append(task_id)
+        if isinstance(limit, int) and limit > 0 and len(out) >= limit:
+            break
+    return out
+
+
+async def _cache_today_plan_payload(user_id: str, chat_id: str, payload: Dict[str, Any]) -> None:
+    validated = PlanResponseV1(**payload)
+    await redis_client.setex(_plan_cache_key(user_id, chat_id), PLAN_CACHE_TTL_SECONDS, validated.model_dump_json())
+
+
+async def _build_live_today_plan_payload(db: AsyncSession, user_id: str) -> Dict[str, Any]:
+    state = await collect_planning_state(db, user_id)
+    payload = render_fallback_plan_explanation(build_plan_payload(state, utc_now()))
+    try:
+        return PlanResponseV1(**payload).model_dump()
+    except Exception as exc:
+        logger.error("Plan validation failed during live build for user %s: %s", user_id, exc)
+        emergency_payload = {
+            "schema_version": "plan.v1",
+            "plan_window": "today",
+            "generated_at": utc_now().isoformat().replace("+00:00", "Z"),
+            "today_plan": [],
+            "next_actions": [],
+            "blocked_items": [],
+        }
+        return PlanResponseV1(**emergency_payload).model_dump()
+
+
+async def _load_today_plan_payload(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    *,
+    require_fresh: bool = True,
+) -> tuple[Dict[str, Any], bool]:
+    cached = await redis_client.get(_plan_cache_key(user_id, chat_id))
+    if cached:
+        try:
+            payload = PlanResponseV1(**json.loads(cached)).model_dump()
+            if not require_fresh or _plan_payload_is_fresh(payload):
+                return payload, True
+        except Exception as exc:
+            logger.warning("Cached plan invalid for user %s chat %s: %s", user_id, chat_id, exc)
+
+    payload = await _build_live_today_plan_payload(db, user_id)
+    try:
+        await _cache_today_plan_payload(user_id, chat_id, payload)
+    except Exception as exc:
+        logger.warning("Failed to cache live today plan for user %s chat %s: %s", user_id, chat_id, exc)
+    return payload, False
+
+
+async def _send_today_plan_view(
+    db: AsyncSession,
+    user_id: str,
+    chat_id: str,
+    payload: Dict[str, Any],
+    *,
+    served_from_cache: bool,
+    view_name: str,
+) -> None:
+    telegram_payload = _telegram_plan_payload(payload, served_from_cache=served_from_cache)
+    if view_name == "focus":
+        text = format_focus_mode(telegram_payload)
+        task_ids = _extract_plan_task_ids(telegram_payload, limit=3)
+    else:
+        text = format_today_plan(telegram_payload)
+        task_ids = _extract_plan_task_ids(telegram_payload)
+    sent = await send_message(chat_id, text)
+    if not (isinstance(sent, dict) and sent.get("ok") is True):
+        return
+    if task_ids:
+        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, view_name)
+        await db.commit()
+
 # --- Internal Helpers for Integration Routing ---
 
 async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, user_id: str, db: AsyncSession):
 
     if command == "/today":
-        # Simulate GET /v1/plan/get_today logic
-        cache_key = _plan_cache_key(user_id, chat_id)
-        cached = await redis_client.get(cache_key)
-        served_from_cache = False
-        if cached:
-            payload = json.loads(cached)
-            served_from_cache = True
-        else:
-            state = await collect_planning_state(db, user_id)
-            payload = build_plan_payload(state, utc_now())
-            payload = render_fallback_plan_explanation(payload)
-        telegram_payload = _telegram_plan_payload(payload, served_from_cache=served_from_cache)
-        sent = await send_message(chat_id, format_today_plan(telegram_payload))
-        if not (isinstance(sent, dict) and sent.get("ok") is True):
-            return
-        task_ids = [
-            item.get("task_id")
-            for item in telegram_payload.get("today_plan", [])
-            if isinstance(item, dict) and isinstance(item.get("task_id"), str)
-        ]
-        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "today")
-        await db.commit()
+        payload, served_from_cache = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
+        await _send_today_plan_view(
+            db,
+            user_id,
+            chat_id,
+            payload,
+            served_from_cache=served_from_cache,
+            view_name="today",
+        )
 
     elif command == "/plan":
         job_id = str(uuid.uuid4())
@@ -1911,26 +2091,15 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         await send_message(chat_id, format_plan_refresh_ack(job_id))
 
     elif command == "/focus":
-        cache_key = _plan_cache_key(user_id, chat_id)
-        cached = await redis_client.get(cache_key)
-        served_from_cache = False
-        if cached:
-            payload = json.loads(cached)
-            served_from_cache = True
-        else:
-            state = await collect_planning_state(db, user_id)
-            payload = build_plan_payload(state, utc_now())
-        telegram_payload = _telegram_plan_payload(payload, served_from_cache=served_from_cache)
-        sent = await send_message(chat_id, format_focus_mode(telegram_payload))
-        if not (isinstance(sent, dict) and sent.get("ok") is True):
-            return
-        task_ids = [
-            item.get("task_id")
-            for item in telegram_payload.get("today_plan", [])[:3]
-            if isinstance(item, dict) and isinstance(item.get("task_id"), str)
-        ]
-        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "focus")
-        await db.commit()
+        payload, served_from_cache = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
+        await _send_today_plan_view(
+            db,
+            user_id,
+            chat_id,
+            payload,
+            served_from_cache=served_from_cache,
+            view_name="focus",
+        )
 
     elif command == "/done":
         if not args:
@@ -1977,8 +2146,33 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
         if not question:
             await send_message(chat_id, "Please provide a question. Example: <code>/ask What tasks are overdue?</code>")
             return
+        today_query_view = _classify_today_query_view(question)
+        if today_query_view:
+            payload, served_from_cache = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
+            await _send_today_plan_view(
+                db,
+                user_id,
+                chat_id,
+                payload,
+                served_from_cache=served_from_cache,
+                view_name=today_query_view,
+            )
+            return
         response = await query_ask(QueryAskRequest(chat_id=chat_id, query=question), user_id=user_id, db=db)
-        await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
+        sent = await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
+        if not (isinstance(sent, dict) and sent.get("ok") is True):
+            return
+        surfaced_task_ids = _task_ids_from_query_response(response)
+        if surfaced_task_ids:
+            await _remember_recent_tasks(
+                db=db,
+                user_id=user_id,
+                chat_id=chat_id,
+                task_ids=surfaced_task_ids[:6],
+                reason="query_surface",
+                ttl_hours=12,
+            )
+            await db.commit()
 
     else:
         supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;number&gt; - Mark an item from your latest list as done\n/ask &lt;question&gt; - Ask a read-only question"
@@ -2568,6 +2762,19 @@ async def _handle_telegram_draft_flow(
         await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
         return
 
+    today_query_view = _classify_today_query_view(text)
+    if today_query_view:
+        payload, served_from_cache = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
+        await _send_today_plan_view(
+            db,
+            user_id,
+            chat_id,
+            payload,
+            served_from_cache=served_from_cache,
+            view_name=today_query_view,
+        )
+        return
+
     grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id, message=text)
     planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
     intent = planned.get("intent") if isinstance(planned, dict) else None
@@ -2593,21 +2800,26 @@ async def _handle_telegram_draft_flow(
 
     if intent == "query":
         response = await query_ask(QueryAskRequest(chat_id=chat_id, query=text), user_id=user_id, db=db)
-        discussed_task_ids = [
+        fallback_task_ids = [
             row.get("id")
             for row in (grounding.get("tasks") if isinstance(grounding, dict) else [])
             if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
         ]
-        await _remember_recent_tasks(
-            db=db,
-            user_id=user_id,
-            chat_id=chat_id,
-            task_ids=discussed_task_ids[:6],
-            reason="query_context",
-            ttl_hours=12,
-        )
-        await db.commit()
-        await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
+        sent = await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
+        if not (isinstance(sent, dict) and sent.get("ok") is True):
+            return
+        surfaced_task_ids = _task_ids_from_query_response(response)
+        task_ids = surfaced_task_ids[:6] if surfaced_task_ids else fallback_task_ids[:6]
+        if task_ids:
+            await _remember_recent_tasks(
+                db=db,
+                user_id=user_id,
+                chat_id=chat_id,
+                task_ids=task_ids,
+                reason="query_surface" if surfaced_task_ids else "query_context",
+                ttl_hours=12,
+            )
+            await db.commit()
         return
 
     planner_actions_valid = intent == "action" and isinstance(actions, list) and len(actions) > 0
@@ -3015,32 +3227,8 @@ async def plan_refresh(request: Request, payload: PlanRefreshRequest, user_id: s
 
 @app.get("/v1/plan/get_today", response_model=PlanResponseV1, dependencies=[Depends(get_authenticated_user)])
 async def get_today_plan(chat_id: str, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):
-    cached = await redis_client.get(f"plan:today:{user_id}:{chat_id}")
-    if cached:
-        try:
-            return PlanResponseV1(**json.loads(cached))
-        except Exception as e:
-            logger.warning(f"Cached plan invalid: {e}")
-    
-    state = await collect_planning_state(db, user_id)
-    payload = build_plan_payload(state, utc_now())
-    try:
-        validated = PlanResponseV1(**render_fallback_plan_explanation(payload))
-        return validated
-    except Exception as e:
-        logger.error(f"Plan validation failed: {e}")
-        db.add(EventLog(
-            id=str(uuid.uuid4()), request_id=f"req_{uuid.uuid4().hex[:8]}", user_id=user_id,
-            event_type="plan_rewrite_fallback", payload_json={"error": str(e), "context": "api_get_today"}
-        ))
-        await db.commit()
-        # Create a emergency minimal valid payload if even the deterministic builder failed somehow
-        emergency_payload = {
-            "schema_version": "plan.v1", "plan_window": "today", 
-            "generated_at": utc_now().isoformat().replace("+00:00", "Z"),
-            "today_plan": [], "next_actions": [], "blocked_items": []
-        }
-        return PlanResponseV1(**emergency_payload)
+    payload, _ = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
+    return PlanResponseV1(**payload)
 
 @app.post("/v1/query/ask", response_model=QueryResponseV1, dependencies=[Depends(get_authenticated_user)])
 async def query_ask(payload: QueryAskRequest, user_id: str = Depends(get_authenticated_user), db: AsyncSession = Depends(get_db)):

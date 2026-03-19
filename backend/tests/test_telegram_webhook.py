@@ -8,7 +8,7 @@ These tests validate:
 """
 import asyncio
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -137,6 +137,39 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert resp.status_code == 200
         mocked.assert_awaited_once()
         assert mocked.await_args.args[0] == "/today"
+
+
+def test_natural_language_today_query_uses_planner_view(app_no_db, mock_send, mock_db):
+    state = {
+        "tasks": [
+            Task(
+                id="tsk_today_1",
+                user_id="usr_123",
+                title="Complete urgent Worker's Compensation form",
+                title_norm="complete urgent workers compensation form",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 19, 8, 0, 0),
+            )
+        ],
+        "goals": [],
+        "links": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
+    ), patch(
+        "api.main._remember_displayed_tasks", new_callable=AsyncMock
+    ) as remember, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What do I have to do today?"), headers=_headers())
+        assert resp.status_code == 200
+        build_grounding.assert_not_awaited()
+    text = mock_send.await_args.args[1]
+    assert "Your Today Plan" in text
+    assert "Complete urgent Worker" in text
+    remember.assert_awaited_once_with(mock_db, "usr_123", "12345", ["tsk_today_1"], "today")
 
 
 def test_non_command_text_low_confidence_requests_clarification(app_no_db, mock_extract, mock_send):
@@ -1169,6 +1202,41 @@ def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, m
     mock_db.commit.assert_awaited_once()
 
 
+def test_command_today_rebuilds_live_when_cached_plan_is_stale(mock_redis, mock_send, mock_db):
+    mock_redis.get.return_value = json.dumps(
+        {
+            "generated_at": "2026-03-19T07:00:00Z",
+            "today_plan": [{"task_id": "tsk_old", "title": "Old cached task"}],
+        }
+    )
+    state = {
+        "tasks": [
+            Task(
+                id="tsk_live",
+                user_id="usr_abc",
+                title="Fresh live task",
+                title_norm="fresh live task",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 19, 11, 0, 0),
+            )
+        ],
+        "goals": [],
+        "links": [],
+    }
+    fixed_now = datetime(2026, 3, 19, 12, 15, 0, tzinfo=timezone.utc)
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
+    ), patch("api.main.utc_now", return_value=fixed_now), patch(
+        "api.main._remember_displayed_tasks", new_callable=AsyncMock
+    ) as remember:
+        asyncio.run(handle_telegram_command("/today", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "Fresh live task" in text
+    assert "Old cached task" not in text
+    mock_redis.setex.assert_awaited_once()
+    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_live"], "today")
+
+
 def test_command_ask_returns_query_answer(mock_send, mock_db):
     with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
         mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)
@@ -1177,13 +1245,71 @@ def test_command_ask_returns_query_answer(mock_send, mock_db):
     assert "no blocked tasks" in mock_send.await_args.args[1]
 
 
+def test_command_ask_today_question_uses_planner_view(mock_redis, mock_send, mock_db):
+    state = {
+        "tasks": [
+            Task(
+                id="tsk_today",
+                user_id="usr_abc",
+                title="Call contractor about paint colors",
+                title_norm="call contractor about paint colors",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 19, 11, 30, 0),
+            )
+        ],
+        "goals": [],
+        "links": [],
+    }
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
+    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as mocked_query:
+        asyncio.run(handle_telegram_command("/ask", "What do I have to do today?", "12345", "usr_abc", mock_db))
+    mocked_query.assert_not_awaited()
+    text = mock_send.await_args.args[1]
+    assert "Your Today Plan" in text
+    assert "Call contractor about paint colors" in text
+    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_today"], "today")
+
+
+def test_command_ask_stores_surfaced_task_context(mock_send, mock_db):
+    response = QueryResponseV1(
+        answer="You should handle the burpee cleanup first.",
+        confidence=0.91,
+        surfaced_entity_ids=["tsk_burpee", "gol_health", "tsk_backpack"],
+    )
+    with patch("api.main.query_ask", new_callable=AsyncMock, return_value=response), patch(
+        "api.main._remember_recent_tasks", new_callable=AsyncMock
+    ) as remember:
+        asyncio.run(handle_telegram_command("/ask", "what should I clean up", "12345", "usr_abc", mock_db))
+    remember.assert_awaited_once_with(
+        db=mock_db,
+        user_id="usr_abc",
+        chat_id="12345",
+        task_ids=["tsk_burpee", "tsk_backpack"],
+        reason="query_surface",
+        ttl_hours=12,
+    )
+    mock_db.commit.assert_awaited_once()
+
+
 def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
-    mock_redis.get.return_value = json.dumps({
-        "today_plan": [
-            {"task_id": f"tsk_{i}", "title": f"Task {i}"} for i in range(1, 6)
-        ]
-    })
-    with patch("api.main.redis_client", mock_redis):
+    mock_redis.get.return_value = json.dumps(
+        {
+            "schema_version": "plan.v1",
+            "plan_window": "today",
+            "generated_at": "2026-03-19T12:00:00Z",
+            "today_plan": [
+                {"task_id": f"tsk_{i}", "rank": i, "title": f"Task {i}", "score": 1.0} for i in range(1, 6)
+            ],
+            "next_actions": [],
+            "blocked_items": [],
+        }
+    )
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.utc_now", return_value=datetime(2026, 3, 19, 12, 1, 0, tzinfo=timezone.utc)
+    ):
         asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
     assert "Task 1" in text
@@ -1194,17 +1320,68 @@ def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
 
 
 def test_command_focus_does_not_store_recent_display_if_send_fails(mock_redis, mock_send, mock_db):
-    mock_redis.get.return_value = json.dumps({
-        "today_plan": [
-            {"task_id": "tsk_1", "title": "Task 1"},
-            {"task_id": "tsk_2", "title": "Task 2"},
-        ]
-    })
+    mock_redis.get.return_value = json.dumps(
+        {
+            "schema_version": "plan.v1",
+            "plan_window": "today",
+            "generated_at": "2026-03-19T12:00:00Z",
+            "today_plan": [
+                {"task_id": "tsk_1", "rank": 1, "title": "Task 1", "score": 1.0},
+                {"task_id": "tsk_2", "rank": 2, "title": "Task 2", "score": 1.0},
+            ],
+            "next_actions": [],
+            "blocked_items": [],
+        }
+    )
     mock_send.return_value = {"ok": False}
-    with patch("api.main.redis_client", mock_redis), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.utc_now", return_value=datetime(2026, 3, 19, 12, 1, 0, tzinfo=timezone.utc)
+    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
         asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
     remember.assert_not_awaited()
     mock_db.commit.assert_not_awaited()
+
+
+def test_command_today_suppresses_near_duplicate_visible_tasks(mock_redis, mock_send, mock_db):
+    state = {
+        "tasks": [
+            Task(
+                id="tsk_a",
+                user_id="usr_abc",
+                title="Plan Tuesday dinner: menu and get groceries",
+                title_norm="plan tuesday dinner menu and get groceries",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 10, 9, 0, 0),
+            ),
+            Task(
+                id="tsk_b",
+                user_id="usr_abc",
+                title="Plan Tuesday dinner menu",
+                title_norm="plan tuesday dinner menu",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 10, 9, 0, 0),
+            ),
+            Task(
+                id="tsk_c",
+                user_id="usr_abc",
+                title="Reach out to Ben and Jason regarding the apartment renovation",
+                title_norm="reach out to ben and jason regarding the apartment renovation",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 10, 9, 0, 0),
+            ),
+        ],
+        "goals": [],
+        "links": [],
+    }
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
+    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+        asyncio.run(handle_telegram_command("/today", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "Plan Tuesday dinner: menu and get groceries" in text
+    assert "Plan Tuesday dinner menu" not in text
+    assert "Reach out to Ben and Jason regarding the apartment renovation" in text
+    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_a", "tsk_c"], "today")
 
 
 def test_command_done_without_args_uses_ordinal_first_guidance(mock_db, mock_send):

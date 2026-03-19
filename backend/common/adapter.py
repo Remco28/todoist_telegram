@@ -359,6 +359,7 @@ class LLMAdapter:
             "When dates are explicit or relative (for example tomorrow/next week/tonight), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_local and grounding.timezone (fallback grounding.current_date_utc).\n"
             "Do not create wrapper task titles like Move 'X' to today or Set X for next week; represent the real task X and use update metadata like due_date instead.\n"
             "If grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
+            "If grounding.recent_task_refs includes recently discussed tasks from the assistant's latest answer, use those grounded task ids for named follow-ups like the burpee task, the backpack item, or that apartment task.\n"
             "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
             "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
@@ -395,6 +396,7 @@ class LLMAdapter:
             "Resolve relative dates against context.grounding.current_date_local and context.grounding.timezone (fallback context.grounding.current_date_utc) and output due_date as YYYY-MM-DD.\n"
             "Do not create wrapper task titles like Move 'X' to today or Set X for next week; represent the real task X and use update metadata like due_date instead.\n"
             "If context.grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
+            "If context.grounding.recent_task_refs includes recently discussed tasks from the assistant's latest answer, use those grounded task ids for named follow-ups like the burpee task, the backpack item, or that apartment task.\n"
             "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
             "Return only JSON."
         )

@@ -387,7 +387,7 @@ def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
     """
     today_plan = plan_payload.get("today_plan", [])
     if not today_plan:
-        return "Nothing to focus on right now. Use /plan to refresh."
+        return "Nothing to focus on right now."
     
     top_items = today_plan[:3]
     lines = ["<b>🎯 Current Focus</b>"]

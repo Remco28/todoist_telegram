@@ -75,6 +75,9 @@ class TestFormattersEscapeHtmlContent:
             result = format_focus_mode(payload)
         assert "Updated 10 mins ago from cached plan" in result
 
+    def test_format_focus_mode_empty_state_is_not_command_dependent(self):
+        assert format_focus_mode({"today_plan": []}) == "Nothing to focus on right now."
+
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {
             "today_plan": [
