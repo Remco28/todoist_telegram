@@ -1,11 +1,21 @@
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.config import settings
 from common.models import Task, Goal, EntityLink, TaskStatus, EntityType, LinkType, GoalStatus
+
+
+def _as_utc_datetime(value: Any, fallback: Optional[datetime] = None) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if fallback is not None:
+        return _as_utc_datetime(fallback)
+    return datetime.now(timezone.utc)
 
 async def collect_planning_state(db: AsyncSession, user_id: str) -> Dict[str, Any]:
     # 1. Fetch all tasks that are not archived
@@ -71,6 +81,7 @@ def detect_blocked_tasks(tasks: List[Task], links: List[EntityLink]) -> Tuple[Li
     return ready_ids, blocked_map
 
 def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float, List[str]]:
+    now_utc = _as_utc_datetime(now)
     score = 0.0
     factors = []
     links = state["links"]
@@ -79,7 +90,7 @@ def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float,
     
     # 1. Urgency (Weight 4.0)
     if task.due_date:
-        days_diff = (task.due_date - now.date()).days
+        days_diff = (task.due_date - now_utc.date()).days
         if days_diff < 0:
             score += settings.PLAN_WEIGHT_URGENCY * 2
             factors.append("overdue")
@@ -110,7 +121,8 @@ def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float,
         factors.append("goal_alignment")
         
     # 4. Staleness (Weight 1.0)
-    days_stale = (now - task.updated_at.replace(tzinfo=None)).days
+    updated_at_utc = _as_utc_datetime(task.updated_at, now_utc)
+    days_stale = (now_utc - updated_at_utc).days
     if days_stale > 7:
         score += min(days_stale / 30.0, 1.0) * settings.PLAN_WEIGHT_STALENESS
         factors.append("stale")
@@ -123,6 +135,7 @@ def score_task(task: Task, state: Dict[str, Any], now: datetime) -> Tuple[float,
     return score, factors
 
 def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    now_utc = _as_utc_datetime(now)
     all_tasks = state["tasks"]
     links = state["links"]
     
@@ -133,7 +146,7 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     
     scored_candidates = []
     for task in candidate_tasks:
-        score, factors = score_task(task, state, now)
+        score, factors = score_task(task, state, now_utc)
         scored_candidates.append({
             "task": task,
             "score": score,
@@ -145,7 +158,7 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         -x["score"],
         x["task"].due_date or date.max,
         x["task"].priority or 99,
-        x["task"].updated_at,
+        _as_utc_datetime(x["task"].updated_at, now_utc),
         x["task"].id
     ))
     
@@ -189,7 +202,7 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     payload = {
         "schema_version": "plan.v1",
         "plan_window": "today",
-        "generated_at": now.isoformat() + "Z",
+        "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
         "today_plan": today_plan,
         "next_actions": next_actions,
         "blocked_items": blocked_items,

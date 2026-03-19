@@ -1072,6 +1072,33 @@ def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
     assert "Use <code>/today</code>" in mock_send.await_args.args[1]
 
 
+def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, mock_send, mock_db):
+    state = {
+        "tasks": [
+            Task(
+                id="tsk_1",
+                user_id="usr_abc",
+                title="Review live /today behavior",
+                title_norm="review live today behavior",
+                status=TaskStatus.open,
+                updated_at=datetime(2026, 3, 18, 12, 0, 0),
+            )
+        ],
+        "goals": [],
+        "links": [],
+    }
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
+    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+        asyncio.run(handle_telegram_command("/today", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "Your Today Plan" in text
+    assert "Review live /today behavior" in text
+    assert "Updated:" in text
+    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_1"], "today")
+    mock_db.commit.assert_awaited_once()
+
+
 def test_command_ask_returns_query_answer(mock_send, mock_db):
     with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
         mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)
