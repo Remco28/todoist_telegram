@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.config import settings
 from common.models import InboxItem, MemorySummary, Task, Goal, Problem, EntityLink, EntityType
+from common.telegram import user_facing_task_title
 
 def _estimate_tokens_heuristic(text: str) -> int:
     if not text:
@@ -115,7 +116,8 @@ async def select_related_entities(db: AsyncSession, user_id: str, query: str, li
 
     # Format
     res = []
-    for t in tasks[:limit//2]: res.append(f"Task: {t.title} (Status: {t.status.value})")
+    for t in tasks[:limit//2]:
+        res.append(f"Task: {user_facing_task_title(t.title)} (Status: {t.status.value})")
     for g in goals[:limit//4]: res.append(f"Goal: {g.title} (Status: {g.status.value})")
     for p in problems[:limit//4]: res.append(f"Problem: {p.title} (Status: {p.status.value})")
     return res

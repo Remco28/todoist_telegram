@@ -66,6 +66,20 @@ ORDINAL_REFERENCE_WORDS = {
 }
 PLAN_CACHE_TTL_SECONDS = 86400
 PLAN_AUTO_REFRESH_MAX_AGE_SECONDS = 300
+SMALLTALK_GREETINGS = {
+    "hello",
+    "hi",
+    "hey",
+    "hiya",
+    "good morning",
+    "good afternoon",
+    "good evening",
+}
+SMALLTALK_THANKS = {
+    "thanks",
+    "thank you",
+    "thx",
+}
 
 
 def _draft_now() -> datetime:
@@ -155,6 +169,28 @@ def _classify_today_query_view(text: str) -> Optional[str]:
     if any(signal in normalized for signal in today_signals):
         return "today"
     return None
+
+
+def _canonical_task_title(title: Any) -> str:
+    cleaned = re.sub(r"\s+", " ", user_facing_task_title(title)).strip()
+    return cleaned or re.sub(r"\s+", " ", str(title or "").strip())
+
+
+def _classify_smalltalk(text: str) -> Optional[str]:
+    normalized = _normalize_query_text(text)
+    if not normalized:
+        return None
+    if normalized in SMALLTALK_GREETINGS:
+        return "greeting"
+    if normalized in SMALLTALK_THANKS:
+        return "thanks"
+    return None
+
+
+def _build_smalltalk_reply(kind: str) -> str:
+    if kind == "thanks":
+        return "You're welcome. Tell me what changed, or ask what you should do today."
+    return "Hi. I can help with today's plan, quick questions, and task updates. Ask what you should do today, or tell me what changed."
 
 
 def _should_force_tonight_to_today(message: str) -> bool:
@@ -526,7 +562,7 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
             continue
 
         action_item = {
-            "title": title.strip(),
+            "title": _canonical_task_title(title),
             "action": "complete",
             "status": "done",
             "target_task_id": task_id.strip(),
@@ -598,7 +634,7 @@ def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]
             out.append(
                 {
                     "id": task_id.strip(),
-                    "title": title.strip(),
+                    "title": _canonical_task_title(title),
                     "status": str(row.get("status") or "").strip().lower(),
                 }
             )
@@ -776,6 +812,87 @@ def _sanitize_completion_extraction(
     return {"tasks": sanitized_tasks, "goals": [], "problems": [], "links": []}
 
 
+def _split_action_clauses(message: str) -> List[str]:
+    raw_parts = [part.strip() for part in re.split(r"[.!?\n]+", message or "") if part.strip()]
+    if raw_parts:
+        return raw_parts
+    cleaned = (message or "").strip()
+    return [cleaned] if cleaned else []
+
+
+def _derive_recent_named_reference_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = _completion_candidate_rows(grounding)
+    if not rows:
+        return []
+
+    open_rows = [row for row in rows if row.get("status") in {"open", "blocked"}]
+    if not open_rows:
+        return []
+
+    actions: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    ignore_terms = {
+        "mark",
+        "done",
+        "complete",
+        "completed",
+        "close",
+        "closed",
+        "delete",
+        "remove",
+        "drop",
+        "archive",
+        "discard",
+        "cancel",
+        "task",
+        "tasks",
+        "please",
+        "lets",
+        "let",
+        "already",
+        "open",
+    }
+
+    for clause in _split_action_clauses(message):
+        clause_lower = clause.lower()
+        action_name: Optional[str] = None
+        status_name: Optional[str] = None
+        if _is_archive_request(clause):
+            action_name = "archive"
+            status_name = "archived"
+        elif _is_completion_request(clause):
+            action_name = "complete"
+            status_name = "done"
+        if action_name is None or status_name is None:
+            continue
+
+        clause_terms = {term for term in _grounding_terms(clause_lower) if term not in ignore_terms}
+        if not clause_terms:
+            continue
+
+        for row in open_rows:
+            title = _canonical_task_title(row.get("title"))
+            title_terms = _grounding_terms(title.lower())
+            if not _has_term_overlap(title_terms, clause_terms):
+                continue
+            task_id = row.get("id")
+            if not isinstance(task_id, str) or not task_id.strip():
+                continue
+            dedupe_key = (action_name, task_id.strip())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            actions.append(
+                {
+                    "title": title,
+                    "action": action_name,
+                    "status": status_name,
+                    "target_task_id": task_id.strip(),
+                }
+            )
+    return actions
+
+
 def _is_create_request(message: str) -> bool:
     raw = (message or "").strip().lower()
     if not raw or is_query_like_text(raw):
@@ -904,7 +1021,7 @@ def _derive_displayed_reference_actions(message: str, grounding: Dict[str, Any])
         return []
 
     task_id = row.get("id")
-    title = row.get("title")
+    title = _canonical_task_title(row.get("title"))
     if not isinstance(task_id, str) or not task_id.strip():
         return []
     if not isinstance(title, str) or not title.strip():
@@ -947,7 +1064,7 @@ def _apply_displayed_task_reference_extraction(
         return extraction
 
     task_id = row.get("id")
-    title = row.get("title")
+    title = _canonical_task_title(row.get("title"))
     if not isinstance(task_id, str) or not task_id.strip():
         return extraction
     if not isinstance(title, str) or not title.strip():
@@ -1009,6 +1126,35 @@ def _is_explicit_displayed_reference_mutation(
         if task.get("target_task_id") != target_task_id:
             continue
         if action in {"update", "complete", "archive"} or status in {"done", "archived"}:
+            return True
+    return False
+
+
+def _is_explicit_recent_named_reference_mutation(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+) -> bool:
+    if not isinstance(extraction, dict):
+        return False
+    derived_actions = _derive_recent_named_reference_actions(message, grounding)
+    if not derived_actions:
+        return False
+    derived_ids = {
+        action.get("target_task_id")
+        for action in derived_actions
+        if isinstance(action, dict) and isinstance(action.get("target_task_id"), str)
+    }
+    tasks = extraction.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        target_task_id = task.get("target_task_id")
+        action = str(task.get("action") or "").lower()
+        status = str(task.get("status") or "").lower()
+        if target_task_id in derived_ids and (action in {"complete", "archive"} or status in {"done", "archived"}):
             return True
     return False
 
@@ -1485,7 +1631,8 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
     prepared = []
     terms = _grounding_terms(message)
     for idx, task in enumerate(task_rows):
-        title_l = (task.title or "").lower()
+        visible_title = _canonical_task_title(task.title)
+        title_l = visible_title.lower()
         notes_l = (task.notes or "").lower()
         overlap = 0
         if terms:
@@ -1503,7 +1650,7 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
                 score,
                 {
                     "id": task.id,
-                    "title": task.title,
+                    "title": visible_title,
                     "status": status,
                     "priority": task.priority,
                     "impact_score": task.impact_score,
@@ -1568,7 +1715,7 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
             if not task:
                 continue
             status = task.status.value if hasattr(task.status, "value") else str(task.status)
-            recent_refs.append({"id": task.id, "title": task.title, "status": status})
+            recent_refs.append({"id": task.id, "title": _canonical_task_title(task.title), "status": status})
         for ordinal in sorted(displayed_meta_by_ordinal):
             meta = displayed_meta_by_ordinal[ordinal]
             task = task_by_id.get(meta["id"])
@@ -1579,7 +1726,7 @@ async def _build_extraction_grounding(db: AsyncSession, user_id: str, chat_id: s
                 {
                     "ordinal": ordinal,
                     "id": task.id,
-                    "title": task.title,
+                    "title": _canonical_task_title(task.title),
                     "status": status,
                     "view_name": meta["view_name"],
                 }
@@ -1714,6 +1861,33 @@ def _task_ids_from_query_response(response: QueryResponseV1) -> List[str]:
     return out
 
 
+def _infer_task_ids_from_answer_text(answer: str, grounding: Dict[str, Any], limit: int = 6) -> List[str]:
+    answer_text = _normalize_query_text(answer)
+    if not answer_text:
+        return []
+    candidates = _completion_candidate_rows(grounding)
+    out: List[str] = []
+    seen: set[str] = set()
+    for row in candidates:
+        task_id = row.get("id")
+        if not isinstance(task_id, str) or not task_id.strip() or task_id in seen:
+            continue
+        canonical_title = _canonical_task_title(row.get("title"))
+        title_text = _normalize_query_text(canonical_title)
+        if not title_text:
+            continue
+        title_terms = set(title_text.split())
+        overlap = title_terms.intersection(set(answer_text.split()))
+        title_in_answer = title_text in answer_text
+        if not title_in_answer and len(overlap) < min(2, len(title_terms)):
+            continue
+        seen.add(task_id)
+        out.append(task_id)
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
 async def _resolve_displayed_task_id(
     db: AsyncSession,
     user_id: str,
@@ -1754,7 +1928,7 @@ async def _resolve_displayed_task_id(
 
 
 def _append_applied_item(applied: AppliedChanges, group: str, label: str) -> None:
-    cleaned = str(label or "").strip()
+    cleaned = _canonical_task_title(label)
     if not cleaned or len(applied.items) >= 40:
         return
     applied.items.append(AppliedChangeItem(group=group, label=_truncate_preview_text(cleaned, limit=240)))
@@ -1806,7 +1980,8 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
 
     entity_map = {}
     for t_data in extraction.get("tasks", []):
-        title_norm = t_data["title"].lower().strip()
+        canonical_title = _canonical_task_title(t_data.get("title"))
+        title_norm = canonical_title.lower().strip()
         action = str(t_data.get("action") or "").strip().lower()
         status_hint = str(t_data.get("status") or "").strip().lower()
         requires_target = action in {"update", "complete", "archive"} or status_hint in {"done", "archived"}
@@ -1819,8 +1994,12 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             stmt = select(Task).where(Task.user_id == user_id, Task.title_norm == title_norm, Task.status != TaskStatus.archived)
             existing = (await db.execute(stmt)).scalar_one_or_none()
         if existing:
+            existing_canonical_title = _canonical_task_title(existing.title)
+            if existing_canonical_title and existing.title != existing_canonical_title:
+                existing.title = existing_canonical_title
+                existing.title_norm = existing_canonical_title.lower().strip()
             if action not in {"complete", "archive"}:
-                existing.title = t_data["title"]
+                existing.title = canonical_title
                 existing.title_norm = title_norm
             if "priority" in t_data:
                 existing.priority = t_data.get("priority")
@@ -1879,7 +2058,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
                 continue
             task_id = f"tsk_{uuid.uuid4().hex[:12]}"
             db.add(Task(
-                id=task_id, user_id=user_id, title=t_data["title"], title_norm=title_norm,
+                id=task_id, user_id=user_id, title=canonical_title, title_norm=title_norm,
                 status=t_data.get("status", TaskStatus.open), priority=t_data.get("priority"),
                 impact_score=t_data.get("impact_score"),
                 urgency_score=t_data.get("urgency_score")
@@ -1892,7 +2071,7 @@ async def _apply_capture(db: AsyncSession, user_id: str, chat_id: str, source: s
             entity_map[(EntityType.task, title_norm)] = task_id
             touched_task_ids.append(task_id)
             applied.tasks_created += 1
-            _append_applied_item(applied, "created", t_data["title"])
+            _append_applied_item(applied, "created", canonical_title)
 
     for g_data in extraction.get("goals", []):
         title_norm = g_data["title"].lower().strip()
@@ -2131,6 +2310,10 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             await send_message(chat_id, f"Task <code>{escape_html(task_ref)}</code> not found or not owned by you.")
             return
 
+        canonical_title = _canonical_task_title(task.title)
+        if canonical_title and task.title != canonical_title:
+            task.title = canonical_title
+            task.title_norm = canonical_title.lower().strip()
         task.status = TaskStatus.done
         task.completed_at = utc_now()
         task.updated_at = utc_now()
@@ -2139,7 +2322,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             await _invalidate_today_plan_cache(user_id, chat_id)
         except Exception as exc:
             logger.error("Failed to invalidate today plan cache after /done for user %s chat %s: %s", user_id, chat_id, exc)
-        await send_message(chat_id, f"Marked as done: <b>{escape_html(user_facing_task_title(task.title))}</b>.")
+        await send_message(chat_id, f"Marked as done: <b>{escape_html(_canonical_task_title(task.title))}</b>.")
 
     elif command == "/ask":
         question = (args or "").strip()
@@ -2158,18 +2341,21 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
                 view_name=today_query_view,
             )
             return
+        query_grounding = await _build_extraction_grounding(db=db, user_id=user_id, chat_id=chat_id, message=question)
         response = await query_ask(QueryAskRequest(chat_id=chat_id, query=question), user_id=user_id, db=db)
         sent = await send_message(chat_id, format_query_answer(response.answer, response.follow_up_question))
         if not (isinstance(sent, dict) and sent.get("ok") is True):
             return
         surfaced_task_ids = _task_ids_from_query_response(response)
-        if surfaced_task_ids:
+        inferred_task_ids = _infer_task_ids_from_answer_text(response.answer, query_grounding)
+        task_ids = surfaced_task_ids[:6] if surfaced_task_ids else inferred_task_ids[:6]
+        if task_ids:
             await _remember_recent_tasks(
                 db=db,
                 user_id=user_id,
                 chat_id=chat_id,
-                task_ids=surfaced_task_ids[:6],
-                reason="query_surface",
+                task_ids=task_ids,
+                reason="query_surface" if surfaced_task_ids else "query_answer_inferred",
                 ttl_hours=12,
             )
             await db.commit()
@@ -2762,6 +2948,11 @@ async def _handle_telegram_draft_flow(
         await send_message(chat_id, "You already have a pending proposal. Reply <code>yes</code>, <code>edit ...</code>, or <code>no</code>.")
         return
 
+    smalltalk_kind = _classify_smalltalk(text)
+    if smalltalk_kind:
+        await send_message(chat_id, _build_smalltalk_reply(smalltalk_kind))
+        return
+
     today_query_view = _classify_today_query_view(text)
     if today_query_view:
         payload, served_from_cache = await _load_today_plan_payload(db, user_id, chat_id, require_fresh=True)
@@ -2809,14 +3000,15 @@ async def _handle_telegram_draft_flow(
         if not (isinstance(sent, dict) and sent.get("ok") is True):
             return
         surfaced_task_ids = _task_ids_from_query_response(response)
-        task_ids = surfaced_task_ids[:6] if surfaced_task_ids else fallback_task_ids[:6]
+        inferred_task_ids = _infer_task_ids_from_answer_text(response.answer, grounding)
+        task_ids = surfaced_task_ids[:6] if surfaced_task_ids else inferred_task_ids[:6] or fallback_task_ids[:6]
         if task_ids:
             await _remember_recent_tasks(
                 db=db,
                 user_id=user_id,
                 chat_id=chat_id,
                 task_ids=task_ids,
-                reason="query_surface" if surfaced_task_ids else "query_context",
+                reason="query_surface" if surfaced_task_ids else "query_answer_inferred" if inferred_task_ids else "query_context",
                 ttl_hours=12,
             )
             await db.commit()
@@ -2925,6 +3117,10 @@ async def _handle_telegram_draft_flow(
         grounding,
         allow_heuristic_resolution=used_extract_fallback,
     )
+    if used_extract_fallback and not _has_actionable_entities(extraction):
+        named_recent_actions = _derive_recent_named_reference_actions(text, grounding)
+        if named_recent_actions:
+            extraction = {"tasks": named_recent_actions, "goals": [], "problems": [], "links": []}
     extraction = _resolve_relative_due_date_overrides(text, extraction)
     unresolved_mutations = _unresolved_mutation_titles(extraction)
     if unresolved_mutations:
@@ -2966,7 +3162,8 @@ async def _handle_telegram_draft_flow(
     _validate_extraction_payload(extraction)
     planner_confidence = _planner_confidence(planned)
     explicit_displayed_mutation = _is_explicit_displayed_reference_mutation(text, extraction, grounding)
-    if planner_confidence < CLARIFY_ACTION_CONFIDENCE and not explicit_displayed_mutation:
+    explicit_recent_named_mutation = _is_explicit_recent_named_reference_mutation(text, extraction, grounding)
+    if planner_confidence < CLARIFY_ACTION_CONFIDENCE and not explicit_displayed_mutation and not explicit_recent_named_mutation:
         await send_message(chat_id, _build_low_confidence_clarification(extraction))
         return
     auto_apply, auto_reason = _autopilot_decision(text, extraction, planned)

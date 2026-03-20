@@ -113,6 +113,17 @@ class TestFormattersEscapeHtmlContent:
         assert "Created" in result
         assert "1 task(s) created" not in result
 
+    def test_format_capture_ack_normalizes_wrapper_labels(self):
+        result = format_capture_ack(
+            {
+                "items": [
+                    {"group": "completed", "label": "Move 'Complete Worker's Compensation form for employee' to today"},
+                ]
+            }
+        )
+        assert "Complete Worker's Compensation form for employee" in result
+        assert "Move &#x27;Complete Worker" not in result
+
     def test_format_query_answer_escapes_dynamic_content(self):
         answer = "Use <script>alert(1)</script> & keep moving."
         follow_up = "Need <more> details?"

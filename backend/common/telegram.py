@@ -436,7 +436,7 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
                     continue
                 lines.extend(["", f"<b>{headings.get(group, 'Changes')}</b>"])
                 for item in group_items:
-                    lines.append(f"• {escape_html(item['label'].strip())}")
+                    lines.append(f"• {escape_html(user_facing_task_title(item['label']).strip())}")
             overflow = len(normalized_items) - len(shown)
             if overflow > 0:
                 lines.extend(["", f"<i>+{overflow} more change(s)</i>"])

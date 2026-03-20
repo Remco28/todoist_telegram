@@ -525,7 +525,10 @@ class LLMAdapter:
         prompt = (
             "Operation: query.\n"
             "Answer based only on provided context.\n"
-            "Return JSON with schema_version=query.v1, mode=query, answer, confidence."
+            "Keep the answer concise and directly responsive to the user's request.\n"
+            "If the user is just greeting or making small talk without asking for state, reply briefly and do not enumerate tasks or goals.\n"
+            "If the answer mentions concrete tasks, goals, or problems from context, include their ids in surfaced_entity_ids.\n"
+            "Return JSON with schema_version=query.v1, mode=query, answer, confidence, and optional surfaced_entity_ids."
         )
         try:
             raw = await self._invoke_operation(

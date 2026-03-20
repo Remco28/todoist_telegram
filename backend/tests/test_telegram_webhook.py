@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.main import (
     handle_telegram_command,
+    _apply_capture,
     _draft_set_awaiting_edit_input,
     _draft_set_proposal_message_id,
     _format_action_draft_preview,
@@ -137,6 +138,21 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert resp.status_code == 200
         mocked.assert_awaited_once()
         assert mocked.await_args.args[0] == "/today"
+
+
+def test_greeting_message_returns_brief_reply(app_no_db, mock_send):
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Hello"), headers=_headers())
+        assert resp.status_code == 200
+        build_grounding.assert_not_awaited()
+    text = mock_send.await_args.args[1]
+    assert text.startswith("Hi.")
+    assert "Answer" not in text
+    assert "Current open tasks include" not in text
 
 
 def test_natural_language_today_query_uses_planner_view(app_no_db, mock_send, mock_db):
@@ -645,7 +661,7 @@ def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no
         assert "could not find open matching tasks" in mock_send.await_args.args[1].lower()
 
 
-def test_soft_completion_statement_without_resolved_actions_requests_clarification(app_no_db, mock_send):
+def test_soft_completion_statement_with_explicit_recent_match_creates_review_draft(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.6, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
@@ -660,6 +676,8 @@ def test_soft_completion_statement_without_resolved_actions_requests_clarificati
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
     ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
@@ -679,11 +697,20 @@ def test_soft_completion_statement_without_resolved_actions_requests_clarificati
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_not_awaited()
-        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Clean mechanical keyboard",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_kbd",
+            }
+        ]
 
 
-def test_completion_high_confidence_without_actionable_entities_does_not_autopilot(app_no_db, mock_send):
+def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.95, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
@@ -723,9 +750,24 @@ def test_completion_high_confidence_without_actionable_entities_does_not_autopil
         )
         assert resp.status_code == 200
         create_draft.assert_not_awaited()
-        apply_capture.assert_not_awaited()
-        enqueue_sync.assert_not_awaited()
-        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
+        apply_capture.assert_awaited_once()
+        enqueue_sync.assert_awaited_once()
+        applied_extraction = apply_capture.await_args.kwargs["extraction"]
+        assert applied_extraction["tasks"] == [
+            {
+                "title": "Do French homework",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_1",
+            },
+            {
+                "title": "Memorize a script",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_2",
+            },
+        ]
+        assert "updated" in mock_send.await_args.args[1].lower()
 
 
 def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, mock_send):
@@ -924,11 +966,73 @@ def test_displayed_task_delete_reference_creates_archive_draft(app_no_db, mock_s
         extraction = create_draft.await_args.kwargs["extraction"]
         assert extraction["tasks"] == [
             {
-                "title": "Move worker's compensation form to today",
+                "title": "worker's compensation form",
                 "action": "archive",
                 "status": "archived",
                 "target_task_id": "tsk_bad",
             }
+        ]
+
+
+def test_recent_named_references_create_multi_action_draft(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.1,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
+            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
+            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Let's delete the burpee task. Amy found the backpack already, mark that as done."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Delete the burpee task",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "tsk_burpee",
+            },
+            {
+                "title": "Remind Amy about the backpack",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_backpack",
+            },
         ]
 
 
@@ -1294,6 +1398,32 @@ def test_command_ask_stores_surfaced_task_context(mock_send, mock_db):
     mock_db.commit.assert_awaited_once()
 
 
+def test_command_ask_infers_task_context_from_answer_text(mock_send, mock_db):
+    grounding = {
+        "tasks": [
+            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
+            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
+        ],
+        "recent_task_refs": [],
+    }
+    response = QueryResponseV1(
+        answer="Open tasks include: Delete the burpee task and Remind Amy about the backpack.",
+        confidence=0.84,
+    )
+    with patch("api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding), patch(
+        "api.main.query_ask", new_callable=AsyncMock, return_value=response
+    ), patch("api.main._remember_recent_tasks", new_callable=AsyncMock) as remember:
+        asyncio.run(handle_telegram_command("/ask", "what is open", "12345", "usr_abc", mock_db))
+    remember.assert_awaited_once_with(
+        db=mock_db,
+        user_id="usr_abc",
+        chat_id="12345",
+        task_ids=["tsk_burpee", "tsk_backpack"],
+        reason="query_answer_inferred",
+        ttl_hours=12,
+    )
+
+
 def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
     mock_redis.get.return_value = json.dumps(
         {
@@ -1448,6 +1578,49 @@ def test_command_done_rejects_unknown_ordinal_without_mutation(mock_db, mock_sen
     text = mock_send.await_args.args[1]
     assert "most recent <code>/today</code> or <code>/focus</code>" in text
     assert "Advanced: you can still use <code>/done tsk_123</code>" in text
+
+
+def test_apply_capture_repairs_wrapper_title_on_touched_task(mock_db):
+    existing = Task(
+        id="tsk_wrap",
+        user_id="usr_abc",
+        title="Move 'Complete Worker's Compensation form for employee' to today",
+        title_norm="move complete workers compensation form for employee to today",
+        status=TaskStatus.open,
+    )
+    result = Mock()
+    result.scalar_one_or_none.return_value = existing
+    mock_db.execute.return_value = result
+
+    _, applied = asyncio.run(
+        _apply_capture(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            source="telegram",
+            message="The first one is complete.",
+            extraction={
+                "tasks": [
+                    {
+                        "title": "Complete Worker's Compensation form for employee",
+                        "action": "complete",
+                        "status": "done",
+                        "target_task_id": "tsk_wrap",
+                    }
+                ],
+                "goals": [],
+                "problems": [],
+                "links": [],
+            },
+            request_id="req_wrap",
+            commit=False,
+            enqueue_summary=False,
+        )
+    )
+
+    assert existing.title == "Complete Worker's Compensation form for employee"
+    assert existing.title_norm == "complete worker's compensation form for employee"
+    assert applied.items[0].label == "Complete Worker's Compensation form for employee"
 
 
 def test_action_draft_preview_groups_mixed_task_actions():
