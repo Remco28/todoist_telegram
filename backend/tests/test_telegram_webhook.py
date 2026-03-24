@@ -433,7 +433,7 @@ def test_non_command_unresolved_mutation_requests_clarification(app_no_db, mock_
         assert mock_send.await_count >= 1
         msg = mock_send.await_args_list[-1].args[1]
         assert "I need one clarification before applying changes" in msg
-        assert "Which existing task should I update" in msg
+        assert "Which existing task do you mean" in msg
 
 
 def test_non_command_planner_invalid_uses_extract_fallback(app_no_db, mock_send):
@@ -1034,6 +1034,192 @@ def test_recent_named_references_create_multi_action_draft(app_no_db, mock_send)
                 "target_task_id": "tsk_backpack",
             },
         ]
+
+
+def test_question_form_archive_request_overrides_query_intent(app_no_db, mock_send):
+    planned = {
+        "intent": "query",
+        "scope": "single",
+        "confidence": 0.7,
+        "needs_confirmation": False,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as query_ask, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Can you delete the burpee task?"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        query_ask.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Delete the burpee task",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "tsk_burpee",
+            }
+        ]
+
+
+def test_question_form_completion_request_overrides_query_intent(app_no_db, mock_send):
+    planned = {
+        "intent": "query",
+        "scope": "single",
+        "confidence": 0.6,
+        "needs_confirmation": False,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as query_ask, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Could you mark the backpack one done?"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        query_ask.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Remind Amy about the backpack",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_backpack",
+            }
+        ]
+
+
+def test_ambiguous_targeted_update_asks_candidate_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.8,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {
+                "id": "tsk_apartment_1",
+                "title": "Reach out to Ben and Jason regarding the apartment renovation",
+                "status": "open",
+            },
+            {
+                "id": "tsk_apartment_2",
+                "title": "Figure out the schedule for the apartment renovation",
+                "status": "open",
+            },
+        ],
+        "recent_task_refs": [
+            {
+                "id": "tsk_apartment_1",
+                "title": "Reach out to Ben and Jason regarding the apartment renovation",
+                "status": "open",
+            },
+            {
+                "id": "tsk_apartment_2",
+                "title": "Figure out the schedule for the apartment renovation",
+                "status": "open",
+            },
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={
+            "tasks": [{"title": "Apartment renovation", "action": "update", "due_date": "2026-03-25"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Can you move the apartment task to tomorrow?"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_not_awaited()
+        apply_capture.assert_not_awaited()
+        text = mock_send.await_args.args[1]
+        assert "Which task do you want to update?" in text
+        assert "Reach out to Ben and Jason regarding the apartment renovation" in text
+        assert "Figure out the schedule for the apartment renovation" in text
 
 
 def test_unrelated_targeted_update_is_rewritten_to_create(app_no_db, mock_send):

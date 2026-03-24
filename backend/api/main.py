@@ -50,6 +50,55 @@ AUTOPILOT_ACTION_CONFIDENCE = 0.90
 CLARIFY_ACTION_CONFIDENCE = 0.50
 COMPLETION_INTENT_TOKENS = ("mark", "complete", "completed", "close", "closed")
 ARCHIVE_INTENT_TOKENS = ("delete", "remove", "drop", "archive", "discard", "cancel")
+UPDATE_INTENT_TOKENS = ("move", "reschedule", "update", "change", "set", "rename")
+POLITE_ACTION_PREFIXES = ("can you ", "could you ", "would you ", "will you ", "please ", "pls ")
+ACTION_EXPLANATION_PREFIXES = (
+    "how do i ",
+    "how do you ",
+    "what if i ",
+    "what happens if ",
+    "can i ",
+    "should i ",
+    "why should i ",
+)
+ACTION_REFERENCE_TOKENS = ("that", "this", "it", "those", "them", "these", "one", "ones", "task", "tasks", "item")
+TASK_MATCH_IGNORE_TERMS = {
+    "mark",
+    "done",
+    "complete",
+    "completed",
+    "close",
+    "closed",
+    "delete",
+    "remove",
+    "drop",
+    "archive",
+    "discard",
+    "cancel",
+    "move",
+    "reschedule",
+    "update",
+    "change",
+    "set",
+    "rename",
+    "task",
+    "tasks",
+    "item",
+    "items",
+    "ones",
+    "one",
+    "please",
+    "lets",
+    "let",
+    "already",
+    "open",
+    "today",
+    "tonight",
+    "tomorrow",
+    "week",
+    "month",
+    "day",
+}
 ORDINAL_REFERENCE_WORDS = {
     "first": 1,
     "second": 2,
@@ -191,6 +240,46 @@ def _build_smalltalk_reply(kind: str) -> str:
     if kind == "thanks":
         return "You're welcome. Tell me what changed, or ask what you should do today."
     return "Hi. I can help with today's plan, quick questions, and task updates. Ask what you should do today, or tell me what changed."
+
+
+def _is_explanatory_action_query(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw:
+        return False
+    return any(raw.startswith(prefix) for prefix in ACTION_EXPLANATION_PREFIXES)
+
+
+def _message_has_action_verb(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw:
+        return False
+    if _contains_word(raw, "mark") and _contains_word(raw, "done"):
+        return True
+    token_sets = (COMPLETION_INTENT_TOKENS, ARCHIVE_INTENT_TOKENS, UPDATE_INTENT_TOKENS)
+    for tokens in token_sets:
+        if any(_contains_word(raw, token) for token in tokens):
+            return True
+    return any(raw.startswith(prefix) for prefix in ("add ", "create ", "put "))
+
+
+def _is_question_form_action_request(message: str) -> bool:
+    raw = (message or "").strip().lower()
+    if not raw or _is_explanatory_action_query(raw):
+        return False
+    if not _message_has_action_verb(raw):
+        return False
+    if any(raw.startswith(prefix) for prefix in POLITE_ACTION_PREFIXES):
+        return True
+    if raw.endswith("?") and not any(
+        raw.startswith(prefix)
+        for prefix in ("what ", "which ", "who ", "when ", "where ", "why ", "how ", "do i ", "am i ")
+    ):
+        return True
+    return False
+
+
+def _should_treat_query_like_text_as_action(message: str) -> bool:
+    return _is_question_form_action_request(message)
 
 
 def _should_force_tonight_to_today(message: str) -> bool:
@@ -494,7 +583,7 @@ def _derive_bulk_complete_actions(message: str, grounding: Dict[str, Any]) -> Li
 
 def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw = (message or "").lower()
-    if is_query_like_text(raw):
+    if is_query_like_text(raw) and not _should_treat_query_like_text_as_action(raw):
         return []
 
     has_reference = any(
@@ -582,7 +671,9 @@ def _derive_reference_complete_actions(message: str, grounding: Dict[str, Any]) 
 
 def _is_completion_request(message: str) -> bool:
     raw = (message or "").strip().lower()
-    if not raw or is_query_like_text(raw):
+    if not raw or (is_query_like_text(raw) and not _should_treat_query_like_text_as_action(raw)):
+        return False
+    if _is_explanatory_action_query(raw):
         return False
     has_explicit_completion = any(_contains_word(raw, token) for token in COMPLETION_INTENT_TOKENS)
     if has_explicit_completion:
@@ -608,6 +699,127 @@ def _has_term_overlap(title_terms: set[str], msg_terms: set[str]) -> bool:
             if m == t or m.startswith(t) or t.startswith(m):
                 return True
     return False
+
+
+def _task_reference_candidates(grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(grounding, dict):
+        return []
+    candidates: Dict[str, Dict[str, Any]] = {}
+
+    def add_rows(rows: Any, source: str) -> None:
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            task_id = row.get("id")
+            title = row.get("title")
+            if not isinstance(task_id, str) or not task_id.strip():
+                continue
+            if not isinstance(title, str) or not title.strip():
+                continue
+            existing = candidates.get(task_id.strip())
+            if not existing:
+                existing = {
+                    "id": task_id.strip(),
+                    "title": _canonical_task_title(title),
+                    "status": str(row.get("status") or "").strip().lower(),
+                    "sources": set(),
+                }
+                candidates[task_id.strip()] = existing
+            existing["sources"].add(source)
+            if source == "displayed" and isinstance(row.get("ordinal"), int):
+                existing["ordinal"] = row.get("ordinal")
+            if source == "displayed" and isinstance(row.get("view_name"), str):
+                existing["view_name"] = row.get("view_name")
+
+    add_rows(grounding.get("tasks"), "grounding")
+    add_rows(grounding.get("recent_task_refs"), "recent")
+    add_rows(grounding.get("displayed_task_refs"), "displayed")
+
+    return list(candidates.values())
+
+
+def _score_task_reference_candidate(clause: str, candidate: Dict[str, Any]) -> Dict[str, Any]:
+    clause_text = _normalize_query_text(clause)
+    if not clause_text:
+        return {"score": 0, "evidence": []}
+    title_text = _normalize_query_text(candidate.get("title"))
+    if not title_text:
+        return {"score": 0, "evidence": []}
+
+    clause_terms = {term for term in _grounding_terms(clause_text) if term not in TASK_MATCH_IGNORE_TERMS}
+    title_terms = _grounding_terms(title_text)
+    overlap_terms = {
+        term
+        for term in clause_terms
+        if any(term == title_term or term.startswith(title_term) or title_term.startswith(term) for title_term in title_terms)
+    }
+
+    score = 0
+    evidence: List[str] = []
+    if title_text in clause_text:
+        score += 10
+        evidence.append("title_exact")
+    elif overlap_terms:
+        score += len(overlap_terms) * 3
+        evidence.append(f"term_overlap:{','.join(sorted(overlap_terms))}")
+        if len(overlap_terms) >= 2:
+            score += 2
+    else:
+        return {"score": 0, "evidence": []}
+
+    sources = candidate.get("sources") or set()
+    if "displayed" in sources:
+        score += 4
+        evidence.append("displayed")
+    if "recent" in sources:
+        score += 3
+        evidence.append("recent")
+    if "grounding" in sources:
+        score += 1
+        evidence.append("grounding")
+    if candidate.get("status") in {"open", "blocked"}:
+        score += 1
+        evidence.append("open")
+
+    return {"score": score, "evidence": evidence}
+
+
+def _rank_task_reference_candidates(clause: str, grounding: Dict[str, Any], *, open_only: bool = True) -> List[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    for candidate in _task_reference_candidates(grounding):
+        if open_only and candidate.get("status") not in {"open", "blocked"}:
+            continue
+        scored = _score_task_reference_candidate(clause, candidate)
+        score = scored.get("score") or 0
+        if score <= 0:
+            continue
+        ranked.append(
+            {
+                "id": candidate["id"],
+                "title": candidate["title"],
+                "status": candidate.get("status"),
+                "sources": sorted(candidate.get("sources") or []),
+                "score": score,
+                "evidence": scored.get("evidence") or [],
+            }
+        )
+    ranked.sort(key=lambda item: (item["score"], 1 if "displayed" in item["sources"] else 0, 1 if "recent" in item["sources"] else 0), reverse=True)
+    return ranked
+
+
+def _best_task_reference_candidate(clause: str, grounding: Dict[str, Any], *, open_only: bool = True) -> Optional[Dict[str, Any]]:
+    ranked = _rank_task_reference_candidates(clause, grounding, open_only=open_only)
+    if not ranked:
+        return None
+    top = ranked[0]
+    runner_up_score = ranked[1]["score"] if len(ranked) > 1 else 0
+    if "title_exact" in (top.get("evidence") or []) and top["score"] >= 10:
+        return top
+    if top["score"] >= 6 and (top["score"] - runner_up_score) >= 2:
+        return top
+    return None
 
 
 def _completion_candidate_rows(grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -719,6 +931,16 @@ def _resolve_completion_actions(message: str, grounding: Dict[str, Any]) -> List
                     if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
                 }
                 selected_rows = [row for row in open_rows if row["id"] in recent_ids] or open_rows
+            else:
+                best_candidate = _best_task_reference_candidate(message, grounding, open_only=True)
+                if best_candidate:
+                    selected_rows = [
+                        {
+                            "id": best_candidate["id"],
+                            "title": best_candidate["title"],
+                            "status": best_candidate.get("status"),
+                        }
+                    ]
     actions: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for row in selected_rows:
@@ -821,37 +1043,11 @@ def _split_action_clauses(message: str) -> List[str]:
 
 
 def _derive_recent_named_reference_actions(message: str, grounding: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows = _completion_candidate_rows(grounding)
-    if not rows:
-        return []
-
-    open_rows = [row for row in rows if row.get("status") in {"open", "blocked"}]
-    if not open_rows:
+    if not isinstance(grounding, dict):
         return []
 
     actions: List[Dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    ignore_terms = {
-        "mark",
-        "done",
-        "complete",
-        "completed",
-        "close",
-        "closed",
-        "delete",
-        "remove",
-        "drop",
-        "archive",
-        "discard",
-        "cancel",
-        "task",
-        "tasks",
-        "please",
-        "lets",
-        "let",
-        "already",
-        "open",
-    }
 
     for clause in _split_action_clauses(message):
         clause_lower = clause.lower()
@@ -865,29 +1061,24 @@ def _derive_recent_named_reference_actions(message: str, grounding: Dict[str, An
             status_name = "done"
         if action_name is None or status_name is None:
             continue
-
-        clause_terms = {term for term in _grounding_terms(clause_lower) if term not in ignore_terms}
-        if not clause_terms:
-            continue
-
-        for row in open_rows:
-            title = _canonical_task_title(row.get("title"))
-            title_terms = _grounding_terms(title.lower())
-            if not _has_term_overlap(title_terms, clause_terms):
+        if " and " in clause_lower:
+            clause_candidates = [item for item in _rank_task_reference_candidates(clause, grounding, open_only=True) if item["score"] >= 6]
+        else:
+            best_candidate = _best_task_reference_candidate(clause, grounding, open_only=True)
+            clause_candidates = [best_candidate] if best_candidate else []
+        for candidate in clause_candidates:
+            if not candidate:
                 continue
-            task_id = row.get("id")
-            if not isinstance(task_id, str) or not task_id.strip():
-                continue
-            dedupe_key = (action_name, task_id.strip())
+            dedupe_key = (action_name, candidate["id"])
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
             actions.append(
                 {
-                    "title": title,
+                    "title": candidate["title"],
                     "action": action_name,
                     "status": status_name,
-                    "target_task_id": task_id.strip(),
+                    "target_task_id": candidate["id"],
                 }
             )
     return actions
@@ -895,7 +1086,9 @@ def _derive_recent_named_reference_actions(message: str, grounding: Dict[str, An
 
 def _is_create_request(message: str) -> bool:
     raw = (message or "").strip().lower()
-    if not raw or is_query_like_text(raw):
+    if not raw or (is_query_like_text(raw) and not _should_treat_query_like_text_as_action(raw)):
+        return False
+    if _is_explanatory_action_query(raw):
         return False
     has_create_verb = any(token in raw for token in ("add ", "create ", "new task", "put "))
     has_task_noun = any(
@@ -968,7 +1161,7 @@ def _sanitize_create_extraction(
 
 def _extract_displayed_task_ordinal(message: str) -> Optional[int]:
     raw = (message or "").strip().lower()
-    if not raw or is_query_like_text(raw):
+    if not raw or (is_query_like_text(raw) and not _should_treat_query_like_text_as_action(raw)):
         return None
     for word, ordinal in ORDINAL_REFERENCE_WORDS.items():
         if _contains_word(raw, word):
@@ -1007,7 +1200,9 @@ def _displayed_task_ref_by_ordinal(grounding: Dict[str, Any], ordinal: Optional[
 
 def _is_archive_request(message: str) -> bool:
     raw = (message or "").strip().lower()
-    if not raw or is_query_like_text(raw):
+    if not raw or (is_query_like_text(raw) and not _should_treat_query_like_text_as_action(raw)):
+        return False
+    if _is_explanatory_action_query(raw):
         return False
     if "get rid of" in raw:
         return True
@@ -1185,7 +1380,24 @@ def _sanitize_targeted_task_actions(message: str, extraction: Dict[str, Any], gr
             sanitized.append(task)
             continue
         target_id = task.get("target_task_id")
-        if not isinstance(target_id, str) or not target_id.strip():
+        action = str(task.get("action") or "").lower()
+        status = str(task.get("status") or "").lower()
+        requires_target = action in {"update", "complete", "archive"} or status in {"done", "archived"}
+        if (not isinstance(target_id, str) or not target_id.strip()) and requires_target:
+            candidate_seed = " ".join(
+                part for part in (message, task.get("title"), task.get("notes")) if isinstance(part, str) and part.strip()
+            )
+            best_candidate = _best_task_reference_candidate(candidate_seed, grounding, open_only=True)
+            if best_candidate:
+                normalized = dict(task)
+                normalized["target_task_id"] = best_candidate["id"]
+                normalized["title"] = best_candidate["title"]
+                target_id = best_candidate["id"]
+                task = normalized
+            else:
+                sanitized.append(task)
+                continue
+        elif not isinstance(target_id, str) or not target_id.strip():
             sanitized.append(task)
             continue
 
@@ -1221,6 +1433,53 @@ def _sanitize_targeted_task_actions(message: str, extraction: Dict[str, Any], gr
     out = dict(extraction)
     out["tasks"] = sanitized
     return out
+
+
+def _detected_mutation_phrase(message: str, task: Optional[Dict[str, Any]] = None) -> str:
+    action = str((task or {}).get("action") or "").lower()
+    status = str((task or {}).get("status") or "").lower()
+    if action == "archive" or status == "archived" or _is_archive_request(message):
+        return "delete"
+    if action == "complete" or status == "done" or _is_completion_request(message):
+        return "mark as done"
+    if any(_contains_word((message or "").lower(), token) for token in UPDATE_INTENT_TOKENS):
+        return "update"
+    return "change"
+
+
+def _build_candidate_task_clarification(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any]) -> Optional[str]:
+    candidate_queries: List[tuple[str, Optional[Dict[str, Any]]]] = []
+    if isinstance(extraction, dict):
+        tasks = extraction.get("tasks")
+        if isinstance(tasks, list):
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                action = str(task.get("action") or "").lower()
+                status = str(task.get("status") or "").lower()
+                requires_target = action in {"update", "complete", "archive"} or status in {"done", "archived"}
+                if requires_target and not task.get("target_task_id"):
+                    query = task.get("title") if isinstance(task.get("title"), str) and task.get("title").strip() else message
+                    candidate_queries.append((query, task))
+    if not candidate_queries and _message_has_action_verb(message):
+        candidate_queries.append((message, None))
+    for query, task in candidate_queries:
+        ranked = _rank_task_reference_candidates(query, grounding, open_only=True)
+        if not ranked:
+            continue
+        action_phrase = _detected_mutation_phrase(message, task)
+        if len(ranked) == 1 or ranked[0]["score"] >= ranked[1]["score"] + 2:
+            return (
+                f"Do you mean <code>{escape_html(ranked[0]['title'])}</code>?\n"
+                f"Tell me if that is the task you want to {action_phrase}."
+            )
+        options = "\n".join(f"• <code>{escape_html(item['title'])}</code>" for item in ranked[:2])
+        return (
+            f"Which task do you want to {action_phrase}?\n"
+            f"{options}\n\n"
+            "Reply with the task name, and I will revise the change."
+        )
+    return None
 
 
 def _planner_confidence(planned: Any) -> float:
@@ -2970,6 +3229,28 @@ async def _handle_telegram_draft_flow(
     planned = await adapter.plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
     intent = planned.get("intent") if isinstance(planned, dict) else None
     actions = planned.get("actions") if isinstance(planned, dict) else None
+    action_override_reason: Optional[str] = None
+    if intent == "query":
+        if _extract_displayed_task_ordinal(text) is not None and _message_has_action_verb(text):
+            intent = "action"
+            actions = []
+            action_override_reason = "displayed_reference_mutation"
+        elif _derive_bulk_complete_actions(text, grounding):
+            intent = "action"
+            actions = []
+            action_override_reason = "bulk_completion_request"
+        elif _derive_recent_named_reference_actions(text, grounding):
+            intent = "action"
+            actions = []
+            action_override_reason = "recent_named_reference"
+        elif _is_create_request(text):
+            intent = "action"
+            actions = []
+            action_override_reason = "create_request"
+        elif _message_has_action_verb(text) and _best_task_reference_candidate(text, grounding, open_only=True):
+            intent = "action"
+            actions = []
+            action_override_reason = "strong_recent_task_match"
 
     db.add(
         EventLog(
@@ -2987,6 +3268,17 @@ async def _handle_telegram_draft_flow(
             created_at=utc_now(),
         )
     )
+    if action_override_reason:
+        db.add(
+            EventLog(
+                id=str(uuid.uuid4()),
+                request_id=request_id,
+                user_id=user_id,
+                event_type="telegram_action_intent_override",
+                payload_json={"chat_id": chat_id, "reason": action_override_reason},
+                created_at=utc_now(),
+            )
+        )
     await db.commit()
 
     if intent == "query":
@@ -3124,12 +3416,16 @@ async def _handle_telegram_draft_flow(
     extraction = _resolve_relative_due_date_overrides(text, extraction)
     unresolved_mutations = _unresolved_mutation_titles(extraction)
     if unresolved_mutations:
+        clarification = _build_candidate_task_clarification(text, extraction, grounding)
+        if clarification:
+            await send_message(chat_id, clarification)
+            return
         unresolved_preview = ", ".join(escape_html(t) for t in unresolved_mutations[:3])
         await send_message(
             chat_id,
             "I need one clarification before applying changes:\n"
-            f"• Which existing task should I update for: {unresolved_preview}?\n\n"
-            "Reply with the task id, or ask me to list open tasks.",
+            f"• Which existing task do you mean for: {unresolved_preview}?\n\n"
+            "Reply with the task name, and I will revise the proposal.",
         )
         return
     if not _has_actionable_entities(extraction):
@@ -3152,6 +3448,10 @@ async def _handle_telegram_draft_flow(
                 )
             )
             await db.commit()
+        clarification = _build_candidate_task_clarification(text, extraction, grounding)
+        if clarification:
+            await send_message(chat_id, clarification)
+            return
         await send_message(
             chat_id,
             "I did not find clear actions to apply yet.\n"
