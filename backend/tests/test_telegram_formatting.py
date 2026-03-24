@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_query_answer, format_capture_ack,
+    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -77,6 +77,18 @@ class TestFormattersEscapeHtmlContent:
 
     def test_format_focus_mode_empty_state_is_not_command_dependent(self):
         assert format_focus_mode({"today_plan": []}) == "Nothing to focus on right now."
+
+    def test_format_urgent_tasks_lists_due_dates(self):
+        rendered = format_urgent_tasks(
+            [
+                {"id": "tsk_1", "title": "Register for the 401k plan", "due_date": "2026-03-25"},
+                {"id": "tsk_2", "title": "Submit payroll correction", "due_date": None},
+            ]
+        )
+        assert "Urgent Items" in rendered
+        assert "Register for the 401k plan" in rendered
+        assert "Due 2026-03-25" in rendered
+        assert "Submit payroll correction" in rendered
 
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {

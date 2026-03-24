@@ -52,11 +52,11 @@ cd /app
 
 The current command list is:
 - `/start` - Link this chat
-- `/today` - Show today's plan
-- `/plan` - Refresh the plan
-- `/focus` - Show top tasks
-- `/done` - Mark a task done
-- `/ask` - Ask a read-only question
+- `/today` - Show what needs attention today
+- `/urgent` - Show high-priority items
+
+Compatibility note:
+- Legacy commands `/plan`, `/focus`, `/done`, and `/ask` still work in the backend during migration, but they are intentionally omitted from the visible Telegram command menu.
 
 ## Verification
 

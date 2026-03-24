@@ -39,7 +39,7 @@ from api.schemas import (
 )
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message, edit_message, answer_callback_query, build_draft_reply_markup,
-    format_today_plan, format_plan_refresh_ack, format_focus_mode, format_capture_ack,
+    format_today_plan, format_plan_refresh_ack, format_focus_mode, format_urgent_tasks, format_capture_ack,
     escape_html, is_query_like_text, format_query_answer, user_facing_task_title
 )
 
@@ -2508,6 +2508,36 @@ async def _send_today_plan_view(
         await _remember_displayed_tasks(db, user_id, chat_id, task_ids, view_name)
         await db.commit()
 
+
+async def _send_urgent_task_view(db: AsyncSession, user_id: str, chat_id: str) -> None:
+    urgent_tasks = (
+        await db.execute(
+            select(Task)
+            .where(
+                Task.user_id == user_id,
+                Task.status.in_([TaskStatus.open, TaskStatus.blocked]),
+                Task.priority == 1,
+            )
+            .order_by(Task.due_date.asc().nulls_last(), Task.updated_at.desc())
+            .limit(12)
+        )
+    ).scalars().all()
+    payload = [
+        {
+            "id": task.id,
+            "title": _canonical_task_title(task.title),
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+        }
+        for task in urgent_tasks
+    ]
+    sent = await send_message(chat_id, format_urgent_tasks(payload))
+    if not (isinstance(sent, dict) and sent.get("ok") is True):
+        return
+    task_ids = [task["id"] for task in payload if isinstance(task.get("id"), str) and task.get("id")]
+    if task_ids:
+        await _remember_displayed_tasks(db, user_id, chat_id, task_ids, "urgent")
+        await db.commit()
+
 # --- Internal Helpers for Integration Routing ---
 
 async def handle_telegram_command(command: str, args: Optional[str], chat_id: str, user_id: str, db: AsyncSession):
@@ -2522,6 +2552,9 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             served_from_cache=served_from_cache,
             view_name="today",
         )
+
+    elif command == "/urgent":
+        await _send_urgent_task_view(db, user_id, chat_id)
 
     elif command == "/plan":
         job_id = str(uuid.uuid4())
@@ -2620,7 +2653,7 @@ async def handle_telegram_command(command: str, args: Optional[str], chat_id: st
             await db.commit()
 
     else:
-        supported = "/today - Show today's plan\n/plan - Refresh plan\n/focus - Show top 3 tasks\n/done &lt;number&gt; - Mark an item from your latest list as done\n/ask &lt;question&gt; - Ask a read-only question"
+        supported = "/today - Show what needs attention today\n/urgent - Show high-priority items"
         await send_message(chat_id, f"Unknown command. Supported:\n{supported}")
 
 

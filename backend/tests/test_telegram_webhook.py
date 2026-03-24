@@ -1527,6 +1527,52 @@ def test_command_today_rebuilds_live_when_cached_plan_is_stale(mock_redis, mock_
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_live"], "today")
 
 
+def test_command_urgent_lists_high_priority_tasks(mock_send, mock_db):
+    result = Mock()
+    scalars_result = Mock()
+    scalars_result.all.return_value = [
+        Task(
+            id="tsk_urgent_1",
+            user_id="usr_abc",
+            title="Register for the 401k plan",
+            title_norm="register for the 401k plan",
+            status=TaskStatus.open,
+            priority=1,
+            due_date=date(2026, 3, 25),
+        ),
+        Task(
+            id="tsk_urgent_2",
+            user_id="usr_abc",
+            title="Submit payroll correction",
+            title_norm="submit payroll correction",
+            status=TaskStatus.blocked,
+            priority=1,
+        ),
+    ]
+    result.scalars.return_value = scalars_result
+    mock_db.execute.return_value = result
+    with patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+        asyncio.run(handle_telegram_command("/urgent", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "Urgent Items" in text
+    assert "Register for the 401k plan" in text
+    assert "Submit payroll correction" in text
+    assert "Due 2026-03-25" in text
+    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_urgent_1", "tsk_urgent_2"], "urgent")
+    mock_db.commit.assert_awaited_once()
+
+
+def test_unknown_command_shows_minimal_visible_menu(mock_send, mock_db):
+    asyncio.run(handle_telegram_command("/nope", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "/today" in text
+    assert "/urgent" in text
+    assert "/plan" not in text
+    assert "/focus" not in text
+    assert "/done" not in text
+    assert "/ask" not in text
+
+
 def test_command_ask_returns_query_answer(mock_send, mock_db):
     with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
         mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)

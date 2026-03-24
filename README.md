@@ -230,12 +230,11 @@ Examples:
 - Reply `yes` to apply a proposal.
 
 Useful Telegram commands:
-- `/today` to view the current ranked plan.
-- `/focus` to view the top 3 current tasks.
-- `/plan` to refresh the plan, then `/today` to view it.
-- `/done 2` to complete the second item from your most recent `/today` or `/focus` list.
-- `/done tsk_123` to complete a task directly by id if you already know it.
-- `/ask What tasks are blocked?` to ask a read-only question.
+- `/today` to view what needs attention today.
+- `/urgent` to view items marked high priority.
+
+Compatibility note:
+- Legacy commands like `/plan`, `/focus`, `/done`, and `/ask` are still supported during migration, but they are no longer part of the primary Telegram menu.
 
 Note:
 - Telegram has a hard per-message size limit (~4096 chars).

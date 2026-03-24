@@ -13,11 +13,8 @@ DRY_RUN="${DRY_RUN:-0}"
 read -r -d '' COMMANDS_JSON <<'JSON' || true
 [
   {"command":"start","description":"Link this chat"},
-  {"command":"today","description":"Show today's plan"},
-  {"command":"plan","description":"Refresh the plan"},
-  {"command":"focus","description":"Show top tasks"},
-  {"command":"done","description":"Mark a task done"},
-  {"command":"ask","description":"Ask a read-only question"}
+  {"command":"today","description":"Show what needs attention today"},
+  {"command":"urgent","description":"Show high-priority items"}
 ]
 JSON
 

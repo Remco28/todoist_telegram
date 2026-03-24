@@ -400,6 +400,22 @@ def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
         
     return "\n".join(lines)
 
+
+def format_urgent_tasks(tasks: List[Dict[str, Any]]) -> str:
+    lines = ["<b>🚨 Urgent Items</b>", ""]
+    if not tasks:
+        lines.append("Nothing is marked high priority right now.")
+        return "\n".join(lines)
+
+    for idx, task in enumerate(tasks[:12], start=1):
+        title = user_facing_task_title(task.get("title"))
+        lines.append(f"{idx}. {escape_html(title)}")
+        due_date = task.get("due_date")
+        if isinstance(due_date, str) and due_date.strip():
+            lines.append(f"   <i>Due {escape_html(due_date.strip())}</i>")
+    return "\n".join(lines)
+
+
 def format_capture_ack(applied: Dict[str, Any]) -> str:
     """
     Summarizes applied changes for capture/thought.
