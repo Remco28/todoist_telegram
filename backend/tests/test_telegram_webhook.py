@@ -1107,6 +1107,88 @@ def test_extract_fallback_recovers_completion_from_recent_visible_task_statement
         ]
 
 
+def test_extract_fallback_recovers_same_day_due_alignment_from_recent_reference(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.99,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "complete", "target_task_id": "tsk_vanguard"}],
+    }
+    fake_draft = _fake_draft(
+        source_message="That should be done the same day as the Vanguard account.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    grounding = {
+        "tasks": [
+            {"id": "tsk_roth", "title": "Deposit money into Roth IRA account", "status": "open", "due_date": "2026-03-31"},
+            {
+                "id": "tsk_vanguard",
+                "title": "Sign up for a Vanguard investment account and transfer from E Trade to it",
+                "status": "open",
+                "due_date": "2026-03-31",
+            },
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_roth", "title": "Deposit money into Roth IRA account", "status": "open"},
+            {
+                "id": "tsk_vanguard",
+                "title": "Sign up for a Vanguard investment account and transfer from E Trade to it",
+                "status": "open",
+            },
+        ],
+        "displayed_task_refs": [],
+        "session_state": {
+            "active_entity_refs": [
+                {
+                    "entity_type": "work_item",
+                    "entity_id": "tsk_roth",
+                    "title": "Deposit money into Roth IRA account",
+                    "status": "open",
+                    "source": "apply",
+                }
+            ]
+        },
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("That should be done the same day as the Vanguard account."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_awaited_once()
+        critique_actions.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Deposit money into Roth IRA account",
+                "action": "update",
+                "target_task_id": "tsk_roth",
+                "due_date": "2026-03-31",
+            }
+        ]
+
+
 def test_non_command_unusable_critic_revisions_do_not_clobber_planner_extraction(app_no_db, mock_send):
     planned = {
         "intent": "action",

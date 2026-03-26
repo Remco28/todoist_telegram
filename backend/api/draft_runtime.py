@@ -228,6 +228,11 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
             ]
             return extraction
 
+    same_day_update = run_extract_same_day_reference_update(message, grounding, helpers=helpers)
+    if same_day_update:
+        extraction["tasks"] = [same_day_update]
+        return extraction
+
     if run_is_completion_like_message(message, helpers=helpers):
         displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
         if displayed_match:
@@ -253,6 +258,98 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
     return extraction
 
 
+def run_extract_same_day_reference_update(
+    message: str,
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(grounding, dict):
+        return None
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return None
+
+    match = re.search(r"\bsame\s+(?:day|date)\s+as\s+(?P<reference>.+)$", normalized)
+    if not match:
+        return None
+
+    reference_clause = (match.group("reference") or "").strip()
+    if not reference_clause:
+        return None
+    reference_candidate = helpers["_best_task_reference_candidate"](reference_clause, grounding, open_only=True)
+    if not isinstance(reference_candidate, dict):
+        return None
+    reference_due_date = _grounding_task_due_date(reference_candidate["id"], grounding)
+    if not reference_due_date:
+        return None
+
+    subject_candidate = _same_day_subject_candidate(
+        grounding,
+        exclude_id=reference_candidate["id"],
+    )
+    if not isinstance(subject_candidate, dict):
+        return None
+
+    return {
+        "title": subject_candidate["title"],
+        "action": "update",
+        "target_task_id": subject_candidate["id"],
+        "due_date": reference_due_date,
+    }
+
+
+def _same_day_subject_candidate(
+    grounding: Dict[str, Any],
+    *,
+    exclude_id: str,
+) -> Optional[Dict[str, Any]]:
+    session_state = grounding.get("session_state")
+    active_refs = session_state.get("active_entity_refs") if isinstance(session_state, dict) else None
+    if isinstance(active_refs, list):
+        for row in active_refs:
+            if not isinstance(row, dict):
+                continue
+            if row.get("entity_type") != "work_item":
+                continue
+            entity_id = str(row.get("entity_id") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if not entity_id or not title or entity_id == exclude_id:
+                continue
+            return {"id": entity_id, "title": title}
+
+    for key in ("recent_task_refs", "displayed_task_refs", "tasks"):
+        rows = grounding.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            entity_id = str(row.get("id") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if not entity_id or not title or entity_id == exclude_id:
+                continue
+            return {"id": entity_id, "title": title}
+    return None
+
+
+def _grounding_task_due_date(task_id: str, grounding: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(task_id, str) or not task_id.strip() or not isinstance(grounding, dict):
+        return None
+    for key in ("tasks", "recent_task_refs", "displayed_task_refs"):
+        rows = grounding.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("id") or "").strip()
+            due_date = row.get("due_date")
+            if row_id == task_id.strip() and isinstance(due_date, str) and due_date.strip():
+                return due_date.strip()
+    return None
+
+
 def run_is_completion_like_message(message: str, *, helpers: Dict[str, Any]) -> bool:
     if not isinstance(message, str) or not message.strip():
         return False
@@ -260,6 +357,8 @@ def run_is_completion_like_message(message: str, *, helpers: Dict[str, Any]) -> 
         return False
     normalized = helpers["_normalize_query_text"](message)
     if not normalized:
+        return False
+    if re.search(r"\bsame\s+(?:day|date)\s+as\b", normalized):
         return False
     completion_patterns = (
         r"\bdone\b",
