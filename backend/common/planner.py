@@ -101,6 +101,19 @@ def _work_item_due_date(item: WorkItem, now: Optional[datetime] = None) -> Optio
     return None
 
 
+def _work_item_schedule_date(item: Any, now: Optional[datetime] = None) -> Optional[date]:
+    scheduled_for = getattr(item, "scheduled_for", None)
+    if isinstance(scheduled_for, datetime):
+        return _local_date_in_planner(_as_utc_datetime(scheduled_for, now))
+    due_at = getattr(item, "due_at", None)
+    if isinstance(due_at, datetime):
+        return _local_date_in_planner(_as_utc_datetime(due_at, now))
+    due_date = getattr(item, "due_date", None)
+    if isinstance(due_date, date):
+        return due_date
+    return None
+
+
 def _status_value(value: Any) -> str:
     if hasattr(value, "value"):
         return str(value.value)
@@ -210,14 +223,43 @@ def score_task(task: Any, state: Dict[str, Any], now: datetime) -> Tuple[float, 
     return score, factors
 
 
+def _is_deferred_beyond_today(task: Any, task_lookup: Dict[str, Any], now: datetime) -> bool:
+    current_local_date = _local_date_in_planner(now)
+    own_schedule = _work_item_schedule_date(task, now)
+    if own_schedule and own_schedule > current_local_date:
+        return True
+    if own_schedule and own_schedule <= current_local_date:
+        return False
+
+    seen: set[str] = set()
+    parent_id = getattr(task, "parent_id", None)
+    while isinstance(parent_id, str) and parent_id.strip() and parent_id not in seen:
+        seen.add(parent_id)
+        parent = task_lookup.get(parent_id)
+        if not parent:
+            break
+        parent_schedule = _work_item_schedule_date(parent, now)
+        if parent_schedule and parent_schedule > current_local_date:
+            return True
+        if parent_schedule and parent_schedule <= current_local_date:
+            return False
+        parent_id = getattr(parent, "parent_id", None)
+    return False
+
+
 def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     now_utc = _as_utc_datetime(now)
     all_tasks: List[WorkItem] = state["tasks"]
     links: List[WorkItemLink] = state["links"]
     reminders: List[Reminder] = state.get("reminders", [])
+    task_lookup = {task.id: task for task in all_tasks}
 
     ready_ids, blocked_map = detect_blocked_tasks(all_tasks, links)
-    candidate_tasks = [task for task in all_tasks if task.id in ready_ids]
+    candidate_tasks = [
+        task
+        for task in all_tasks
+        if task.id in ready_ids and not _is_deferred_beyond_today(task, task_lookup, now_utc)
+    ]
 
     scored_candidates: List[Dict[str, Any]] = []
     for task in candidate_tasks:

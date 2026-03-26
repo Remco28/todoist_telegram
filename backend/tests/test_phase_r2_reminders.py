@@ -614,3 +614,84 @@ def test_build_plan_payload_includes_due_reminders_for_today():
             "work_item_id": None,
         }
     ]
+
+
+def test_build_plan_payload_excludes_future_dated_tasks_from_today_plan():
+    now = datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc)
+    payload = build_plan_payload(
+        {
+            "tasks": [
+                WorkItem(
+                    id="tsk_future",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Submit Worker's Compensation form for employee",
+                    title_norm="submit workers compensation form for employee",
+                    status=WorkItemStatus.open,
+                    due_at=datetime(2026, 3, 31, 14, 0, tzinfo=timezone.utc),
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_open",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Process photos from the last tournament",
+                    title_norm="process photos from the last tournament",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+            ],
+            "links": [],
+            "reminders": [],
+        },
+        now,
+    )
+    task_ids = [item["task_id"] for item in payload["today_plan"]]
+    assert "tsk_open" in task_ids
+    assert "tsk_future" not in task_ids
+
+
+def test_build_plan_payload_excludes_subtask_when_parent_is_deferred():
+    now = datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc)
+    payload = build_plan_payload(
+        {
+            "tasks": [
+                WorkItem(
+                    id="tsk_parent",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Research 401k requirements",
+                    title_norm="research 401k requirements",
+                    status=WorkItemStatus.open,
+                    due_at=datetime(2026, 3, 31, 14, 0, tzinfo=timezone.utc),
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_child",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.subtask,
+                    parent_id="tsk_parent",
+                    title="Review Neil's list",
+                    title_norm="review neil s list",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_other",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Process photos from the last tournament",
+                    title_norm="process photos from the last tournament",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+            ],
+            "links": [],
+            "reminders": [],
+        },
+        now,
+    )
+    task_ids = [item["task_id"] for item in payload["today_plan"]]
+    assert "tsk_other" in task_ids
+    assert "tsk_parent" not in task_ids
+    assert "tsk_child" not in task_ids
