@@ -10,6 +10,13 @@
 - Session key: `user_id + chat_id`
 - Telegram remains the primary session surface.
 - Session boundaries help organize conversation and summarization, but they do not define durable work state.
+- Sessions are app-owned, not provider-owned.
+- The canonical session record should carry:
+  - `current_mode`
+  - `active_entity_refs`
+  - `pending_draft_id`
+  - `pending_clarification`
+  - `summary_metadata`
 
 ## Retention Model
 - Structured entities are retained until archived or explicitly deleted by policy.
@@ -31,13 +38,14 @@ The new memory model should prioritize:
 - `work_item_versions`
 
 ## Memory Layers
-- Hot: recent turns, pending draft state, recent visible items
+- Hot: recent turns, pending draft state, recent visible items, current session state
 - Warm: rolling summaries, recent plan snapshots, recent action batches
 - Cold: full entity state, versions, reminders, conversation events
 
 ## Context Assembly Rules
 - Always include the current user message.
 - Always include the operation instruction.
+- Include explicit session state when it materially helps follow-up resolution.
 - Include only relevant recent visible work items and aliases.
 - Include parent/child hierarchy when it matters.
 - Include related people/areas when they materially help grounding.
@@ -63,6 +71,7 @@ The app should preserve short-lived context for:
 - recently mentioned items
 - recently changed items
 - pending clarification candidates
+- active session entities
 
 This is essential for follow-ups like:
 - "that one"

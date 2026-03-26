@@ -315,6 +315,7 @@ async def run_handle_telegram_callback_update(data: Dict[str, Any], db, *, helpe
         if callback_query_id:
             await helpers["answer_callback_query"](callback_query_id, "Chat is not linked.")
         return
+    session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
 
     open_draft = await helpers["_get_open_action_draft"](user_id=user_id, chat_id=chat_id, db=db)
     action, draft_id = helpers["_parse_draft_callback"](callback_data)
@@ -341,6 +342,14 @@ async def run_handle_telegram_callback_update(data: Dict[str, Any], db, *, helpe
         open_draft.updated_at = helpers["_draft_now"]()
         open_draft.expires_at = helpers["_draft_now"]() + timedelta(seconds=helpers["ACTION_DRAFT_TTL_SECONDS"])
         await db.commit()
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="draft",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=open_draft.id,
+            pending_clarification=helpers["_draft_get_clarification_state"](open_draft),
+        )
         await helpers["send_message"](
             chat_id,
             "Reply with your changes in one message, and I will revise the proposal.",
@@ -375,7 +384,17 @@ async def run_handle_telegram_message_update(data: Dict[str, Any], db, *, helper
                 "This chat is not linked yet. Use /start <token> from your generated link token.",
             )
             return
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
         await helpers["handle_telegram_command"](command, args, chat_id, user_id, db)
+        if command == "/web":
+            await helpers["_update_session_state"](
+                db=db,
+                session=session,
+                current_mode="web",
+                active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+                pending_draft_id=None,
+                pending_clarification=None,
+            )
         return
 
     user_id = await helpers["_resolve_telegram_user"](chat_id, db)
@@ -385,6 +404,7 @@ async def run_handle_telegram_message_update(data: Dict[str, Any], db, *, helper
             "This chat is not linked yet. Use /start <token> from your generated link token.",
         )
         return
+    await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
     await helpers["_handle_telegram_draft_flow"](
         chat_id=chat_id,
         text=text,

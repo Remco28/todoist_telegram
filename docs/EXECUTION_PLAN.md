@@ -88,7 +88,7 @@
   - Mitigation: phase the migration clearly and remove old paths aggressively once replaced.
 
 ## Immediate Next Session Plan
-1. Keep the reminder follow-through path tight and natural without adding command bloat.
-2. Add bounded maintenance UI affordances for version navigation, restore context, and hierarchy editing where they still feel thin.
-3. Remove or archive the remaining legacy schema/docs once any needed rows have been exported to markdown.
-4. Do a final polish pass on explicit project/task/subtask browsing and editing in `/app`.
+1. Keep polishing conversational follow-through, especially multi-turn task and reminder edits.
+2. Use the new explicit session state to improve active-entity grounding and pending clarification recovery.
+3. Add bounded maintenance UI affordances for version navigation, restore context, and hierarchy editing where they still feel thin.
+4. Remove or archive the remaining legacy schema/docs once any needed rows have been exported to markdown.

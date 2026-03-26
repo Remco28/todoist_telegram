@@ -60,6 +60,43 @@ def get_system_policy() -> str:
         "Prioritize recent information and linked entities."
     )
 
+
+def format_session_state(session_state: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(session_state, dict):
+        return None
+    lines = []
+    current_mode = str(session_state.get("current_mode") or "").strip()
+    if current_mode:
+        lines.append(f"Session mode: {current_mode}")
+    pending_draft_id = str(session_state.get("pending_draft_id") or "").strip()
+    if pending_draft_id:
+        lines.append(f"Pending draft: {pending_draft_id}")
+    pending_clarification = session_state.get("pending_clarification")
+    if isinstance(pending_clarification, dict) and pending_clarification:
+        kind = str(pending_clarification.get("kind") or "").strip()
+        if kind:
+            lines.append(f"Pending clarification: {kind}")
+    active_refs = session_state.get("active_entity_refs")
+    if isinstance(active_refs, list) and active_refs:
+        preview = []
+        for row in active_refs[:6]:
+            if not isinstance(row, dict):
+                continue
+            entity_type = str(row.get("entity_type") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if title:
+                preview.append(f"{entity_type or 'entity'}:{title}")
+        if preview:
+            lines.append("Active entities: " + ", ".join(preview))
+    summary_metadata = session_state.get("summary_metadata")
+    if isinstance(summary_metadata, dict):
+        summary_text = str(summary_metadata.get("last_summary_text") or "").strip()
+        if summary_text:
+            lines.append(f"Session summary: {summary_text}")
+    if not lines:
+        return None
+    return "\n".join(lines)
+
 async def select_hot_turns(db: AsyncSession, user_id: str, chat_id: str, limit: int) -> List[str]:
     stmt = select(InboxItem).where(
         InboxItem.user_id == user_id,
@@ -169,21 +206,24 @@ def enforce_budget(
     hot_turns: List[str], 
     entities: List[str], 
     query: str, 
-    applied_max: int
+    applied_max: int,
+    session_state_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     
     budget_truncated_core = False
     trunc_msg = "... [truncated]"
     estimator_mode = token_estimator_mode()
     
-    def build_draft(s, h, e, q):
+    def build_draft(ss, s, h, e, q):
         parts = [policy]
+        if ss: parts.append(ss)
         if s: parts.append(s)
         parts.extend(h)
         parts.extend(e)
         parts.append(f"Query: {q}")
         return "\n".join(parts)
 
+    current_session_state = session_state_text
     current_summary = summary
     current_hot = list(hot_turns)
     current_entities = list(entities)
@@ -191,7 +231,11 @@ def enforce_budget(
 
     # 1. Check if policy + query (minimum) already exceed budget
     # Estimate minimum possible payload
-    min_draft_no_q = f"{policy}\nQuery: "
+    min_parts = [policy]
+    if current_session_state:
+        min_parts.append(current_session_state)
+    min_parts.append("Query: ")
+    min_draft_no_q = "\n".join(min_parts)
     if estimate_tokens(min_draft_no_q + current_query) > applied_max:
         budget_truncated_core = True
         # Calculate exactly how many tokens are left for the query
@@ -209,19 +253,19 @@ def enforce_budget(
 
     # 2. Progressively trim layers with re-checks
     # Trim hot turns first (oldest first)
-    while current_hot and estimate_tokens(build_draft(current_summary, current_hot, current_entities, current_query)) > applied_max:
+    while current_hot and estimate_tokens(build_draft(current_session_state, current_summary, current_hot, current_entities, current_query)) > applied_max:
         current_hot.pop(0)
         
     # Trim entities next
-    while current_entities and estimate_tokens(build_draft(current_summary, current_hot, current_entities, current_query)) > applied_max:
+    while current_entities and estimate_tokens(build_draft(current_session_state, current_summary, current_hot, current_entities, current_query)) > applied_max:
         current_entities.pop()
         
     # Trim summary last
-    if current_summary and estimate_tokens(build_draft(current_summary, current_hot, current_entities, current_query)) > applied_max:
+    if current_summary and estimate_tokens(build_draft(current_session_state, current_summary, current_hot, current_entities, current_query)) > applied_max:
         current_summary = None
 
     # 3. Final safety check - if still over budget due to estimation drift, force truncate query
-    final_payload = build_draft(current_summary, current_hot, current_entities, current_query)
+    final_payload = build_draft(current_session_state, current_summary, current_hot, current_entities, current_query)
     if estimate_tokens(final_payload) > applied_max:
         budget_truncated_core = True
         # Hard emergency truncate. With estimator = floor(len/4) + 1, 
@@ -248,17 +292,19 @@ async def assemble_context(
     user_id: str, 
     chat_id: str, 
     query: str, 
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
+    session_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     
     applied_max = min(max_tokens or settings.MEMORY_CONTEXT_MAX_TOKENS, settings.MEMORY_CONTEXT_MAX_TOKENS)
     
     policy = get_system_policy()
+    session_state_text = format_session_state(session_state)
     summary = await select_warm_summaries(db, user_id, chat_id)
     hot_turns = await select_hot_turns(db, user_id, chat_id, settings.MEMORY_HOT_TURNS_LIMIT)
     entities = await select_related_entities(db, user_id, query, settings.MEMORY_RELATED_ENTITIES_LIMIT)
     
-    enforced = enforce_budget(policy, summary, hot_turns, entities, query, applied_max)
+    enforced = enforce_budget(policy, summary, hot_turns, entities, query, applied_max, session_state_text=session_state_text)
     
     return {
         "budget": {

@@ -471,6 +471,16 @@ async def run_create_action_draft(
         )
     )
     await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="draft",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=draft.id,
+            pending_clarification=helpers["_draft_get_clarification_state"](draft),
+        )
     return draft
 
 
@@ -488,6 +498,16 @@ async def run_discard_action_draft(draft, user_id: str, request_id: str, db, *, 
         )
     )
     await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=draft.chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="conversation",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
 
 
 async def run_revise_action_draft(draft, user_id: str, request_id: str, edit_text: str, db, *, helpers: Dict[str, Any]) -> Dict[str, Any]:
@@ -545,6 +565,16 @@ async def run_revise_action_draft(draft, user_id: str, request_id: str, edit_tex
         )
     )
     await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=draft.chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="draft",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=draft.id,
+            pending_clarification=helpers["_draft_get_clarification_state"](draft),
+        )
     return extraction
 
 
@@ -574,6 +604,16 @@ async def run_confirm_action_draft(draft, user_id: str, chat_id: str, request_id
         )
     )
     await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="action",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
     summary_enqueued = True
     summary_error: Optional[str] = None
     try:

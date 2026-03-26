@@ -17,7 +17,7 @@ import redis.asyncio as redis
 
 from common.config import settings
 from common.models import (
-    Base, IdempotencyKey, InboxItem,
+    Base, IdempotencyKey, InboxItem, Session,
     EventLog, PromptRun, LinkType, RecentContextItem,
     ActionDraft, WorkItem, WorkItemKind, WorkItemStatus,
     ConversationEvent, ConversationSource, ConversationDirection, ActionBatch, ActionBatchStatus,
@@ -27,6 +27,13 @@ from common.adapter import adapter
 from common.memory import assemble_context
 from common.planner import collect_planning_state, build_plan_payload, render_fallback_plan_explanation
 from common.recent_context import remember_recent_reminders, remember_recent_tasks
+from common.session_state import (
+    active_entity_refs_from_grounding,
+    get_latest_session,
+    get_or_create_active_session,
+    session_state_payload,
+    update_session_state,
+)
 from common.reminders import (
     compute_snooze_remind_at,
     normalize_recurrence_rule,
@@ -296,6 +303,52 @@ def _result_rows(value: Any) -> list[Any]:
 
 def _resolve_relative_due_date_overrides(message: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
     return run_resolve_relative_due_date_overrides(message, extraction, helpers=globals())
+
+
+def _session_state_payload(session: Optional[Session]) -> Dict[str, Any]:
+    return session_state_payload(session)
+
+
+def _active_entity_refs_from_grounding(grounding: Dict[str, Any], limit: int = 12) -> List[Dict[str, Any]]:
+    return active_entity_refs_from_grounding(grounding, limit=limit)
+
+
+async def _get_latest_session(db: AsyncSession, user_id: str, chat_id: str) -> Optional[Session]:
+    return await get_latest_session(db, user_id=user_id, chat_id=chat_id)
+
+
+async def _get_or_create_session(db: AsyncSession, user_id: str, chat_id: str) -> Session:
+    return await get_or_create_active_session(
+        db,
+        user_id=user_id,
+        chat_id=chat_id,
+        now=utc_now(),
+        inactivity_minutes=settings.SESSION_INACTIVITY_MINUTES,
+    )
+
+
+async def _update_session_state(
+    db: AsyncSession,
+    session: Optional[Session],
+    *,
+    current_mode: Any = None,
+    active_entity_refs: Any = None,
+    pending_draft_id: Any = None,
+    pending_clarification: Any = None,
+    summary_metadata: Optional[Dict[str, Any]] = None,
+    touch: bool = True,
+) -> Optional[Session]:
+    return await update_session_state(
+        db,
+        session,
+        now=utc_now(),
+        current_mode=current_mode,
+        active_entity_refs=active_entity_refs,
+        pending_draft_id=pending_draft_id,
+        pending_clarification=pending_clarification,
+        summary_metadata=summary_metadata,
+        touch=touch,
+    )
 
 
 def _is_telegram_sender_allowed(chat_id: str, username: Optional[str]) -> bool:

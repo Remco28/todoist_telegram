@@ -16,6 +16,7 @@ from common.models import (
     ReminderKind,
     ReminderStatus,
     ReminderVersion,
+    Session,
     WorkItem,
     WorkItemAlias,
     WorkItemKind,
@@ -51,6 +52,7 @@ def test_local_first_enums_include_new_domain_values():
 
 
 def test_local_first_tables_are_registered_in_metadata():
+    assert Session.__tablename__ == "sessions"
     assert Area.__tablename__ == "areas"
     assert Person.__tablename__ == "people"
     assert WorkItem.__tablename__ == "work_items"
@@ -77,6 +79,16 @@ def test_work_item_schema_contains_hierarchy_and_planning_fields():
     assert columns.estimated_minutes is not None
     assert columns.completed_at is not None
     assert columns.archived_at is not None
+
+
+def test_session_schema_contains_explicit_state_fields():
+    columns = Session.__table__.c
+
+    assert columns.current_mode is not None
+    assert columns.active_entity_refs_json is not None
+    assert columns.pending_draft_id is not None
+    assert columns.pending_clarification_json is not None
+    assert columns.summary_metadata_json is not None
 
 
 def test_new_tables_compile_for_sqlite_and_postgres():

@@ -61,6 +61,15 @@ async def run_capture_thought(request: Request, payload: ThoughtCaptureRequest, 
         return request.state.idempotent_response
     await helpers["enforce_rate_limit"](user_id, "capture", helpers["settings"].RATE_LIMIT_CAPTURE_PER_WINDOW)
     request_id = request.state.request_id
+    session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=payload.chat_id)
+    await helpers["_update_session_state"](
+        db=db,
+        session=session,
+        current_mode="action",
+        active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+        pending_draft_id=helpers["_session_state_payload"](session).get("pending_draft_id"),
+        pending_clarification=helpers["_session_state_payload"](session).get("pending_clarification"),
+    )
 
     extraction = None
     for attempt_num in range(1, 3):
@@ -124,6 +133,7 @@ async def run_capture_thought(request: Request, payload: ThoughtCaptureRequest, 
         extraction=extraction,
         request_id=request_id,
         client_msg_id=payload.client_msg_id,
+        session_id=session.id,
     )
     resp = ThoughtCaptureResponse(
         status="ok",
@@ -139,12 +149,23 @@ async def run_capture_thought(request: Request, payload: ThoughtCaptureRequest, 
 
 async def run_query_ask(payload: QueryAskRequest, user_id: str, db, *, helpers: Dict[str, Any]) -> QueryResponseV1:
     await helpers["enforce_rate_limit"](user_id, "query", helpers["settings"].RATE_LIMIT_QUERY_PER_WINDOW)
+    session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=payload.chat_id)
+    session_state = helpers["_session_state_payload"](session)
+    await helpers["_update_session_state"](
+        db=db,
+        session=session,
+        current_mode="query",
+        active_entity_refs=session_state.get("active_entity_refs", []),
+        pending_draft_id=session_state.get("pending_draft_id"),
+        pending_clarification=session_state.get("pending_clarification"),
+    )
     ctx = await helpers["assemble_context"](
         db=db,
         user_id=user_id,
         chat_id=payload.chat_id,
         query=payload.query,
         max_tokens=payload.max_tokens or helpers["settings"].QUERY_MAX_TOKENS,
+        session_state=session_state,
     )
     start_time = time.time()
     request_id = str(uuid.uuid4())

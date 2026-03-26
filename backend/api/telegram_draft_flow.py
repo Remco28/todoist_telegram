@@ -13,15 +13,26 @@ async def run_handle_telegram_draft_flow(
     helpers: Dict[str, Any],
 ) -> None:
     request_id = f"tg_{uuid.uuid4().hex[:8]}"
+    session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
     open_draft = await helpers["_get_open_action_draft"](user_id=user_id, chat_id=chat_id, db=db)
     awaiting_edit_input = bool(open_draft and helpers["_draft_is_awaiting_edit_input"](open_draft))
     clarification_state = helpers["_draft_get_clarification_state"](open_draft) if open_draft else None
+    await helpers["_update_session_state"](
+        db=db,
+        session=session,
+        current_mode="draft" if open_draft else session.current_mode,
+        active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+        pending_draft_id=open_draft.id if open_draft else None,
+        pending_clarification=clarification_state,
+    )
+    session_state = helpers["_session_state_payload"](session)
     turn = await helpers["adapter"].interpret_telegram_turn(
         text,
         context={
             "chat_id": chat_id,
             "has_open_draft": bool(open_draft),
             "has_pending_clarification": bool(clarification_state),
+            "session_state": session_state,
         },
     )
     speech_act = turn.get("speech_act") if isinstance(turn, dict) else None
@@ -177,6 +188,14 @@ async def run_handle_telegram_draft_flow(
 
     if speech_act == "smalltalk":
         assistant_reply = turn.get("assistant_reply") if isinstance(turn, dict) else None
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="conversation",
+            active_entity_refs=session_state.get("active_entity_refs", []),
+            pending_draft_id=open_draft.id if open_draft else None,
+            pending_clarification=clarification_state,
+        )
         await helpers["send_message"](
             chat_id,
             assistant_reply
@@ -216,6 +235,15 @@ async def run_handle_telegram_draft_flow(
         return
     if speech_act == "query":
         grounding = await helpers["_build_extraction_grounding"](db=db, user_id=user_id, chat_id=chat_id, message=text)
+        grounding["session_state"] = session_state
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="query",
+            active_entity_refs=helpers["_active_entity_refs_from_grounding"](grounding),
+            pending_draft_id=open_draft.id if open_draft else None,
+            pending_clarification=clarification_state,
+        )
         response = await helpers["query_ask"](
             helpers["QueryAskRequest"](chat_id=chat_id, query=text),
             user_id=user_id,
@@ -237,6 +265,15 @@ async def run_handle_telegram_draft_flow(
         return
 
     grounding = await helpers["_build_extraction_grounding"](db=db, user_id=user_id, chat_id=chat_id, message=text)
+    grounding["session_state"] = session_state
+    await helpers["_update_session_state"](
+        db=db,
+        session=session,
+        current_mode="action",
+        active_entity_refs=helpers["_active_entity_refs_from_grounding"](grounding),
+        pending_draft_id=open_draft.id if open_draft else None,
+        pending_clarification=clarification_state,
+    )
     planned = await helpers["adapter"].plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
     intent = "action"
     actions = planned.get("actions") if isinstance(planned, dict) else None

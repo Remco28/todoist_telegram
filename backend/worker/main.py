@@ -14,11 +14,12 @@ from common.config import settings
 from common.models import (
     Base, MemorySummary, EventLog, InboxItem, PromptRun,
     ActionDraft, Reminder, ReminderStatus, TelegramUserMap, WorkItem,
-    ConversationEvent, ConversationSource, ConversationDirection,
+    ConversationEvent, ConversationSource, ConversationDirection, Session,
 )
 from common.adapter import adapter
 from common.recent_context import remember_recent_reminders
 from common.reminders import next_recurrence_time, normalize_recurrence_rule
+from common.session_state import get_latest_session, update_session_state
 from common.telegram import send_message, escape_html
 
 logging.basicConfig(level=logging.INFO)
@@ -213,6 +214,7 @@ async def handle_memory_summarize(job_id, payload):
     chat_id = payload.get("chat_id")
     
     async with AsyncSessionLocal() as db:
+        latest_session = await get_latest_session(db, user_id=user_id, chat_id=chat_id)
         # 1. Fetch recent context and event logs
         stmt = select(InboxItem).where(
             InboxItem.user_id == user_id,
@@ -246,6 +248,7 @@ async def handle_memory_summarize(job_id, payload):
         summary_id = f"sum_{uuid.uuid4().hex[:12]}"
         db.add(MemorySummary(
             id=summary_id, user_id=user_id, chat_id=chat_id,
+            session_id=latest_session.id if latest_session is not None else None,
             summary_type="session", summary_text=summary["summary_text"],
             facts_json=summary.get("facts", []), 
             source_event_ids=source_event_ids,
@@ -258,6 +261,23 @@ async def handle_memory_summarize(job_id, payload):
             event_type="memory_summary_created", entity_type="memory_summary",
             entity_id=summary_id, payload_json={"job_id": job_id, "source_count": len(source_event_ids)}
         ))
+        if latest_session is not None:
+            await update_session_state(
+                db,
+                latest_session,
+                now=utc_now(),
+                current_mode=latest_session.current_mode,
+                active_entity_refs=latest_session.active_entity_refs_json if isinstance(latest_session.active_entity_refs_json, list) else [],
+                pending_draft_id=latest_session.pending_draft_id,
+                pending_clarification=latest_session.pending_clarification_json if isinstance(latest_session.pending_clarification_json, dict) else {},
+                summary_metadata={
+                    "last_summary_id": summary_id,
+                    "last_summary_type": "session",
+                    "last_summary_at": utc_now().isoformat(),
+                    "last_summary_text": summary["summary_text"][:500],
+                },
+                touch=False,
+            )
         
         await db.commit()
         logger.info(f"Summarization complete for user {user_id}")

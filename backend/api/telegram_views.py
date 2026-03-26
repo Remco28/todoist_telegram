@@ -163,6 +163,39 @@ async def run_send_today_plan_view(
         updated_context = True
     if updated_context:
         await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        active_entity_refs = [
+            {"entity_type": "work_item", "entity_id": item["task_id"], "title": item["title"], "source": view_name}
+            for item in (telegram_payload.get("today_plan") or [])
+            if isinstance(item, dict)
+            and isinstance(item.get("task_id"), str)
+            and item.get("task_id")
+            and isinstance(item.get("title"), str)
+        ]
+        active_entity_refs.extend(
+            [
+                {
+                    "entity_type": "reminder",
+                    "entity_id": item["reminder_id"],
+                    "title": str(item.get("title") or "").strip() or str(item.get("message") or "").strip(),
+                    "source": view_name,
+                }
+                for item in visible_due_reminders
+                if isinstance(item, dict)
+                and isinstance(item.get("reminder_id"), str)
+                and item.get("reminder_id")
+                and (str(item.get("title") or "").strip() or str(item.get("message") or "").strip())
+            ]
+        )
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode=view_name,
+            active_entity_refs=active_entity_refs[:12],
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
 
 
 async def run_send_urgent_task_view(db, user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
@@ -194,6 +227,20 @@ async def run_send_urgent_task_view(db, user_id: str, chat_id: str, *, helpers: 
     if task_ids:
         await helpers["_remember_displayed_tasks"](db, user_id, chat_id, task_ids, "urgent")
         await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="urgent",
+            active_entity_refs=[
+                {"entity_type": "work_item", "entity_id": item["id"], "title": item["title"], "source": "urgent"}
+                for item in payload
+                if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+            ][:12],
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
 
 
 async def run_send_open_task_view(db, user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
@@ -225,6 +272,20 @@ async def run_send_open_task_view(db, user_id: str, chat_id: str, *, helpers: Di
     if task_ids:
         await helpers["_remember_displayed_tasks"](db, user_id, chat_id, task_ids, "open")
         await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="open_tasks",
+            active_entity_refs=[
+                {"entity_type": "work_item", "entity_id": item["id"], "title": item["title"], "source": "open_tasks"}
+                for item in payload
+                if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+            ][:12],
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
 
 
 async def run_stage_clarification_draft(
@@ -291,4 +352,14 @@ async def run_stage_clarification_draft(
     draft.updated_at = helpers["_draft_now"]()
     draft.expires_at = helpers["_draft_now"]() + timedelta(seconds=helpers["ACTION_DRAFT_TTL_SECONDS"])
     await db.commit()
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="draft",
+            active_entity_refs=helpers["_session_state_payload"](session).get("active_entity_refs", []),
+            pending_draft_id=draft.id,
+            pending_clarification=state,
+        )
     await helpers["send_message"](chat_id, clarification_text)

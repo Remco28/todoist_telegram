@@ -130,6 +130,11 @@ class Session(Base):
     started_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     last_activity_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     ended_at = Column(DateTime(timezone=True), nullable=True)
+    current_mode = Column(String, nullable=True)
+    active_entity_refs_json = Column(JSONB, nullable=False, server_default='[]')
+    pending_draft_id = Column(String, nullable=True)
+    pending_clarification_json = Column(JSONB, nullable=False, server_default='{}')
+    summary_metadata_json = Column(JSONB, nullable=False, server_default='{}')
 
     inbox_items = relationship("InboxItem", back_populates="session")
     summaries = relationship("MemorySummary", back_populates="session")

@@ -387,6 +387,7 @@ async def run_apply_capture(
     *,
     helpers: Dict[str, Any],
     client_msg_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     commit: bool = True,
     enqueue_summary: bool = True,
 ) -> tuple:
@@ -396,11 +397,16 @@ async def run_apply_capture(
     touched_reminder_ids: List[str] = []
     version_records: List[Dict[str, Any]] = []
     reminder_version_records: List[Dict[str, Any]] = []
+    session = None
+    if session_id is None and "_get_or_create_session" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        session_id = session.id
     db.add(
         InboxItem(
             id=inbox_item_id,
             user_id=user_id,
             chat_id=chat_id,
+            session_id=session_id,
             source=source,
             client_msg_id=client_msg_id,
             message_raw=message,
@@ -840,6 +846,50 @@ async def run_apply_capture(
             source_message=message,
             proposal_json=extraction if isinstance(extraction, dict) else {},
             version_records=reminder_version_records,
+        )
+
+    if session is None and session_id and "_get_latest_session" in helpers:
+        session = await helpers["_get_latest_session"](db=db, user_id=user_id, chat_id=chat_id)
+    if session is not None and "_update_session_state" in helpers:
+        active_entity_refs: List[Dict[str, Any]] = []
+        for record in version_records[:8]:
+            after_json = record.get("after_json") if isinstance(record.get("after_json"), dict) else {}
+            title = str(after_json.get("title") or "").strip()
+            if not title:
+                continue
+            active_entity_refs.append(
+                {
+                    "entity_type": "work_item",
+                    "entity_id": record["work_item_id"],
+                    "title": title,
+                    "status": str(after_json.get("status") or "").strip().lower() or None,
+                    "source": "apply",
+                }
+            )
+        for record in reminder_version_records[:8]:
+            after_json = record.get("after_json") if isinstance(record.get("after_json"), dict) else {}
+            title = str(after_json.get("title") or "").strip()
+            if not title:
+                continue
+            item: Dict[str, Any] = {
+                "entity_type": "reminder",
+                "entity_id": record["reminder_id"],
+                "title": title,
+                "status": str(after_json.get("status") or "").strip().lower() or None,
+                "source": "apply",
+            }
+            work_item_title = str(after_json.get("work_item_title") or "").strip()
+            if work_item_title:
+                item["work_item_title"] = work_item_title
+            active_entity_refs.append(item)
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="action",
+            active_entity_refs=active_entity_refs,
+            pending_draft_id=None,
+            pending_clarification=None,
+            touch=False,
         )
 
     if commit:

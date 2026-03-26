@@ -1642,10 +1642,24 @@ def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send, m
         "speech_act": "query",
         "confidence": 0.9,
     }
+    fake_session = type(
+        "Session",
+        (),
+        {
+            "id": "ses_1",
+            "current_mode": "today",
+            "active_entity_refs_json": [{"entity_type": "work_item", "entity_id": "tsk_1", "title": "Task A"}],
+            "pending_draft_id": None,
+            "pending_clarification_json": {},
+            "summary_metadata_json": {},
+        },
+    )()
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.query_ask", new_callable=AsyncMock
     ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture, patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._get_or_create_session", new_callable=AsyncMock, return_value=fake_session
     ), patch("api.main._create_action_draft", new_callable=AsyncMock) as create_draft, patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
     ), patch(
@@ -1660,6 +1674,9 @@ def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send, m
         apply_capture.assert_not_awaited()
         create_draft.assert_not_awaited()
         assert "2 open tasks" in mock_send.await_args.args[1]
+        turn_context = mock_extract.interpret_telegram_turn.await_args.kwargs["context"]
+        assert turn_context["session_state"]["session_id"] == "ses_1"
+        assert turn_context["session_state"]["current_mode"] == "today"
 
 
 def test_non_command_yes_applies_open_draft(app_no_db, mock_send, mock_extract):
@@ -1878,7 +1895,7 @@ def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, m
     assert "Review live /today behavior" in text
     assert "Updated " in text
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_1"], "today")
-    mock_db.commit.assert_awaited_once()
+    assert mock_db.commit.await_count >= 1
 
 
 def test_command_today_rebuilds_live_when_cached_plan_is_stale(mock_redis, mock_send, mock_db):
@@ -1948,7 +1965,7 @@ def test_command_urgent_lists_high_priority_tasks(mock_send, mock_db):
     assert "Submit payroll correction" in text
     assert "Due 2026-03-25" in text
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_urgent_1", "tsk_urgent_2"], "urgent")
-    mock_db.commit.assert_awaited_once()
+    assert mock_db.commit.await_count >= 1
 
 
 def test_command_web_returns_prefilled_workbench_link(mock_send, mock_db):
@@ -2077,7 +2094,7 @@ def test_command_today_stores_due_reminder_context_after_successful_send(mock_re
         reason="today_view",
         ttl_hours=12,
     )
-    mock_db.commit.assert_awaited_once()
+    assert mock_db.commit.await_count >= 1
 
 
 def test_command_done_without_args_uses_ordinal_first_guidance(mock_db, mock_send):
