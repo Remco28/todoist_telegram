@@ -19,6 +19,7 @@ from api.main import (
     _apply_capture,
     _best_reminder_reference_candidate,
     _best_task_reference_candidate,
+    _confirm_action_draft,
     _draft_set_awaiting_edit_input,
     _draft_set_proposal_message_id,
     _format_action_draft_preview,
@@ -1694,6 +1695,57 @@ def test_non_command_yes_applies_open_draft(app_no_db, mock_send, mock_extract):
         assert resp.status_code == 200
         confirm_draft.assert_awaited_once()
         assert "task(s) created" in mock_send.await_args.args[1].lower()
+
+
+def test_confirm_action_draft_invalidates_today_plan_cache(mock_db):
+    fake_draft = _fake_draft(
+        source_message="move the photo processing task to tomorrow",
+        proposal_json={"tasks": [{"title": "Process photos from the last tournament", "action": "update"}]},
+    )
+    fake_session = type(
+        "SessionObj",
+        (),
+        {
+            "id": "ses_1",
+            "current_mode": "today",
+            "active_entity_refs_json": [],
+            "pending_draft_id": None,
+            "pending_clarification_json": None,
+            "summary_metadata_json": {},
+        },
+    )()
+    with patch(
+        "api.main._apply_capture",
+        new_callable=AsyncMock,
+        return_value=("inb_1", AppliedChanges(tasks_updated=1)),
+    ) as apply_capture, patch(
+        "api.main._invalidate_today_plan_cache",
+        new_callable=AsyncMock,
+    ) as invalidate_today, patch(
+        "api.main._enqueue_summary_job",
+        new_callable=AsyncMock,
+    ) as enqueue_summary, patch(
+        "api.main._get_or_create_session",
+        new_callable=AsyncMock,
+        return_value=fake_session,
+    ), patch(
+        "api.main._update_session_state",
+        new_callable=AsyncMock,
+    ):
+        applied = asyncio.run(
+            _confirm_action_draft(
+                draft=fake_draft,
+                user_id="usr_123",
+                chat_id="12345",
+                request_id="req_1",
+                db=mock_db,
+            )
+        )
+
+    apply_capture.assert_awaited_once()
+    invalidate_today.assert_awaited_once_with("usr_123", "12345")
+    enqueue_summary.assert_awaited_once_with(user_id="usr_123", chat_id="12345", inbox_item_id="inb_1")
+    assert applied.tasks_updated == 1
 
 
 def test_callback_confirm_applies_open_draft(app_no_db, mock_send):

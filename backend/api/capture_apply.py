@@ -894,6 +894,16 @@ async def run_apply_capture(
 
     if commit:
         await db.commit()
+        if chat_id and "_invalidate_today_plan_cache" in helpers:
+            try:
+                await helpers["_invalidate_today_plan_cache"](user_id, chat_id)
+            except Exception as exc:
+                helpers["logger"].warning(
+                    "Failed to invalidate today plan cache after apply_capture for user %s chat %s: %s",
+                    user_id,
+                    chat_id,
+                    exc,
+                )
     if enqueue_summary:
         await helpers["_enqueue_summary_job"](user_id=user_id, chat_id=chat_id, inbox_item_id=inbox_item_id)
     return inbox_item_id, applied

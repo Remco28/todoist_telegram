@@ -471,6 +471,17 @@ async def run_create_action_draft(
         )
     )
     await db.commit()
+    if "_invalidate_today_plan_cache" in helpers:
+        try:
+            await helpers["_invalidate_today_plan_cache"](user_id, chat_id)
+        except Exception as exc:
+            helpers["logger"].warning(
+                "Failed to invalidate today plan cache after confirming draft %s for user %s chat %s: %s",
+                draft.id,
+                user_id,
+                chat_id,
+                exc,
+            )
     if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
         session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
         await helpers["_update_session_state"](
@@ -604,6 +615,17 @@ async def run_confirm_action_draft(draft, user_id: str, chat_id: str, request_id
         )
     )
     await db.commit()
+    if "_invalidate_today_plan_cache" in helpers:
+        try:
+            await helpers["_invalidate_today_plan_cache"](user_id, chat_id)
+        except Exception as exc:
+            helpers["logger"].warning(
+                "Failed to invalidate today plan cache after confirming draft %s for user %s chat %s: %s",
+                draft.id,
+                user_id,
+                chat_id,
+                exc,
+            )
     if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
         session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
         await helpers["_update_session_state"](
