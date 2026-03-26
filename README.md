@@ -37,6 +37,8 @@ The live runtime is local-first. Legacy tables may still exist in the database f
 - Hierarchy awareness is now threaded into the local-first UX too: parent titles are part of conversational task grounding, and the `/app` workbench renders work items in parent-aware order instead of a flat id-only list
 - The `/app` workbench now supports bounded maintenance edits for work items in place, so the web surface is useful for cleanup without becoming the main product
 - Reminder follow-through is tighter too: reminder grounding now includes linked work-item titles for better conversational disambiguation, and `/app` now supports bounded reminder edits in place
+- Telegram now distinguishes between the ranked agenda and the strict due-today slice: `/today` remains the broader “what should I pay attention to today?” plan, while natural-language questions like `What is due today?` route to a deterministic due-today view
+- The today planner now respects explicit deferrals in the hierarchy: if a task or parent task is moved into the future, it should not keep leaking into `/today` unless a child has its own earlier explicit date
 - Canonical maintenance surface is now fully local-first: `/v1/work_items` and `/v1/reminders`
 - Legacy `/v1/tasks`, `/v1/goals`, and `/v1/problems` endpoints are no longer registered.
 - Canonical local-first preservation now happens via markdown export: `cd backend && python3 ops/export_local_first_markdown.py`
@@ -172,6 +174,7 @@ Then send this in Telegram:
 ### 4. Use it naturally
 Examples:
 - `Anything due today?`
+- `What is due today?`
 - `Push the 401k registration to next week. Patrick's email is required.`
 - `Amy handled the backpack already.`
 - `Break this into subtasks for me: research 401k requirements in NYC...`

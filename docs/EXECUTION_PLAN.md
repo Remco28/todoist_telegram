@@ -42,6 +42,8 @@
 - The maintenance workbench now supports bounded work-item edits directly from `/app`, which brings the web surface closer to the intended “light cleanup/editing” role without turning it into a second primary interface.
 - Reminder follow-through is now tighter too: reminder grounding and clarification scoring can use linked work-item titles, reminder API payloads can expose those titles, and the `/app` workbench now supports bounded reminder edits instead of only status/snooze actions.
 - Goal/problem compatibility buckets are now folded immediately into project-shaped `tasks[]` entries during validation/normalization, so the live write path no longer carries separate runtime branches for those legacy entity types.
+- Telegram now has a distinct due-today read path: natural-language questions like “what is due today?” no longer collapse into the broader ranked agenda used by `/today`.
+- Planner hierarchy deferral semantics are tighter too: future-dated parent work now suppresses child leakage into `/today` unless a child carries its own explicit earlier date.
 - Immediate next implementation phase: finish final local-first polish rather than more architectural churn, with emphasis on maintenance UX, reminder follow-through, and remaining repo/schema cleanup.
 
 ## Active Implementation Tracks
