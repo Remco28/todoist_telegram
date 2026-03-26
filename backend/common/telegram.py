@@ -47,7 +47,7 @@ _TASK_TITLE_WRAPPER_PATTERNS = (
     ),
 )
 PLAN_STALE_WARNING_SECONDS = 300
-PROJECT_MARKER = "◇"
+PROJECT_MARKER = "▣"
 
 
 def strip_internal_ids(text: str) -> str:
@@ -458,6 +458,10 @@ def _render_task_title(item: Dict[str, Any], *, nested: bool = False) -> str:
     return title
 
 
+def _indent_html(width: int) -> str:
+    return "&nbsp;" * max(0, width)
+
+
 def _work_item_detail_text(item: Dict[str, Any]) -> Optional[str]:
     details: List[str] = []
     status_value = str(item.get("status") or "").strip().lower()
@@ -478,11 +482,11 @@ def _append_nested_open_task_lines(
     *,
     depth: int,
 ) -> None:
-    indent = "   " * depth
-    lines.append(f"{indent}- {escape_html(_render_task_title(item, nested=True))}")
+    indent_width = depth * 3
+    lines.append(f"{_indent_html(indent_width)}- {escape_html(_render_task_title(item, nested=True))}")
     details = _work_item_detail_text(item)
     if details:
-        lines.append(f"{indent}  <i>{escape_html(details)}</i>")
+        lines.append(f"{_indent_html(indent_width + 5)}<i>{escape_html(details)}</i>")
     item_id = str(item.get("id") or "").strip()
     for child in children_by_parent.get(item_id, []):
         _append_nested_open_task_lines(lines, child, children_by_parent, depth=depth + 1)
@@ -503,7 +507,7 @@ def _append_open_task_section(
         lines.append(f"{start_index}. {escape_html(_render_task_title(item))}")
         details = _work_item_detail_text(item)
         if details:
-            lines.append(f"   <i>{escape_html(details)}</i>")
+            lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
         item_id = str(item.get('id') or "").strip()
         for child in children_by_parent.get(item_id, []):
             _append_nested_open_task_lines(lines, child, children_by_parent, depth=1)
@@ -529,7 +533,7 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
         for idx, item in enumerate(today_plan):
             lines.append(f"{idx+1}. {escape_html(_render_task_title(item))}")
             if item.get("reason"):
-                lines.append(f"   <i>{escape_html(item['reason'])}</i>")
+                lines.append(f"{_indent_html(5)}<i>{escape_html(item['reason'])}</i>")
 
     due_reminders = plan_payload.get("due_reminders", [])
     if due_reminders:
@@ -582,7 +586,7 @@ def format_urgent_tasks(tasks: List[Dict[str, Any]]) -> str:
         lines.append(f"{idx}. {escape_html(_render_task_title(task))}")
         details = _work_item_detail_text(task)
         if details:
-            lines.append(f"   <i>{escape_html(details)}</i>")
+            lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
     return "\n".join(lines)
 
 
@@ -645,7 +649,7 @@ def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[
             lines.append(f"{idx}. {escape_html(_render_task_title(task))}")
             details = _work_item_detail_text(task)
             if details:
-                lines.append(f"   <i>{escape_html(details)}</i>")
+                lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
 
     if reminders:
         lines.append("")

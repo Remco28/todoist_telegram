@@ -1038,6 +1038,75 @@ def test_extract_fallback_recovers_due_date_update_from_displayed_ordinal_refere
         ]
 
 
+def test_extract_fallback_recovers_completion_from_recent_visible_task_statement(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 1.0,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "complete", "target_task_id": "tsk_missing_title"}],
+    }
+    fake_draft = _fake_draft(
+        source_message="I got Amy the tax documents, done!",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    grounding = {
+        "tasks": [
+            {"id": "tsk_amy_docs", "title": "Get Amy the tax documents", "status": "open"},
+            {"id": "tsk_other", "title": "Pack for tournament", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_amy_docs", "title": "Get Amy the tax documents", "status": "open"},
+            {"id": "tsk_other", "title": "Pack for tournament", "status": "open"},
+        ],
+        "displayed_task_refs": [
+            {"ordinal": 3, "id": "tsk_amy_docs", "title": "Get Amy the tax documents", "status": "open", "view_name": "today"},
+            {"ordinal": 4, "id": "tsk_other", "title": "Pack for tournament", "status": "open", "view_name": "today"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    ) as extract_fallback:
+        apply_capture.return_value = ("inb_amy", AppliedChanges(tasks_updated=1))
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("I got Amy the tax documents, done!"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_awaited_once()
+        critique_actions.assert_not_awaited()
+        create_draft.assert_not_awaited()
+        send_preview.assert_not_awaited()
+        apply_capture.assert_awaited_once()
+        extraction = apply_capture.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Get Amy the tax documents",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_amy_docs",
+            }
+        ]
+
+
 def test_non_command_unusable_critic_revisions_do_not_clobber_planner_extraction(app_no_db, mock_send):
     planned = {
         "intent": "action",

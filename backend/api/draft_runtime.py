@@ -226,7 +226,49 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
                     "due_date": inferred_due_date,
                 }
             ]
+            return extraction
+
+    if run_is_completion_like_message(message, helpers=helpers):
+        displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
+        if displayed_match:
+            extraction["tasks"] = [
+                {
+                    "title": displayed_match["title"],
+                    "action": "complete",
+                    "status": "done",
+                    "target_task_id": displayed_match["id"],
+                }
+            ]
+            return extraction
+        best_candidate = helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
+        if best_candidate:
+            extraction["tasks"] = [
+                {
+                    "title": best_candidate["title"],
+                    "action": "complete",
+                    "status": "done",
+                    "target_task_id": best_candidate["id"],
+                }
+            ]
     return extraction
+
+
+def run_is_completion_like_message(message: str, *, helpers: Dict[str, Any]) -> bool:
+    if not isinstance(message, str) or not message.strip():
+        return False
+    if "?" in message:
+        return False
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return False
+    completion_patterns = (
+        r"\bdone\b",
+        r"\bcomplete(?:d)?\b",
+        r"\bfinished\b",
+        r"\bhandled\b",
+        r"\btook care of\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in completion_patterns)
 
 
 def run_extract_displayed_ordinal_task(

@@ -121,7 +121,7 @@ class TestFormattersEscapeHtmlContent:
             )
         assert "Open Tasks" in rendered
         assert "<b>Projects</b>" in rendered
-        assert "◇ Get glasses at Warby Parker" in rendered
+        assert "▣ Get glasses at Warby Parker" in rendered
         assert "- Schedule appointment at Warby Parker store" in rendered
         assert "- Measure pupillary distance (PD)" in rendered
         assert "<b>Tasks</b>" in rendered
@@ -146,7 +146,7 @@ class TestFormattersEscapeHtmlContent:
             ],
         )
         assert "Due Today" in rendered
-        assert "◇ Finish registering the 401k account" in rendered
+        assert "▣ Finish registering the 401k account" in rendered
         assert "- Review Neil's list" in rendered
         assert "blocked" in rendered
         assert "Due Reminders" in rendered
@@ -174,7 +174,7 @@ class TestFormattersEscapeHtmlContent:
             ],
         }
         result = format_today_plan(payload)
-        assert "◇ Get glasses at Warby Parker" in result
+        assert "▣ Get glasses at Warby Parker" in result
 
     def test_due_date_text_uses_us_format_and_relative_window(self):
         with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)):
