@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from api.main import (
     handle_telegram_command,
     _apply_capture,
+    _build_extraction_grounding,
     _best_reminder_reference_candidate,
     _best_task_reference_candidate,
     _confirm_action_draft,
@@ -257,6 +258,83 @@ def test_natural_language_due_today_query_uses_deterministic_due_today_view(app_
         assert resp.status_code == 200
         send_due_today.assert_awaited_once()
         build_grounding.assert_not_awaited()
+
+
+def test_build_extraction_grounding_keeps_displayed_parent_project(mock_db):
+    now = datetime(2026, 3, 26, 5, 0, tzinfo=timezone.utc)
+    project = WorkItem(
+        id="prj_webapps",
+        user_id="usr_123",
+        kind=WorkItemKind.project,
+        title="Web apps optimization checklist for Hetzner server",
+        title_norm="web apps optimization checklist for hetzner server",
+        status=WorkItemStatus.open,
+        updated_at=now,
+    )
+    recent_ctx = RecentContextItem(
+        id="rci_1",
+        user_id="usr_123",
+        chat_id="12345",
+        entity_type=EntityType.work_item,
+        entity_id="prj_webapps",
+        reason="task_display:today:batch123:1",
+        surfaced_at=now,
+        expires_at=now,
+    )
+
+    task_result = Mock()
+    task_scalars = Mock()
+    task_scalars.all.return_value = [project]
+    task_result.scalars.return_value = task_scalars
+
+    recent_result = Mock()
+    recent_scalars = Mock()
+    recent_scalars.all.return_value = [recent_ctx]
+    recent_result.scalars.return_value = recent_scalars
+
+    recent_task_result = Mock()
+    recent_task_scalars = Mock()
+    recent_task_scalars.all.return_value = [project]
+    recent_task_result.scalars.return_value = recent_task_scalars
+
+    reminder_recent_result = Mock()
+    reminder_recent_scalars = Mock()
+    reminder_recent_scalars.all.return_value = []
+    reminder_recent_result.scalars.return_value = reminder_recent_scalars
+
+    reminder_result = Mock()
+    reminder_scalars = Mock()
+    reminder_scalars.all.return_value = []
+    reminder_result.scalars.return_value = reminder_scalars
+
+    mock_db.execute.side_effect = [
+        task_result,
+        recent_result,
+        recent_task_result,
+        reminder_recent_result,
+        reminder_result,
+    ]
+
+    grounding = asyncio.run(
+        _build_extraction_grounding(
+            db=mock_db,
+            user_id="usr_123",
+            chat_id="12345",
+            message="move the web apps optimization to tomorrow",
+        )
+    )
+
+    assert any(item["id"] == "prj_webapps" for item in grounding["tasks"])
+    assert grounding["displayed_task_refs"] == [
+        {
+            "ordinal": 1,
+            "id": "prj_webapps",
+            "title": "Web apps optimization checklist for Hetzner server",
+            "status": "open",
+            "view_name": "today",
+            "parent_title": None,
+        }
+    ]
 
 
 def test_natural_language_open_tasks_query_uses_deterministic_view(app_no_db, mock_extract):

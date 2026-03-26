@@ -27,7 +27,7 @@ async def run_build_extraction_grounding(
             select(WorkItem)
             .where(
                 WorkItem.user_id == user_id,
-                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
                 WorkItem.status != WorkItemStatus.archived,
             )
             .order_by(WorkItem.updated_at.desc())
@@ -142,7 +142,7 @@ async def run_build_extraction_grounding(
         recent_tasks_stmt = select(WorkItem).where(
             WorkItem.user_id == user_id,
             WorkItem.id.in_(combined_task_ids),
-            WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+            WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
         )
         recent_tasks = (await db.execute(recent_tasks_stmt)).scalars().all()
         extra_parent_ids = {
