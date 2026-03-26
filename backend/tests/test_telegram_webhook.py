@@ -260,6 +260,58 @@ def test_natural_language_due_today_query_uses_deterministic_due_today_view(app_
         build_grounding.assert_not_awaited()
 
 
+def test_multiline_for_today_list_prefers_action_capture_over_today_view(app_no_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "today",
+        "confidence": 0.87,
+    }
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.93,
+        "needs_confirmation": True,
+        "actions": [
+            {"entity_type": "task", "action": "create", "title": "Pack for tournament"},
+            {"entity_type": "task", "action": "create", "title": "Get Amy the tax documents"},
+            {"entity_type": "task", "action": "create", "title": "Wash my car"},
+        ],
+    }
+    message = "For today:\n\nPack for tournament\n\nGet Amy the tax documents\n\nWash my car"
+    grounding = {
+        "tasks": [],
+        "goals": [],
+        "problems": [],
+        "links": [],
+        "reminders": [],
+        "current_date_local": "2026-03-26",
+        "timezone": "America/New_York",
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ) as build_grounding, patch(
+        "api.main._send_today_plan_view", new_callable=AsyncMock
+    ) as send_today, patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(message), headers=_headers())
+        assert resp.status_code == 200
+        send_today.assert_not_awaited()
+        assert build_grounding.await_count == 1
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert [task["title"] for task in extraction["tasks"]] == [
+            "Pack for tournament",
+            "Get Amy the tax documents",
+            "Wash my car",
+        ]
+        send_preview.assert_awaited_once()
+
+
 def test_build_extraction_grounding_keeps_displayed_parent_project(mock_db):
     now = datetime(2026, 3, 26, 5, 0, tzinfo=timezone.utc)
     project = WorkItem(
@@ -837,6 +889,84 @@ def test_extract_fallback_recovers_due_date_update_from_recent_today_task(app_no
                 "action": "update",
                 "target_task_id": "tsk_photos",
                 "due_date": "2026-03-26",
+            }
+        ]
+
+
+def test_extract_fallback_recovers_due_date_update_from_displayed_parent_project(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.99,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "update", "target_task_id": "tsk_missing_title"}],
+    }
+    fake_draft = _fake_draft(
+        source_message="move the web apps optimization to tomorrow",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    grounding = {
+        "tasks": [
+            {
+                "id": "prj_webapps",
+                "title": "Web apps optimization checklist for Hetzner server",
+                "status": "open",
+            },
+        ],
+        "recent_task_refs": [
+            {
+                "id": "prj_webapps",
+                "title": "Web apps optimization checklist for Hetzner server",
+                "status": "open",
+            },
+        ],
+        "displayed_task_refs": [
+            {
+                "ordinal": 3,
+                "id": "prj_webapps",
+                "title": "Web apps optimization checklist for Hetzner server",
+                "status": "open",
+                "view_name": "today",
+            },
+        ],
+    }
+    with patch("api.main._local_today", return_value=date(2026, 3, 26)), patch(
+        "api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"
+    ), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("move the web apps optimization to tomorrow"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_awaited_once()
+        critique_actions.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Web apps optimization checklist for Hetzner server",
+                "action": "update",
+                "target_task_id": "prj_webapps",
+                "due_date": "2026-03-27",
             }
         ]
 

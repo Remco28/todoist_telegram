@@ -3,6 +3,21 @@ from datetime import timedelta
 from typing import Any, Dict, Optional
 
 
+def _looks_like_structured_capture_message(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped or "?" in stripped:
+        return False
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    if lines[0].endswith(":"):
+        item_lines = lines[1:]
+        return len(item_lines) >= 2 and all(len(line.split()) <= 16 for line in item_lines)
+    return len(lines) >= 3 and all(len(line.split()) <= 16 for line in lines)
+
+
 async def run_handle_telegram_draft_flow(
     chat_id: str,
     text: str,
@@ -40,6 +55,8 @@ async def run_handle_telegram_draft_flow(
     draft_action = turn.get("draft_action") if isinstance(turn, dict) else None
     draft_edit_text = turn.get("draft_edit_text") if isinstance(turn, dict) else None
     turn_confidence = turn.get("confidence") if isinstance(turn, dict) else None
+    rescue_grounding = None
+    rescue_planned = None
 
     db.add(
         helpers["EventLog"](
@@ -204,6 +221,31 @@ async def run_handle_telegram_draft_flow(
         )
         return
 
+    if (
+        speech_act == "query"
+        and requested_view in {"today", "due_today"}
+        and _looks_like_structured_capture_message(text)
+    ):
+        rescue_grounding = await helpers["_build_extraction_grounding"](
+            db=db,
+            user_id=user_id,
+            chat_id=chat_id,
+            message=text,
+        )
+        rescue_grounding["session_state"] = session_state
+        rescue_planned = await helpers["adapter"].plan_actions(
+            text,
+            context={
+                "grounding": rescue_grounding,
+                "chat_id": chat_id,
+                "turn_interpretation": turn,
+                "rescue_mode": "structured_capture",
+            },
+        )
+        if isinstance(rescue_planned, dict) and rescue_planned.get("intent") == "action":
+            speech_act = "action"
+            requested_view = None
+
     if requested_view in {"today", "focus"}:
         payload, served_from_cache = await helpers["_load_today_plan_payload"](db, user_id, chat_id, require_fresh=True)
         await helpers["_send_today_plan_view"](
@@ -267,7 +309,12 @@ async def run_handle_telegram_draft_flow(
         )
         return
 
-    grounding = await helpers["_build_extraction_grounding"](db=db, user_id=user_id, chat_id=chat_id, message=text)
+    grounding = rescue_grounding or await helpers["_build_extraction_grounding"](
+        db=db,
+        user_id=user_id,
+        chat_id=chat_id,
+        message=text,
+    )
     grounding["session_state"] = session_state
     await helpers["_update_session_state"](
         db=db,
@@ -277,7 +324,10 @@ async def run_handle_telegram_draft_flow(
         pending_draft_id=open_draft.id if open_draft else None,
         pending_clarification=clarification_state,
     )
-    planned = await helpers["adapter"].plan_actions(text, context={"grounding": grounding, "chat_id": chat_id})
+    planned = rescue_planned or await helpers["adapter"].plan_actions(
+        text,
+        context={"grounding": grounding, "chat_id": chat_id},
+    )
     intent = "action"
     actions = planned.get("actions") if isinstance(planned, dict) else None
 
