@@ -46,7 +46,7 @@ def test_health_metrics_returns_operational_shape(mock_redis):
                 request_id="r2",
                 user_id="usr_dev",
                 event_type="worker_moved_to_dlq",
-                payload_json={"topic": "sync.todoist"},
+                payload_json={"topic": "memory.compact"},
                 created_at=now,
             ),
         ]
@@ -72,7 +72,7 @@ def test_health_metrics_returns_operational_shape(mock_redis):
                 request_id="r5",
                 user_id="usr_dev",
                 event_type="worker_topic_completed",
-                payload_json={"topic": "sync.todoist.reconcile"},
+                payload_json={"topic": "memory.compact"},
                 created_at=datetime(2026, 2, 10, 3, 0, 0),
             ),
         ]
@@ -106,8 +106,8 @@ def test_health_metrics_returns_operational_shape(mock_redis):
                 assert body["failure_counters"]["moved_to_dlq"] == 1
                 assert body["last_success_by_topic"]["memory.summarize"] is not None
                 assert body["last_success_by_topic"]["plan.refresh"] is not None
-                assert body["last_success_by_topic"]["sync.todoist"] is None
-                assert body["last_success_by_topic"]["sync.todoist.reconcile"] is not None
+                assert body["last_success_by_topic"]["memory.compact"] is not None
+                assert body["last_success_by_topic"]["reminders.dispatch"] is None
         finally:
             app.dependency_overrides.clear()
 

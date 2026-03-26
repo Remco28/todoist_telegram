@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -251,7 +251,7 @@ def test_daily_cost_summary_aggregation(mock_redis):
                 cached_input_tokens=250,
                 output_tokens=200,
                 status="success",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             ),
             PromptRun(
                 id="p2",
@@ -265,7 +265,7 @@ def test_daily_cost_summary_aggregation(mock_redis):
                 cached_input_tokens=100,
                 output_tokens=0,
                 status="success",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             ),
             PromptRun(
                 id="p3",
@@ -279,7 +279,7 @@ def test_daily_cost_summary_aggregation(mock_redis):
                 cached_input_tokens=50000,
                 output_tokens=9999,
                 status="success",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             ),
         ]
 

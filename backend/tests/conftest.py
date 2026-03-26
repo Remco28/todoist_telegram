@@ -43,6 +43,7 @@ def mock_send():
 @pytest.fixture
 def mock_extract():
     with patch("api.main.adapter") as m:
+        m.interpret_telegram_turn = AsyncMock(return_value={"speech_act": "action", "confidence": 0.8})
         m.plan_actions = AsyncMock(
             return_value={
                 "intent": "action",
@@ -54,7 +55,7 @@ def mock_extract():
         )
         m.critique_actions = AsyncMock(return_value={"approved": True, "issues": []})
         m.extract_structured_updates = AsyncMock(
-            return_value={"tasks": [], "goals": [], "problems": [], "links": []}
+            return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []}
         )
         yield m
 

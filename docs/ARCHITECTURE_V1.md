@@ -1,218 +1,265 @@
-# Architecture v1
+# Architecture
+
+Note: the file path is legacy. The contents now describe the current local-first rework target.
 
 ## High-Level Components
-- Telegram Bot Service
-- Core API Service (HTTP + optional MCP surface)
-- Planner/Memory Worker Service
-- Postgres (source of truth)
-- Redis (queue/cache; optional but recommended)
-- Todoist Sync Worker
-- LLM Provider Adapter Layer
+- Telegram bot service
+- Core API service
+- Planner / reminder / memory worker
+- Postgres
+- Redis (optional but recommended for queueing, scheduling, and transient caches)
+- Lightweight web UI
+- LLM provider adapter layer
 
 ## Product North Star
-The bot should feel like a conversational executive assistant, not a command shell. Users should be able to think out loud, ask questions, and make lightweight changes naturally; the backend is responsible for turning that conversation into reliable structured state without exposing internal ids, cache mechanics, or system-internal mutation language.
+The system should feel like a conversational executive assistant with a real memory and a real local state model, not like a Telegram front-end for another task manager.
 
-## Interaction Modes
-- Query mode (read-only): answer questions from stored graph + summaries.
-- Draft action mode (no-write): parse intent and generate a proposed mutation plan.
-- Apply action mode (write-enabled): apply previously confirmed proposal transactionally and sync.
-- Mode selection is backend controlled using intent classification and policy rules.
+## Product Surfaces
+- Telegram: primary user interface.
+- Web UI: secondary maintenance interface.
+- Background worker: reminders, planning refresh, summarization, cleanup jobs.
 
-## Telegram Conversational Contract (Target)
-1. User sends free-form text.
-2. Backend classifies message:
-- `query`: answer directly, no writes.
-- `action`: generate structured proposal and show confirmation summary.
- - natural-language routing is primary; slash commands are optional fallback controls.
- - recent visible context (for example, a just-shown `/today` list) is part of the conversational state and should support follow-ups like "delete the first one" or "move that to tomorrow".
-3. Bot asks for confirmation (`yes`, `edit`, `no`):
-- `yes`: commit DB writes and enqueue immediate Todoist sync.
-- `edit`: regenerate proposal with user clarifications.
-- `no`: discard draft.
-4. All applied changes are logged with request id and proposal provenance.
-5. Rule: no autonomous durable writes from ambiguous conversational text without confirmation.
-6. Rule: user-facing summaries must surface real user tasks and outcomes, not internal rewrite instructions, raw ids, or stale cached state that contradicts a just-confirmed mutation.
+## Core Interaction Contract
+1. User sends natural language in Telegram.
+2. Model interprets the turn:
+- small talk
+- query
+- action
+- confirmation
+- clarification answer
+3. Backend loads recent visible context, relevant work items, aliases, reminders, and pending draft state.
+4. Backend asks the model for structured output, bounded by backend-provided context.
+5. Backend validates the proposal.
+6. If a write is ambiguous or risky, backend asks one concrete clarification question.
+7. If a write is clear enough, backend shows a proposal and waits for confirmation.
+8. Backend writes transactionally and records a reversible action batch.
+9. Worker updates plan snapshots, reminders, and memory summaries.
 
-## Runtime Model (Coolify)
-- `api` container: request handling, business logic, auth, tool endpoints.
-- `worker` container: async jobs (summarization, planning refresh, sync).
-- `postgres` managed DB: private network only.
-- `redis` container (optional): queue + idempotency/cache.
-- `caddy/nginx` (or Coolify edge): TLS termination and routing.
+## Core Domain Model
+The central entity should be a unified `work_item`.
 
-## Todoist Synchronization
-- Downstream sync (`sync.todoist`): pushes local task changes to Todoist.
-- Reconciliation sync (`sync.todoist.reconcile`): pulls mapped remote task state back into local tasks.
-- Reconcile applies deterministic rules:
-- Remote completion sets local task to `done`.
-- For open local tasks, remote `content/description/priority/due` updates local fields.
-- Missing remote mapped tasks are marked as terminal drift errors and logged; local tasks are not deleted in v1.
-- Every reconcile run emits explicit audit events for applied updates, remote-missing drift, per-task failures, and run completion.
+### `work_items`
+- `id`
+- `user_id`
+- `kind`: `project | task | subtask`
+- `parent_id`
+- `title`
+- `title_norm`
+- `notes`
+- `status`
+- `priority`
+- `due_at`
+- `scheduled_for`
+- `snooze_until`
+- `estimated_minutes`
+- `area_id`
+- `owner_person_id` or linked people through join table
+- `created_at`
+- `updated_at`
+- `completed_at`
+- `archived_at`
 
-## Core Data Model
-- `inbox_items`: raw captured user messages and metadata.
-- `tasks`: actionable items; status, due, priority, impact.
-- `problems`: ongoing friction/opportunity areas.
-- `goals`: higher-level outcomes with category/timeframe.
-- `task_links`: typed relationships (`depends_on`, `blocks`, `supports_goal`, `related`).
-- `entity_links`: task-to-problem and task-to-goal joins.
-- `memory_summaries`: session/weekly summaries.
-- `event_log`: append-only audit of AI and system actions.
-- `sync_state`: Todoist mapping + watermark/version info.
-- `sessions`: app-level conversation windows keyed by user/chat.
-- `prompt_runs`: record prompt version, model, token usage, latency, and outcome.
-- `recent_context_items`: short-lived list of recently shown entity ids for follow-up resolution.
-- `telegram_user_map`: maps Telegram `chat_id` to internal `user_id` after secure onboarding.
-- `telegram_link_tokens`: one-time short-lived token hashes used for Telegram account linking.
+### Hierarchy Rules
+- Projects can have child tasks.
+- Tasks can have child subtasks.
+- Subtasks do not have children.
+- Promotion is allowed:
+- a `task` can become a `project`
+- existing children can then attach under it
 
-## Memory Engine
-### Purpose
-Keep long-term context accurate and compact.
+## Supporting Tables
+### `work_item_aliases`
+- Stores alternate user-facing references for matching and grounding.
+- Examples:
+- `the backpack thing`
+- `register one`
+- `Patrick payroll follow-up`
 
-### Layers
-- Hot memory: active session context (small).
-- Warm memory: rolling summaries (day/week level).
-- Cold memory: full source records (messages + events).
+### `work_item_links`
+- Typed relationships between work items.
+- Examples:
+- `blocks`
+- `depends_on`
+- `related_to`
+- `part_of`
 
-### Flow
-1. New message captured to `inbox_items`.
-2. Extraction job creates/updates structured entities.
-3. Summarization job updates session summary and durable facts.
-4. Retrieval composes context by recency + semantic match + graph proximity.
+### `people`
+- Named humans frequently referenced in tasks.
+- Allows stronger grounding for follow-ups like "waiting on Patrick".
 
-### Session Semantics
-- API calls are stateless by default; continuity is created by backend retrieval.
-- App session windows are configurable (for example, inactivity timeout).
-- Raw transcript retention and compaction are policy-driven.
-- Structured entities persist independently of transcript retention.
+### `areas`
+- Stable life/work buckets like `home`, `work`, `finance`, `health`.
 
-### Controls
-- Strict token budget for prompt context assembly.
-- Deduplication of repeated facts.
-- Provenance pointers from summaries to source events.
+### `reminders`
+- Explicit reminder schedule separate from due dates.
+- Supports nudges like:
+- "remind me tomorrow at 9"
+- "check next week if Patrick replied"
 
-## Planning Refresh Engine
-### Purpose
-Produce ordered execution plans from structured state.
+### `recent_context_items`
+- Short-lived record of what the assistant recently showed or discussed.
+- Important for:
+- "that one"
+- "the first task"
+- "the register one"
 
-### Hybrid Design
-- Deterministic scoring for rank/order.
-- LLM layer for language rewrite, tie-breaking rationale, and ambiguity handling.
+### `plan_snapshots`
+- Stored outputs of planner runs.
+- Useful for:
+- `/today`
+- `/urgent`
+- daily brief messages
+- debugging plan quality over time
 
-### Suggested Scoring Inputs
-- Urgency (due/overdue)
-- Impact
-- Goal alignment strength
-- Dependency/blocker status
-- Age/staleness
-- Effort/context fit (optional phase 2)
+### `conversation_events`
+- Raw Telegram/API messages plus metadata.
+- Used for audit and memory summarization.
 
-### Outputs
-- `today_plan`
-- `next_actions`
-- `blocked_items`
-- `why_this_order`
+### `action_batches`
+- Every confirmed write grouped into a batch.
+- Stores:
+- user message
+- structured proposal
+- applied entity ids
+- before/after summary
+- undo eligibility
 
-## Write Pipeline (LLM-Assisted, Backend-Enforced)
-1. Capture raw message.
-2. Build grounded context (active tasks/goals/problems/links + recent summaries).
-3. Call provider action planner operation for strict JSON proposal (`intent`, `scope`, `actions[]`, `confidence`, `needs_confirmation`).
-4. Call provider critic operation to detect unsafe or low-quality proposals (duplicates, contradictions, missing targets, risky bulk ops).
-5. Validate against schema and policy constraints.
-6. Present proposal to user for confirmation when policy requires.
-7. Execute proposal deterministically after confirmation (no hidden semantic inference in executor).
-8. Commit transactional DB updates.
-9. Emit audit events, enqueue memory summarization, and enqueue immediate Todoist sync for changed tasks.
+### `work_item_versions`
+- Append-only history of item changes.
+- Supports:
+- inspection
+- rollback
+- debugging bad model behavior
 
-Rule: provider suggests, backend decides, backend writes.
+## Why This Model Helps The AI
+The database should give the model more handles, not more mystery.
 
-## Action Intelligence Contract (v1.1 Direction)
-- Primary behavior comes from LLM planning + critique, not phrase-to-action hardcoding.
-- Deterministic code is limited to:
-  - schema validation,
-  - safety policy checks,
-  - transactional execution,
-  - retries/fallback handling.
-- Phrase heuristics must not be used to guess destructive or mutating intent.
-- Any fallback path may only recover from schema/format issues; it must not infer broad writes from token coincidence.
-- Every applied write must be traceable to a concrete proposed action in stored draft payload.
-- For task mutations (`update`, `complete`, `archive`), execution is ID-first (`target_task_id` required).
-- Unresolved targets and low-confidence plans route to clarification mode, not guessed writes.
+Useful structure:
+- aliases
+- hierarchy
+- people
+- areas
+- reminders
+- recent visibility
+- version history
 
-## Clarification Mode
-- Clarification is a first-class response type for conversational action handling.
-- Trigger conditions:
-  - low planner confidence,
-  - unresolved mutation targets,
-  - non-actionable planner/critic outputs after sanitization.
-- Behavior:
-  - ask one concrete follow-up question,
-  - do not create or apply ambiguous mutations,
-  - preserve audit trace for operator review.
+That means the model can reason against:
+- exact work item ids
+- parent/child relationships
+- "things involving Patrick"
+- "items in finance"
+- "the project with the dinner subtasks"
 
-## Telegram Identity Flow
-1. API user requests one-time Telegram link token.
-2. Backend stores only token hash + TTL.
-3. User sends `/start <token>` to Telegram bot.
-4. Webhook validates token, consumes it, and stores `chat_id -> user_id`.
-5. Only linked chats can run Telegram commands or free-text capture writes.
+instead of only fuzzy title text.
 
-## LLM Provider Adapter
-### Design
-Abstract provider-specific APIs behind one interface:
-- `extract_structured_updates(input)`
-- `summarize_memory(context)`
-- `rewrite_plan(plan_state)`
-- `answer_query(query, retrieved_context)`
+## Target Resolution Strategy
+Intent interpretation is model-first.
+Target resolution remains backend-supervised.
 
-### Why
-- Prevent lock-in.
-- Swap Grok/OpenAI/Anthropic/Gemini without rewriting business logic.
-- Keep retries, timeouts, and fallback policies consistent.
+Recommended pattern:
+1. Backend prepares a bounded candidate set of existing work items.
+2. Model may return:
+- a direct candidate id from that set
+- or a clarification request
+3. Backend rejects ids outside the allowed candidate set.
+4. Backend applies writes only after schema and policy validation.
 
-## Grok Compatibility
-- Grok can be integrated as a provider behind the adapter.
-- MCP support can be used where helpful, but core should still call your own API/DB logic.
-- Treat provider tool features as optional acceleration, not architecture dependency.
-- Grok stateful continuation can be used for short-term efficiency.
-- Provider-side memory is optimization only; durable memory remains in app DB.
+This gives the model semantic flexibility without giving it unlimited authority over the database.
 
-## Prompt Contract
-- Layer 1: compact system policy (invariant guardrails).
-- Layer 2: operation prompt (`extract`, `query`, `plan`, `summarize`).
-- Layer 3: retrieved context (token-budgeted, relevance-ranked).
-- Layer 4: user message.
-- Prompt templates are versioned and logged per request.
+## Write Pipeline
+1. Store raw message in `conversation_events`.
+2. Build grounding:
+- relevant work items
+- aliases
+- recent visible items
+- linked people and areas
+- pending draft state
+3. Call turn interpreter.
+4. If write intent, call planner / structured action generator.
+5. Validate action payload.
+6. Resolve or confirm target ids from bounded candidates.
+7. Create draft proposal.
+8. On confirmation:
+- write `work_items`
+- write `work_item_versions`
+- write `action_batches`
+- update reminders / plan state
+9. Emit audit log events.
 
-## Token Efficiency Strategy
-- Small invariant policy included every call.
-- Operation-specific prompts kept short and purpose-built.
-- Context from retrieval, not full transcript replay.
-- Deterministic code handles scoring/filtering/linking to reduce LLM tokens.
-- Cache-friendly repeated context where provider supports caching.
+## Subtask Generation
+Subtask generation is explicit, not automatic by default.
 
-## API/MCP Surface (v1)
-- `capture/thought`
-- `tasks/list`, `tasks/create`, `tasks/update`, `tasks/close`
-- `problems/list`, `problems/create`, `problems/update`
-- `goals/list`, `goals/create`, `goals/update`
-- `links/create`, `links/delete`
-- `memory/refresh`
-- `plan/refresh`, `plan/get_today`
-- `sync/todoist/run`
+Supported behavior:
+- user creates or updates a parent item
+- user explicitly asks:
+- "create subtasks"
+- "break this into subtasks"
+- "turn this into a checklist"
+- backend asks model for child suggestions
+- backend shows parent + proposed children in one review draft
 
-## Recent Context Items (Optional but Recommended)
-- Store ids of entities shown in recent query responses (for example, last 20).
-- Keep short retention (for example, 24-72 hours).
-- Use for follow-up references like "those", "the second one", or "show me more on that task".
-- Keep database records as source of truth; this cache is only a convenience layer.
-- For Telegram, recent visible context is not just a retrieval hint; it is part of the UX contract and must stay aligned with the visible plan after mutations.
+Rule:
+- no silent auto-decomposition of tasks into subtasks
 
-## Reliability and Security
-- API auth required (token/JWT).
-- Postgres private-only.
-- Idempotency keys for capture/update endpoints.
-- Job retries with backoff + dead-letter queue.
-- Encrypted backups + restore drills.
-- Structured logs and health endpoints.
-- Provider call budgets and alerts (token, latency, error rates).
+## Planner and Reminder Engine
+The planner is local and works from `work_items`, reminders, and recent context.
+
+Planner outputs:
+- `today`
+- `urgent`
+- blocked items
+- waiting-on items
+- daily brief
+- weekly review
+
+Reminder engine responsibilities:
+- due reminders
+- scheduled reminders
+- follow-up reminders
+- recurring review prompts
+
+## Telegram Command Philosophy
+Commands are optional shortcuts, not the main UX.
+
+Visible menu should stay minimal:
+- `/today`
+- `/urgent`
+- `/start` if still needed for linking
+
+Everything else should work conversationally.
+
+## Web UI Scope
+The web UI is not the main product.
+It exists to support:
+- browsing projects/tasks/subtasks
+- editing structured fields
+- cleaning up duplicates
+- inspecting action history
+- undoing recent changes
+- reviewing reminders and plan snapshots
+
+It should not become a heavy productivity dashboard.
+
+## Reliability and Recovery
+- Postgres is the durable source of truth.
+- Every write should produce an action batch and version history.
+- Archive over delete where possible.
+- Undo should be a first-class operator feature.
+- Backups are mandatory.
+- Restore drills are mandatory.
+- Reminders and plans should be rebuildable from core state.
+
+## Todoist
+Todoist is not part of the target architecture.
+
+During transition:
+- legacy Todoist code may remain in the repo temporarily
+- it should be treated as deprecated
+- new product design should not depend on it
+
+## Migration Direction
+1. Introduce unified `work_items` and supporting tables.
+2. Move Telegram query/write/planning flows onto the new model.
+3. Add web UI over the new schema.
+4. Export any legacy rows worth keeping, then discard the old maintenance surface.
+5. Remove Todoist sync/reconcile and legacy runtime/schema dependencies.

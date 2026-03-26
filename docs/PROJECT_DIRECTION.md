@@ -1,84 +1,89 @@
 # Project Direction
 
 ## Mission
-Build an AI-powered personal execution system where you can send free-form thoughts and the system organizes them into tasks, problems, goals, and prioritized plans.
+Build a Telegram-native personal execution system that helps one user think out loud, stay organized, and act on the right things without depending on a third-party task product.
 
 ## Product Intent
-This product is a Telegram-native executive assistant that lets a user think out loud, ask questions, and make lightweight changes conversationally, while the system turns that into reliable structured state, plans, and reminders behind the scenes.
+This product is a Telegram-native executive assistant that lets a user think out loud, ask questions, and make lightweight changes conversationally, while the system turns that into reliable structured state, plans, reminders, and history behind the scenes.
 
 ## Product Direction
-- Primary interface: Telegram bot.
-- Core system: backend API + database + workers on Hetzner/Coolify.
-- AI engine: LLM API provider (provider-agnostic; Grok/OpenAI/Anthropic/Gemini can be plugged in).
-- Todoist role: downstream sync target, not source of truth.
-- CLI role: optional clients/adapters only (not core infrastructure).
-- Interaction model: one conversational UX with backend intent routing and confirmation gates:
-- Draft mode: AI proposes structured changes (tasks/subtasks/notes/links/dates) from free-form text.
-- Confirmation mode: bot asks for explicit user approval (`yes` / `edit` / `no`) before mutating durable state.
-- Apply mode: backend writes transactionally, then enqueues immediate Todoist sync.
-- Query mode: read-only answers from stored state, no writes.
-- Command prefixes are optional for normal use; user should be able to chat naturally.
-- User-facing UX should feel conversational and human-centered; internal concepts like cache state, task ids, mutation verbs, and downstream sync mechanics must stay hidden unless explicitly needed for recovery or operator debugging.
+- Primary interface: Telegram.
+- Secondary interface: lightweight web UI for review, editing, cleanup, and history inspection.
+- Core system: backend API + database + worker/scheduler.
+- Source of truth: local Postgres database.
+- Queue/cache: Redis, only where it materially simplifies reminders, planning, or request handling.
+- AI engine: provider-agnostic LLM adapter.
+- External task platforms: not required. Todoist is being removed from the product direction.
+- Interaction model: conversation first, commands second.
+- Visible Telegram command surface should stay minimal.
+- Durable writes should come from structured proposals plus backend validation, not from raw text execution.
+- Subtasks are supported, but subtask generation is explicit by request, not automatic by default.
+- Hierarchy is intentionally shallow and practical:
+- `project -> task -> subtask`
+- The user should be able to promote a task into a project without losing continuity.
 
-## Current Reality Check (2026-02-10)
-- The deterministic backend core is in place and stable.
-- Operational hardening is in progress (Phase 8).
-- Two product-critical gaps remain:
-- Provider adapter is still mock-based (not yet real LLM API execution).
-- Telegram identity is still hardcoded to a single internal user path.
-
-These gaps are now explicit priorities for the next phases.
+## Current Reality Check (2026-03-25)
+- The repository may still contain legacy v1 tables for one-shot export, but the live app does not expose or depend on legacy `tasks`, `goals`, or `problems` routes.
+- The live runtime no longer depends on Todoist sync/reconcile.
+- That implementation proved useful for validating conversational capture, confirmation, planning, and Telegram delivery.
+- It is no longer the target architecture.
+- The next major rework will simplify the system into a local-first assistant with:
+- a unified work-item model,
+- first-class history and undo,
+- stronger grounding data for the model,
+- reminders and planning owned locally,
+- no Todoist dependency.
 
 ## Non-Negotiable Requirements
-- User ideas are the source of truth.
-- AI can auto-create tasks from messages.
-- Persistent memory must stay useful without prompt bloat.
-- Relationships between tasks/problems/goals must be explicit and queryable.
-- System must run reliably on VPS with backups, auth, and observability.
-- LLM never writes directly to the database; backend validates and writes.
-- Telegram interactions must resolve to real user identity (no hardcoded principal paths).
-- Provider responses must be schema-validated with safe fallback paths.
-- Task mutations (`update`, `complete`, `archive`) must be ID-first and never guessed by title.
-- Ambiguous conversational intent must trigger clarification, not best-guess writes.
+- The local database is the product and the source of truth.
+- Telegram must feel conversational; slash commands are optional shortcuts, not the main mental model.
+- The backend, not the model, owns validation, write execution, and auditability.
+- Every durable change must be reversible or at least inspectable through action history.
+- The system must support projects, tasks, and subtasks cleanly.
+- Subtasks must only be generated when explicitly requested by the user or explicitly confirmed after a suggestion.
+- The system must preserve recent visible context so follow-ups like "that one" or "move the register task" work naturally.
+- The system must remain single-user and opinionated rather than trying to become a generic collaboration platform.
+- The web UI must stay lightweight and maintenance-oriented.
+- The system must run reliably on a VPS with backups, restore drills, and clear operational logs.
 
 ## Guiding Principles
-- Backend-first: stable core, replaceable interfaces.
-- Deterministic where possible: rules/scoring for priority, LLM for language and inference.
-- Auditability: every important AI action is logged with source context.
-- Safe automation: auto-create allowed, destructive/bulk changes require policy guardrails.
-- Incremental delivery: ship vertical slices that are usable immediately.
-- Prompt contract owned by backend and versioned in repo.
-- LLM-first action reasoning: planner + critic prompts should drive conversational action logic; hardcoded phrase routing is temporary fallback only.
-- Deterministic executor only: backend validates and executes proposed actions, but does not own conversational interpretation.
-- Fail-safe over fail-open: unresolved targets or low-confidence plans ask a concrete clarifying question.
-- Commands are escape hatches, not the primary mental model. If normal conversational use feels brittle, the product is not meeting its intent even if slash commands exist.
-- Human-readable state is the product surface. Plan items, confirmations, and acknowledgements must describe the user's real tasks and outcomes, not expose internal rewrite instructions or implementation artifacts.
+- Local first: no external task platform should be required for the product to be useful.
+- Telegram first: the best experience should happen in conversation, not in a dashboard.
+- Structured state over transcript sprawl: the DB should store enough shape, aliases, and history that the model can reason against real entities.
+- Backend-enforced safety: the model can interpret intent and propose structure, but the backend validates and writes.
+- Reversible operations: prefer archives, versions, action batches, and undo over irreversible edits.
+- Shallow useful hierarchy: support projects/tasks/subtasks, but avoid deep nested workflow trees.
+- Explicit decomposition: task breakdown is a capability the user asks for, not background automation.
+- Explainable grounding: target resolution should be understandable and inspectable.
+- Keep the surface small: fewer commands, fewer integrations, fewer product modes.
 
-## v1 Scope
-- Capture free-form messages and auto-structure them.
-- Store tasks, problems, goals, and links in Postgres.
-- Generate and refresh ordered plans.
-- Summarize memory in compact layers.
-- Sync selected tasks to Todoist.
-- Expose API/MCP endpoints for future clients.
-- Support provider-stateful continuation as an optimization, while treating DB memory as source of truth.
-- Support AI-first Telegram workflow where informal user messages are converted into a proposed action plan and applied only after user confirmation.
-- Use grounded reasoning outputs (`intent`, `scope`, `actions`, `confidence`) as the primary decision path for conversational writes.
+## v2 Scope
+- Replace the legacy `task / goal / problem` split with a unified `work_items` model.
+- Support `project`, `task`, and `subtask` as item kinds.
+- Add aliases, structured links, reminders, recent context, plan snapshots, action batches, and version history.
+- Keep Telegram as the primary UX for capture, queries, changes, confirmations, reminders, and daily planning.
+- Add a small web UI for editing fields, browsing history, inspecting plans, and undoing mistakes.
+- Add local planner and reminder scheduling that do not depend on Todoist.
+- Keep provider support pluggable and prompt contracts versioned.
 
-## Out of Scope for v1
-- Multi-user collaboration features (shared projects/workspaces).
+## Out of Scope
+- Multi-user collaboration and shared workspaces.
+- Deep project-management features like swimlanes, kanban boards, and portfolio dashboards.
+- Generic automation marketplace or large connector ecosystem.
 - Full custom mobile app.
-- Heavy analytics dashboards.
-- Complex workflow automation marketplace.
+- Sync parity with Todoist or any other external task manager.
 
-Note:
-- User identity isolation across interfaces (API + Telegram) is in scope for reliability and security.
-- This is different from collaborative multi-user product features.
-
-## Next Direction (Post-Phase 8)
-1. Provider realization:
-- Replace mock adapter behavior with production LLM provider calls behind the existing adapter interface.
-2. Identity unification:
-- Add Telegram chat-to-user mapping and secure onboarding/linking flow.
-3. Bidirectional sync safety:
-- Add Todoist pull/reconciliation so local state remains accurate when edits happen in Todoist.
+## Immediate Direction
+1. Redesign the domain model around unified work items and durable change history.
+2. Remove Todoist from the target architecture and deprecate it from user-facing documentation.
+3. Preserve the existing strengths:
+- Telegram confirmations
+- conversational queries
+- planning
+- operational logging
+4. Add the missing capabilities that matter more in a local-first system:
+- reminders
+- undo
+- aliases
+- project/task/subtask hierarchy
+- lightweight web editing

@@ -120,6 +120,68 @@ def test_extract_task_enrichment_fields_normalize():
     asyncio.run(_run())
 
 
+def test_extract_project_and_subtask_fields_normalize():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"tasks":['
+                                '{"title":"Research 401k requirements in NYC","action":"create","kind":"project"},'
+                                '{"title":"Review NYC-specific rules","action":"create","kind":"subtask","parent_title":"Research 401k requirements in NYC"}'
+                                '],"goals":[],"problems":[],"links":[]}'
+                            )
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("Create subtasks for 401k research")
+            parent, child = out["tasks"]
+            assert parent["kind"] == "project"
+            assert child["kind"] == "subtask"
+            assert child["parent_title"] == "Research 401k requirements in NYC"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_extract_goal_and_problem_entries_fold_into_project_tasks():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"tasks":[],"goals":[{"title":"Finish apartment renovation"}],'
+                                '"problems":[{"title":"Resolve payroll discrepancy"}],"links":[]}'
+                            )
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("Track the apartment project and the payroll issue")
+            assert out["goals"] == []
+            assert out["problems"] == []
+            assert out["tasks"] == [
+                {"title": "Finish apartment renovation", "kind": "project"},
+                {"title": "Resolve payroll discrepancy", "kind": "project"},
+            ]
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_task_actions_shape_normalizes_to_tasks():
     async def _run():
         adapter = LLMAdapter()
@@ -147,6 +209,35 @@ def test_extract_task_actions_shape_normalizes_to_tasks():
     asyncio.run(_run())
 
 
+def test_extract_reminders_normalize_fields():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[],"goals":[],"problems":[],"links":[],"reminders":[{"title":"Call Patrick","action":"create","kind":"recurring","remind_at":"2026-02-12T15:30:00+00:00","recurrence_rule":"weekly","message":"Ask about payroll."}]}'
+                        }
+                    }
+                ]
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.extract_structured_updates("Remind me to call Patrick weekly")
+            reminder = out["reminders"][0]
+            assert reminder["title"] == "Call Patrick"
+            assert reminder["action"] == "create"
+            assert reminder["kind"] == "recurring"
+            assert reminder["recurrence_rule"] == "weekly"
+            assert reminder["message"] == "Ask about payroll."
+            assert reminder["remind_at"] == "2026-02-12T15:30:00Z"
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_extract_malformed_payload_returns_safe_fallback():
     async def _run():
         adapter = LLMAdapter()
@@ -155,7 +246,49 @@ def test_extract_malformed_payload_returns_safe_fallback():
             payload = {"choices": [{"message": {"content": '{"bad":"shape"}'}}], "usage": {"prompt_tokens": 9}}
             with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
                 out = await adapter.extract_structured_updates("text")
-            assert out == {"tasks": [], "goals": [], "problems": [], "links": []}
+            assert out == {"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []}
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_telegram_turn_success_normalization():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"speech_act":"query","view_name":"today","confidence":0.88}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 5},
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.interpret_telegram_turn("Anything due today?")
+            assert out["speech_act"] == "query"
+            assert out["view_name"] == "today"
+            assert out["confidence"] == 0.88
+            assert out["usage"]["input_tokens"] == 12
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
+def test_telegram_turn_malformed_payload_uses_fallback_policy():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {"choices": [{"message": {"content": '{"bad":"shape"}'}}]}
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.interpret_telegram_turn("Anything due today?")
+            assert out["speech_act"] == "unknown"
         finally:
             _restore_provider_settings(original)
 
@@ -252,7 +385,7 @@ def test_retry_exhaustion_uses_fallback_policy():
             post = AsyncMock(side_effect=httpx.TimeoutException("all failed"))
             with patch("common.adapter.httpx.AsyncClient.post", new=post):
                 out = await adapter.extract_structured_updates("ctx")
-            assert out == {"tasks": [], "goals": [], "problems": [], "links": []}
+            assert out == {"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []}
             assert post.await_count == settings.LLM_MAX_RETRIES + 1
         finally:
             _restore_provider_settings(original)

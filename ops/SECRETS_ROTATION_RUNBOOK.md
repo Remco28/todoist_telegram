@@ -6,10 +6,9 @@ Rotate production secrets with minimal downtime and clear post-rotation validati
 ## Rotation Targets
 1. `APP_AUTH_BEARER_TOKENS` / `APP_AUTH_TOKEN_USER_MAP`
 2. `LLM_API_KEY` (xAI)
-3. `TODOIST_TOKEN`
-4. `DATABASE_URL` credentials
-5. `REDIS_URL` credentials
-6. `TELEGRAM_WEBHOOK_SECRET`
+3. `DATABASE_URL` credentials
+4. `REDIS_URL` credentials
+5. `TELEGRAM_WEBHOOK_SECRET`
 
 ## When to Rotate
 - On suspected key exposure.
@@ -30,7 +29,6 @@ Rotate production secrets with minimal downtime and clear post-rotation validati
 ## Service Impact Matrix
 - `APP_AUTH_BEARER_TOKENS`: API
 - `LLM_API_KEY`: API + worker
-- `TODOIST_TOKEN`: API + worker (sync/reconcile)
 - `DATABASE_URL`: API + worker + migration terminal
 - `REDIS_URL`: API + worker
 - `TELEGRAM_WEBHOOK_SECRET`: API webhook path
@@ -49,14 +47,7 @@ Rotate production secrets with minimal downtime and clear post-rotation validati
 4. Validate capture + query paths.
 5. Revoke old key in xAI.
 
-### 3) Todoist Token
-1. Generate new token in Todoist account.
-2. Set `TODOIST_TOKEN` in Coolify.
-3. Redeploy API + worker.
-4. Validate `/v1/sync/todoist`, `/v1/sync/todoist/reconcile`, and status.
-5. Revoke old token.
-
-### 4) Database Credentials
+### 3) Database Credentials
 1. Create/rotate DB user/password in Postgres.
 2. Update `DATABASE_URL` for API + worker in Coolify.
 3. Run `alembic upgrade head` using new URL.
@@ -64,13 +55,13 @@ Rotate production secrets with minimal downtime and clear post-rotation validati
 5. Validate `/health/ready` and capture/query smoke.
 6. Remove old DB credentials.
 
-### 5) Redis Credentials
+### 4) Redis Credentials
 1. Rotate Redis password/credentials.
 2. Update `REDIS_URL` in Coolify for API + worker.
 3. Redeploy API + worker.
 4. Validate `/health/ready`, enqueue endpoints, and worker queue consumption.
 
-### 6) Telegram Webhook Secret
+### 5) Telegram Webhook Secret
 1. Set new `TELEGRAM_WEBHOOK_SECRET` in Coolify.
 2. Update webhook registration to new secret header path/metadata (provider side).
 3. Redeploy API.
@@ -81,7 +72,6 @@ Rotate production secrets with minimal downtime and clear post-rotation validati
 - `GET /health/ready` => 200
 - `POST /v1/capture/thought` => 200
 - `POST /v1/query/ask` => 200
-- If Todoist enabled: sync + reconcile + status checks
 - If Telegram enabled: webhook request accepted with new secret
 
 ## Rotation Log Template

@@ -9,6 +9,7 @@ These tests validate:
 import asyncio
 import json
 from datetime import datetime, date, timezone
+from typing import Optional
 from unittest.mock import AsyncMock, Mock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -16,13 +17,32 @@ from httpx import ASGITransport, AsyncClient
 from api.main import (
     handle_telegram_command,
     _apply_capture,
+    _best_reminder_reference_candidate,
+    _best_task_reference_candidate,
     _draft_set_awaiting_edit_input,
     _draft_set_proposal_message_id,
     _format_action_draft_preview,
+    _remember_recent_reminders,
+    _reminder_reference_candidates,
+    _validate_extraction_payload,
 )
 from api.schemas import AppliedChanges, QueryResponseV1
 from common.config import settings
-from common.models import Task, TaskStatus
+from common.legacy_models import Task, TaskStatus
+from common.models import (
+    ActionBatch,
+    ConversationEvent,
+    EntityType,
+    RecentContextItem,
+    Reminder,
+    ReminderKind,
+    ReminderStatus,
+    ReminderVersion,
+    WorkItem,
+    WorkItemKind,
+    WorkItemStatus,
+    WorkItemVersion,
+)
 
 WEBHOOK_URL = "/v1/integrations/telegram/webhook"
 VALID_SECRET = "test_secret"
@@ -35,7 +55,7 @@ def _tg_update(text, chat_id="12345"):
             "message_id": 1,
             "chat": {"id": int(chat_id), "type": "private", "username": "testuser"},
             "text": text,
-            "date": int(datetime.utcnow().timestamp()),
+            "date": int(datetime.now(timezone.utc).timestamp()),
         },
     }
 
@@ -56,6 +76,27 @@ def _headers(secret=VALID_SECRET):
     if secret is not None:
         headers["X-Telegram-Bot-Api-Secret-Token"] = secret
     return headers
+
+
+def _fake_draft(
+    *,
+    draft_id: str = "drf_1",
+    chat_id: str = "12345",
+    source_message: str = "draft source",
+    proposal_json: Optional[dict] = None,
+):
+    return type(
+        "Draft",
+        (),
+        {
+            "id": draft_id,
+            "chat_id": chat_id,
+            "source_message": source_message,
+            "proposal_json": proposal_json or {"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+            "updated_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc),
+        },
+    )()
 
 
 def _post(asgi_app, url, **kwargs):
@@ -140,7 +181,12 @@ def test_command_with_bot_suffix_is_supported(app_no_db):
         assert mocked.await_args.args[0] == "/today"
 
 
-def test_greeting_message_returns_brief_reply(app_no_db, mock_send):
+def test_greeting_message_returns_brief_reply(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "smalltalk",
+        "assistant_reply": "Hi.",
+        "confidence": 0.9,
+    }
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
@@ -155,7 +201,12 @@ def test_greeting_message_returns_brief_reply(app_no_db, mock_send):
     assert "Current open tasks include" not in text
 
 
-def test_natural_language_today_query_uses_planner_view(app_no_db, mock_send, mock_db):
+def test_natural_language_today_query_uses_planner_view(app_no_db, mock_send, mock_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "today",
+        "confidence": 0.9,
+    }
     state = {
         "tasks": [
             Task(
@@ -186,6 +237,25 @@ def test_natural_language_today_query_uses_planner_view(app_no_db, mock_send, mo
     assert "Your Today Plan" in text
     assert "Complete urgent Worker" in text
     remember.assert_awaited_once_with(mock_db, "usr_123", "12345", ["tsk_today_1"], "today")
+
+
+def test_natural_language_open_tasks_query_uses_deterministic_view(app_no_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "open_tasks",
+        "confidence": 0.9,
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._send_open_task_view", new_callable=AsyncMock
+    ) as send_open, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("List open tasks"), headers=_headers())
+        assert resp.status_code == 200
+        send_open.assert_awaited_once()
+        build_grounding.assert_not_awaited()
 
 
 def test_non_command_text_low_confidence_requests_clarification(app_no_db, mock_extract, mock_send):
@@ -235,8 +305,18 @@ def test_non_command_capture_dedup_updates_task_count(app_no_db, mock_send):
 
 
 def test_non_command_bulk_done_without_actionable_plan_requests_clarification(app_no_db, mock_extract, mock_send):
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.6,
+        "needs_confirmation": True,
+        "actions": [],
+    }
     mock_extract.extract_structured_updates.return_value = {
-        "tasks": [],
+        "tasks": [
+            {"title": "Replace bathroom fan", "action": "complete"},
+            {"title": "Buy paint rollers", "action": "complete"},
+        ],
         "goals": [],
         "problems": [],
         "links": [],
@@ -257,8 +337,12 @@ def test_non_command_bulk_done_without_actionable_plan_requests_clarification(ap
     ):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Let's mark everything as done."), headers=_headers())
         assert resp.status_code == 200
-        create_draft.assert_not_awaited()
-        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {"title": "Replace bathroom fan", "action": "complete", "status": "done", "target_task_id": "tsk_1"},
+            {"title": "Buy paint rollers", "action": "complete", "status": "done", "target_task_id": "tsk_2"},
+        ]
 
 
 def test_non_command_reference_completion_without_actionable_plan_requests_clarification(app_no_db, mock_send):
@@ -283,8 +367,12 @@ def test_non_command_reference_completion_without_actionable_plan_requests_clari
             {"id": "tsk_5", "title": "Take Amy's car for a car wash", "status": "open"},
         ],
     }
+    fake_draft = _fake_draft(
+        source_message="Reading the chapter, memorizing the script, and the french homework are all done. Mark them as complete.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
-        "api.main._create_action_draft", new_callable=AsyncMock
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
     ) as create_draft, patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
@@ -296,7 +384,16 @@ def test_non_command_reference_completion_without_actionable_plan_requests_clari
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [
+                {"title": "Read a chapter and annotate it", "action": "complete"},
+                {"title": "Memorize a script", "action": "complete"},
+                {"title": "Do French homework", "action": "complete"},
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ) as extract_fallback:
         resp = _post(
             app_no_db,
@@ -305,8 +402,9 @@ def test_non_command_reference_completion_without_actionable_plan_requests_clari
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_not_awaited()
-        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert {task["target_task_id"] for task in extraction["tasks"]} == {"tsk_1", "tsk_2", "tsk_3"}
 
 
 def test_non_command_uses_planner_actions_as_primary_path(app_no_db, mock_send):
@@ -408,8 +506,12 @@ def test_non_command_unresolved_mutation_requests_clarification(app_no_db, mock_
         "needs_confirmation": True,
         "actions": [{"entity_type": "task", "action": "update", "title": "Respond to Gil tonight"}],
     }
+    fake_draft = _fake_draft(
+        source_message="Update my reminder for Gil",
+        proposal_json={"tasks": [{"title": "Respond to Gil tonight", "action": "update"}], "goals": [], "problems": [], "links": []},
+    )
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
-        "api.main._create_action_draft", new_callable=AsyncMock
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
     ) as create_draft, patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": []}
     ), patch(
@@ -428,7 +530,7 @@ def test_non_command_unresolved_mutation_requests_clarification(app_no_db, mock_
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_not_awaited()
+        create_draft.assert_awaited_once()
         apply_capture.assert_not_awaited()
         assert mock_send.await_count >= 1
         msg = mock_send.await_args_list[-1].args[1]
@@ -573,7 +675,6 @@ def test_completion_request_filters_out_non_completion_planner_actions(app_no_db
         "confidence": 0.6,
         "needs_confirmation": True,
         "actions": [
-            {"entity_type": "task", "action": "create", "title": "Do 100 pushups"},
             {"entity_type": "task", "action": "complete", "title": "Do French homework"},
         ],
     }
@@ -649,16 +750,16 @@ def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
         return_value={"tasks": [], "goals": [], "problems": [], "links": []},
-    ):
-        resp = _post(
-            app_no_db,
-            WEBHOOK_URL,
-            json=_tg_update("French homework and memorize script are done. Mark them complete."),
-            headers=_headers(),
-        )
-        assert resp.status_code == 200
-        create_draft.assert_not_awaited()
-        assert "could not find open matching tasks" in mock_send.await_args.args[1].lower()
+        ):
+            resp = _post(
+                app_no_db,
+                WEBHOOK_URL,
+                json=_tg_update("French homework and memorize script are done. Mark them complete."),
+                headers=_headers(),
+            )
+            assert resp.status_code == 200
+            create_draft.assert_not_awaited()
+            assert "already done" in mock_send.await_args.args[1].lower()
 
 
 def test_soft_completion_statement_with_explicit_recent_match_creates_review_draft(app_no_db, mock_send):
@@ -688,7 +789,12 @@ def test_soft_completion_statement_with_explicit_recent_match_creates_review_dra
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [{"title": "Clean mechanical keyboard", "action": "complete"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         resp = _post(
             app_no_db,
@@ -710,6 +816,67 @@ def test_soft_completion_statement_with_explicit_recent_match_creates_review_dra
         ]
 
 
+def test_named_completion_statement_from_recent_today_item_creates_review_draft(app_no_db, mock_send):
+    planned = {"intent": "query", "scope": "single", "confidence": 0.1, "needs_confirmation": True, "actions": []}
+    grounding = {
+        "tasks": [
+            {"id": "tsk_dinner", "title": "Plan Tuesday dinner: menu and get groceries", "status": "open"},
+            {"id": "tsk_other", "title": "Order a new battery for the old forklift", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_dinner", "title": "Plan Tuesday dinner: menu and get groceries", "status": "open"},
+            {"id": "tsk_other", "title": "Order a new battery for the old forklift", "status": "open"},
+        ],
+        "displayed_task_refs": [
+            {"ordinal": 5, "id": "tsk_dinner", "title": "Plan Tuesday dinner: menu and get groceries", "status": "open", "view_name": "today"},
+        ],
+    }
+    fake_draft = _fake_draft(
+        source_message="The Tuesday dinner plan is done. Finished that a while back.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={
+            "tasks": [{"title": "Plan Tuesday dinner: menu and get groceries", "action": "complete"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("The Tuesday dinner plan is done. Finished that a while back."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Plan Tuesday dinner: menu and get groceries",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_dinner",
+            }
+        ]
+
+
 def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.95, "needs_confirmation": True, "actions": []}
     grounding = {
@@ -727,8 +894,6 @@ def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mo
     ) as create_draft, patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture, patch(
-        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
-    ) as enqueue_sync, patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
@@ -739,7 +904,15 @@ def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mo
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [
+                {"title": "Do French homework", "action": "complete"},
+                {"title": "Memorize a script", "action": "complete"},
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         apply_capture.return_value = ("inb_1", AppliedChanges(tasks_updated=2))
         resp = _post(
@@ -751,7 +924,6 @@ def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mo
         assert resp.status_code == 200
         create_draft.assert_not_awaited()
         apply_capture.assert_awaited_once()
-        enqueue_sync.assert_awaited_once()
         applied_extraction = apply_capture.await_args.kwargs["extraction"]
         assert applied_extraction["tasks"] == [
             {
@@ -770,13 +942,13 @@ def test_completion_high_confidence_with_recent_matches_autopilots(app_no_db, mo
         assert "updated" in mock_send.await_args.args[1].lower()
 
 
-def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, mock_send):
+def test_create_intent_autopilot_uses_model_provided_create_action(app_no_db, mock_send):
     planned = {
         "intent": "action",
         "scope": "single",
         "confidence": 0.95,
         "needs_confirmation": False,
-        "actions": [{"entity_type": "task", "action": "update", "title": "Do 100 burpees"}],
+        "actions": [{"entity_type": "task", "action": "create", "title": "Watch a Mark Wahlberg movie", "due_date": "2026-02-13"}],
     }
     grounding = {
         "tasks": [{"id": "tsk_existing", "title": "Do 100 burpees", "status": "open"}],
@@ -787,8 +959,6 @@ def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, m
     ) as create_draft, patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture, patch(
-        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
-    ), patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
@@ -809,12 +979,14 @@ def test_create_intent_autopilot_sanitizes_and_creates_from_message(app_no_db, m
             headers=_headers(),
         )
         assert resp.status_code == 200
-        apply_capture.assert_not_awaited()
         create_draft.assert_not_awaited()
-        assert "could not find open matching tasks to complete" in mock_send.await_args.args[1].lower()
+        apply_capture.assert_awaited_once()
+        extraction = apply_capture.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {"title": "Watch a Mark Wahlberg movie", "action": "create", "due_date": "2026-02-13"}
+        ]
 
-
-def test_tonight_forces_local_today_due_date(app_no_db, mock_send):
+def test_due_date_preserves_model_output_without_phrase_override(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.8, "needs_confirmation": True, "actions": []}
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._create_action_draft", new_callable=AsyncMock
@@ -839,7 +1011,7 @@ def test_tonight_forces_local_today_due_date(app_no_db, mock_send):
         )
         assert resp.status_code == 200
         extraction = create_draft.await_args.kwargs["extraction"]
-        assert extraction["tasks"][0]["due_date"] == "2026-02-12"
+        assert extraction["tasks"][0]["due_date"] == "2026-02-13"
 
 
 def test_tomorrow_night_does_not_force_today_due_date(app_no_db, mock_send):
@@ -952,7 +1124,12 @@ def test_displayed_task_delete_reference_creates_archive_draft(app_no_db, mock_s
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [{"title": "worker's compensation form", "action": "archive", "status": "archived", "target_task_id": "tsk_bad"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         resp = _post(
             app_no_db,
@@ -1008,7 +1185,15 @@ def test_recent_named_references_create_multi_action_draft(app_no_db, mock_send)
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [
+                {"title": "Delete the burpee task", "action": "archive", "status": "archived", "target_task_id": "tsk_burpee"},
+                {"title": "Remind Amy about the backpack", "action": "complete", "status": "done", "target_task_id": "tsk_backpack"},
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         resp = _post(
             app_no_db,
@@ -1070,7 +1255,12 @@ def test_question_form_archive_request_overrides_query_intent(app_no_db, mock_se
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [{"title": "Delete the burpee task", "action": "archive", "status": "archived", "target_task_id": "tsk_burpee"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         resp = _post(
             app_no_db,
@@ -1127,7 +1317,12 @@ def test_question_form_completion_request_overrides_query_intent(app_no_db, mock
     ), patch(
         "api.main.adapter.extract_structured_updates",
         new_callable=AsyncMock,
-        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+        return_value={
+            "tasks": [{"title": "Remind Amy about the backpack", "action": "complete", "target_task_id": "tsk_backpack"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
     ):
         resp = _post(
             app_no_db,
@@ -1185,8 +1380,12 @@ def test_ambiguous_targeted_update_asks_candidate_clarification(app_no_db, mock_
         ],
         "displayed_task_refs": [],
     }
+    fake_draft = _fake_draft(
+        source_message="Can you move the apartment task to tomorrow?",
+        proposal_json={"tasks": [{"title": "Apartment renovation", "action": "update", "due_date": "2026-03-25"}], "goals": [], "problems": [], "links": []},
+    )
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
-        "api.main._create_action_draft", new_callable=AsyncMock
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
     ) as create_draft, patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture, patch(
@@ -1214,7 +1413,7 @@ def test_ambiguous_targeted_update_asks_candidate_clarification(app_no_db, mock_
             headers=_headers(),
         )
         assert resp.status_code == 200
-        create_draft.assert_not_awaited()
+        create_draft.assert_awaited_once()
         apply_capture.assert_not_awaited()
         text = mock_send.await_args.args[1]
         assert "Which task do you want to update?" in text
@@ -1250,8 +1449,6 @@ def test_unrelated_targeted_update_is_rewritten_to_create(app_no_db, mock_send):
     ) as create_draft, patch(
         "api.main._apply_capture", new_callable=AsyncMock
     ) as apply_capture, patch(
-        "api.main._enqueue_todoist_sync_job", new_callable=AsyncMock
-    ), patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
@@ -1304,7 +1501,11 @@ def test_non_command_critic_rejects_and_requests_clarification(app_no_db, mock_s
         assert "need one clarification" in mock_send.await_args.args[1].lower()
 
 
-def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
+def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "confidence": 0.9,
+    }
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main.query_ask", new_callable=AsyncMock
     ) as mocked_query, patch("api.main._apply_capture", new_callable=AsyncMock) as apply_capture, patch(
@@ -1325,7 +1526,12 @@ def test_non_command_question_routes_to_query_no_capture(app_no_db, mock_send):
         assert "2 open tasks" in mock_send.await_args.args[1]
 
 
-def test_non_command_yes_applies_open_draft(app_no_db, mock_send):
+def test_non_command_yes_applies_open_draft(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "confirmation",
+        "draft_action": "confirm",
+        "confidence": 0.9,
+    }
     fake_draft = type("Draft", (), {"id": "drf_1", "source_message": "plan kitchen", "proposal_json": {"tasks": [{"title": "Task A"}]}})()
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
@@ -1376,7 +1582,61 @@ def test_edit_button_then_plain_message_revises_draft(app_no_db, mock_send):
         assert "proposed changes" in mock_send.await_args.args[1].lower()
 
 
-def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send):
+def test_clarification_reply_revises_pending_candidate_draft(app_no_db, mock_send):
+    fake_draft = _fake_draft(
+        source_message="Move the registration of 401k to next week. Make a note that Patrick's email is required.",
+        proposal_json={
+            "tasks": [{"title": "registration of 401k", "action": "update", "due_date": "2026-03-31"}],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "_meta": {
+                "awaiting_edit_input": True,
+                "clarification_state": {
+                    "candidates": [
+                        {"id": "tsk_census", "title": "Work on the 401k census", "status": "open"},
+                        {"id": "tsk_register", "title": "Register for the 401k plan", "status": "open"},
+                    ]
+                },
+            },
+        },
+    )
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._revise_action_draft",
+        new_callable=AsyncMock,
+        return_value={
+            "tasks": [
+                {
+                    "title": "Register for the 401k plan",
+                    "action": "update",
+                    "target_task_id": "tsk_register",
+                    "due_date": "2026-03-31",
+                    "notes": "Patrick's email is required.",
+                }
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+        },
+    ) as revise_draft, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as query_ask:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("The one that says register"), headers=_headers())
+        assert resp.status_code == 200
+        revise_draft.assert_awaited_once()
+        query_ask.assert_not_awaited()
+        assert "proposed changes" in mock_send.await_args.args[1].lower()
+
+
+def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "confirmation",
+        "draft_action": "edit",
+        "draft_edit_text": "rename to task B",
+        "confidence": 0.9,
+    }
     fake_draft = type(
         "Draft",
         (),
@@ -1384,8 +1644,8 @@ def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send):
             "id": "drf_1",
             "source_message": "plan kitchen",
             "proposal_json": {"tasks": [{"title": "Task A"}], "_meta": {"proposal_message_id": 321}},
-            "updated_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow(),
+            "updated_at": datetime.now(timezone.utc),
+            "expires_at": datetime.now(timezone.utc),
         },
     )()
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
@@ -1451,18 +1711,11 @@ def test_start_command_with_invalid_token_returns_guidance(app_no_db, mock_send)
         assert "link failed" in mock_send.await_args.args[1].lower()
 
 
-def test_command_plan_enqueues_refresh(mock_redis, mock_send, mock_db):
-    with patch("api.main.redis_client", mock_redis):
-        asyncio.run(handle_telegram_command("/plan", None, "12345", "usr_abc", mock_db))
-    mock_redis.rpush.assert_awaited_once()
-    queue_name, raw_job = mock_redis.rpush.await_args.args
-    assert queue_name == "default_queue"
-    job = json.loads(raw_job)
-    assert job["topic"] == "plan.refresh"
-    assert "job_id" in job
-    mock_send.assert_awaited_once()
-    assert "Plan refresh enqueued" in mock_send.await_args.args[1]
-    assert "Use <code>/today</code>" in mock_send.await_args.args[1]
+def test_command_plan_redirects_to_today(mock_send, mock_db):
+    asyncio.run(handle_telegram_command("/plan", None, "12345", "usr_abc", mock_db))
+    text = mock_send.await_args.args[1]
+    assert "Manual plan refresh" in text
+    assert "/today" in text
 
 
 def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, mock_send, mock_db):
@@ -1562,146 +1815,54 @@ def test_command_urgent_lists_high_priority_tasks(mock_send, mock_db):
     mock_db.commit.assert_awaited_once()
 
 
+def test_command_web_returns_prefilled_workbench_link(mock_send, mock_db):
+    old_base = settings.WEB_UI_BASE_URL
+    settings.WEB_UI_BASE_URL = "https://assistant.example/app"
+    try:
+        asyncio.run(handle_telegram_command("/web", None, "12345", "usr_abc", mock_db))
+    finally:
+        settings.WEB_UI_BASE_URL = old_base
+    text = mock_send.await_args.args[1]
+    assert "web workbench" in text
+    assert "https://assistant.example/app?token=test_token" in text
+    assert "includes your API token" in text
+
+
+def test_command_web_without_config_prompts_for_web_ui_base_url(mock_send, mock_db):
+    old_base = settings.WEB_UI_BASE_URL
+    settings.WEB_UI_BASE_URL = None
+    try:
+        asyncio.run(handle_telegram_command("/web", None, "12345", "usr_abc", mock_db))
+    finally:
+        settings.WEB_UI_BASE_URL = old_base
+    text = mock_send.await_args.args[1]
+    assert "WEB_UI_BASE_URL" in text
+    assert "not configured" in text
+
+
 def test_unknown_command_shows_minimal_visible_menu(mock_send, mock_db):
     asyncio.run(handle_telegram_command("/nope", None, "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
     assert "/today" in text
     assert "/urgent" in text
+    assert "/web" in text
     assert "/plan" not in text
     assert "/focus" not in text
     assert "/done" not in text
     assert "/ask" not in text
 
 
-def test_command_ask_returns_query_answer(mock_send, mock_db):
-    with patch("api.main.query_ask", new_callable=AsyncMock) as mocked_query:
-        mocked_query.return_value = QueryResponseV1(answer="You have no blocked tasks.", confidence=0.95)
-        asyncio.run(handle_telegram_command("/ask", "what is blocked", "12345", "usr_abc", mock_db))
-    mocked_query.assert_awaited_once()
-    assert "no blocked tasks" in mock_send.await_args.args[1]
-
-
-def test_command_ask_today_question_uses_planner_view(mock_redis, mock_send, mock_db):
-    state = {
-        "tasks": [
-            Task(
-                id="tsk_today",
-                user_id="usr_abc",
-                title="Call contractor about paint colors",
-                title_norm="call contractor about paint colors",
-                status=TaskStatus.open,
-                updated_at=datetime(2026, 3, 19, 11, 30, 0),
-            )
-        ],
-        "goals": [],
-        "links": [],
-    }
-    with patch("api.main.redis_client", mock_redis), patch(
-        "api.main.collect_planning_state", new_callable=AsyncMock, return_value=state
-    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember, patch(
-        "api.main.query_ask", new_callable=AsyncMock
-    ) as mocked_query:
-        asyncio.run(handle_telegram_command("/ask", "What do I have to do today?", "12345", "usr_abc", mock_db))
-    mocked_query.assert_not_awaited()
+def test_command_ask_redirects_to_natural_language(mock_send, mock_db):
+    asyncio.run(handle_telegram_command("/ask", "what is blocked", "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
-    assert "Your Today Plan" in text
-    assert "Call contractor about paint colors" in text
-    remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_today"], "today")
+    assert "Just ask the question directly" in text
+    assert "What tasks are overdue?" in text
 
 
-def test_command_ask_stores_surfaced_task_context(mock_send, mock_db):
-    response = QueryResponseV1(
-        answer="You should handle the burpee cleanup first.",
-        confidence=0.91,
-        surfaced_entity_ids=["tsk_burpee", "gol_health", "tsk_backpack"],
-    )
-    with patch("api.main.query_ask", new_callable=AsyncMock, return_value=response), patch(
-        "api.main._remember_recent_tasks", new_callable=AsyncMock
-    ) as remember:
-        asyncio.run(handle_telegram_command("/ask", "what should I clean up", "12345", "usr_abc", mock_db))
-    remember.assert_awaited_once_with(
-        db=mock_db,
-        user_id="usr_abc",
-        chat_id="12345",
-        task_ids=["tsk_burpee", "tsk_backpack"],
-        reason="query_surface",
-        ttl_hours=12,
-    )
-    mock_db.commit.assert_awaited_once()
-
-
-def test_command_ask_infers_task_context_from_answer_text(mock_send, mock_db):
-    grounding = {
-        "tasks": [
-            {"id": "tsk_burpee", "title": "Delete the burpee task", "status": "open"},
-            {"id": "tsk_backpack", "title": "Remind Amy about the backpack", "status": "open"},
-        ],
-        "recent_task_refs": [],
-    }
-    response = QueryResponseV1(
-        answer="Open tasks include: Delete the burpee task and Remind Amy about the backpack.",
-        confidence=0.84,
-    )
-    with patch("api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding), patch(
-        "api.main.query_ask", new_callable=AsyncMock, return_value=response
-    ), patch("api.main._remember_recent_tasks", new_callable=AsyncMock) as remember:
-        asyncio.run(handle_telegram_command("/ask", "what is open", "12345", "usr_abc", mock_db))
-    remember.assert_awaited_once_with(
-        db=mock_db,
-        user_id="usr_abc",
-        chat_id="12345",
-        task_ids=["tsk_burpee", "tsk_backpack"],
-        reason="query_answer_inferred",
-        ttl_hours=12,
-    )
-
-
-def test_command_focus_returns_top_three_max(mock_redis, mock_send, mock_db):
-    mock_redis.get.return_value = json.dumps(
-        {
-            "schema_version": "plan.v1",
-            "plan_window": "today",
-            "generated_at": "2026-03-19T12:00:00Z",
-            "today_plan": [
-                {"task_id": f"tsk_{i}", "rank": i, "title": f"Task {i}", "score": 1.0} for i in range(1, 6)
-            ],
-            "next_actions": [],
-            "blocked_items": [],
-        }
-    )
-    with patch("api.main.redis_client", mock_redis), patch(
-        "api.main.utc_now", return_value=datetime(2026, 3, 19, 12, 1, 0, tzinfo=timezone.utc)
-    ):
-        asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
+def test_command_focus_redirects_to_natural_language(mock_send, mock_db):
+    asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
-    assert "Task 1" in text
-    assert "Task 2" in text
-    assert "Task 3" in text
-    assert "Task 4" not in text
-    assert "Task 5" not in text
-
-
-def test_command_focus_does_not_store_recent_display_if_send_fails(mock_redis, mock_send, mock_db):
-    mock_redis.get.return_value = json.dumps(
-        {
-            "schema_version": "plan.v1",
-            "plan_window": "today",
-            "generated_at": "2026-03-19T12:00:00Z",
-            "today_plan": [
-                {"task_id": "tsk_1", "rank": 1, "title": "Task 1", "score": 1.0},
-                {"task_id": "tsk_2", "rank": 2, "title": "Task 2", "score": 1.0},
-            ],
-            "next_actions": [],
-            "blocked_items": [],
-        }
-    )
-    mock_send.return_value = {"ok": False}
-    with patch("api.main.redis_client", mock_redis), patch(
-        "api.main.utc_now", return_value=datetime(2026, 3, 19, 12, 1, 0, tzinfo=timezone.utc)
-    ), patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
-        asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
-    remember.assert_not_awaited()
-    mock_db.commit.assert_not_awaited()
+    assert "What should I focus on right now?" in text
 
 
 def test_command_today_suppresses_near_duplicate_visible_tasks(mock_redis, mock_send, mock_db):
@@ -1746,24 +1907,62 @@ def test_command_today_suppresses_near_duplicate_visible_tasks(mock_redis, mock_
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_a", "tsk_c"], "today")
 
 
+def test_command_today_stores_due_reminder_context_after_successful_send(mock_redis, mock_send, mock_db):
+    mock_redis.get.return_value = json.dumps(
+        {
+            "schema_version": "plan.v1",
+            "plan_window": "today",
+            "generated_at": "2026-03-25T18:00:00Z",
+            "today_plan": [
+                {"task_id": "tsk_1", "rank": 1, "title": "Task 1", "score": 1.0},
+            ],
+            "next_actions": [],
+            "blocked_items": [],
+            "why_this_order": [],
+            "assumptions": [],
+            "due_reminders": [
+                {"reminder_id": "rem_1", "title": "Payroll reminder", "remind_at": "2026-03-25T18:00:00Z"},
+                {"reminder_id": "rem_2", "title": "Insurance reminder", "remind_at": "2026-03-25T19:00:00Z"},
+            ],
+        }
+    )
+    with patch("api.main.redis_client", mock_redis), patch(
+        "api.main.utc_now", return_value=datetime(2026, 3, 25, 18, 1, 0, tzinfo=timezone.utc)
+    ), patch(
+        "api.main._remember_displayed_tasks", new_callable=AsyncMock
+    ) as remember_tasks, patch("api.main._remember_recent_reminders", new_callable=AsyncMock) as remember_reminders:
+        asyncio.run(handle_telegram_command("/today", None, "12345", "usr_abc", mock_db))
+    remember_tasks.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_1"], "today")
+    remember_reminders.assert_awaited_once_with(
+        db=mock_db,
+        user_id="usr_abc",
+        chat_id="12345",
+        reminder_ids=["rem_1", "rem_2"],
+        reason="today_view",
+        ttl_hours=12,
+    )
+    mock_db.commit.assert_awaited_once()
+
+
 def test_command_done_without_args_uses_ordinal_first_guidance(mock_db, mock_send):
     asyncio.run(handle_telegram_command("/done", None, "12345", "usr_abc", mock_db))
     mock_db.execute.assert_not_awaited()
     mock_db.commit.assert_not_awaited()
     text = mock_send.await_args.args[1]
     assert "/done 2" in text
-    assert "latest <code>/today</code> or <code>/focus</code>" in text
+    assert "latest visible plan list" in text
     assert "Advanced: you can still use <code>/done tsk_123</code>" in text
 
 
 def test_command_done_updates_owned_task_only(mock_db, mock_send, mock_redis):
     result = Mock()
-    result.scalar_one_or_none.return_value = Task(
+    result.scalar_one_or_none.return_value = WorkItem(
         id="tsk_x",
         user_id="usr_abc",
+        kind=WorkItemKind.task,
         title="Buy paint rollers",
         title_norm="buy paint rollers",
-        status=TaskStatus.open,
+        status=WorkItemStatus.open,
     )
     mock_db.execute.return_value = result
     with patch("api.main.redis_client", mock_redis):
@@ -1785,12 +1984,13 @@ def test_command_done_rejects_non_owned_or_unknown(mock_db, mock_send):
 
 def test_command_done_supports_recent_focus_ordinal(mock_db, mock_send, mock_redis):
     result = Mock()
-    result.scalar_one_or_none.return_value = Task(
+    result.scalar_one_or_none.return_value = WorkItem(
         id="tsk_focus_2",
         user_id="usr_abc",
+        kind=WorkItemKind.task,
         title="Call contractor",
         title_norm="call contractor",
-        status=TaskStatus.open,
+        status=WorkItemStatus.open,
     )
     mock_db.execute.return_value = result
     with patch("api.main._resolve_displayed_task_id", new_callable=AsyncMock, return_value="tsk_focus_2") as resolve_task:
@@ -1808,17 +2008,18 @@ def test_command_done_rejects_unknown_ordinal_without_mutation(mock_db, mock_sen
     mock_db.execute.assert_not_awaited()
     mock_db.commit.assert_not_awaited()
     text = mock_send.await_args.args[1]
-    assert "most recent <code>/today</code> or <code>/focus</code>" in text
+    assert "most recent visible plan list" in text
     assert "Advanced: you can still use <code>/done tsk_123</code>" in text
 
 
 def test_apply_capture_repairs_wrapper_title_on_touched_task(mock_db):
-    existing = Task(
+    existing = WorkItem(
         id="tsk_wrap",
         user_id="usr_abc",
+        kind=WorkItemKind.task,
         title="Move 'Complete Worker's Compensation form for employee' to today",
         title_norm="move complete workers compensation form for employee to today",
-        status=TaskStatus.open,
+        status=WorkItemStatus.open,
     )
     result = Mock()
     result.scalar_one_or_none.return_value = existing
@@ -1853,6 +2054,210 @@ def test_apply_capture_repairs_wrapper_title_on_touched_task(mock_db):
     assert existing.title == "Complete Worker's Compensation form for employee"
     assert existing.title_norm == "complete worker's compensation form for employee"
     assert applied.items[0].label == "Complete Worker's Compensation form for employee"
+    added_types = [type(call.args[0]) for call in mock_db.add.call_args_list if call.args]
+    assert ConversationEvent in added_types
+    assert ActionBatch in added_types
+    assert WorkItemVersion in added_types
+
+
+def test_apply_capture_updates_targeted_reminder(mock_db):
+    existing = Reminder(
+        id="rem_payroll",
+        user_id="usr_abc",
+        title="Call Patrick",
+        kind=ReminderKind.one_off,
+        status=ReminderStatus.pending,
+        remind_at=datetime(2026, 3, 25, 18, 0, tzinfo=timezone.utc),
+        message="Old reminder",
+    )
+    result = Mock()
+    result.scalar_one_or_none.return_value = existing
+    mock_db.execute.return_value = result
+
+    _, applied = asyncio.run(
+        _apply_capture(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            source="telegram",
+            message="Move the Patrick reminder to tomorrow morning.",
+            extraction={
+                "tasks": [],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [
+                    {
+                        "title": "Call Patrick",
+                        "action": "update",
+                        "target_reminder_id": "rem_payroll",
+                        "remind_at": "2026-03-26T14:00:00Z",
+                        "message": "Ask about payroll",
+                    }
+                ],
+            },
+            request_id="req_rem",
+            commit=False,
+            enqueue_summary=False,
+        )
+    )
+
+    assert existing.title == "Call Patrick"
+    assert existing.message == "Ask about payroll"
+    assert existing.remind_at == datetime(2026, 3, 26, 14, 0, tzinfo=timezone.utc)
+    assert applied.reminders_updated == 1
+    assert applied.items[0].group == "reminder_updated"
+    added_types = [type(call.args[0]) for call in mock_db.add.call_args_list if call.args]
+    assert ConversationEvent in added_types
+    assert ActionBatch in added_types
+    assert ReminderVersion in added_types
+
+
+def test_validate_extraction_payload_accepts_project_and_subtask_fields():
+    extraction = {
+        "tasks": [
+            {"title": "Research 401k requirements in NYC", "action": "create", "kind": "project"},
+            {
+                "title": "Review NYC-specific rules",
+                "action": "create",
+                "kind": "subtask",
+                "parent_title": "Research 401k requirements in NYC",
+            },
+        ],
+        "goals": [],
+        "problems": [],
+        "links": [],
+        "reminders": [],
+    }
+
+    _validate_extraction_payload(extraction)
+
+
+def test_validate_extraction_payload_folds_goal_and_problem_entries_into_project_tasks():
+    extraction = {
+        "tasks": [],
+        "goals": [{"title": "Finish apartment renovation", "description": "Own the full project."}],
+        "problems": [{"title": "Resolve payroll discrepancy"}],
+        "links": [],
+        "reminders": [],
+    }
+
+    _validate_extraction_payload(extraction)
+
+    assert extraction["goals"] == []
+    assert extraction["problems"] == []
+    assert extraction["tasks"] == [
+        {"title": "Finish apartment renovation", "kind": "project", "notes": "Own the full project."},
+        {"title": "Resolve payroll discrepancy", "kind": "project", "notes": None},
+    ]
+
+
+def test_apply_capture_creates_project_with_subtasks(mock_db):
+    project_lookup = Mock()
+    project_lookup.scalar_one_or_none.return_value = None
+    parent_lookup = Mock()
+    parent_lookup.scalar_one_or_none.return_value = None
+    mock_db.execute.side_effect = [project_lookup, parent_lookup]
+
+    _, applied = asyncio.run(
+        _apply_capture(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            source="telegram",
+            message="Research 401k requirements in NYC and create subtasks for me.",
+            extraction={
+                "tasks": [
+                    {
+                        "title": "Research 401k requirements in NYC",
+                        "action": "create",
+                        "kind": "project",
+                    },
+                    {
+                        "title": "Review NYC-specific rules",
+                        "action": "create",
+                        "kind": "subtask",
+                        "parent_title": "Research 401k requirements in NYC",
+                    },
+                    {
+                        "title": "Summarize employer filing deadlines",
+                        "action": "create",
+                        "kind": "subtask",
+                        "parent_title": "Research 401k requirements in NYC",
+                    },
+                ],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [],
+            },
+            request_id="req_proj",
+            commit=False,
+            enqueue_summary=False,
+        )
+    )
+
+    created_items = [
+        call.args[0]
+        for call in mock_db.add.call_args_list
+        if call.args and isinstance(call.args[0], WorkItem)
+    ]
+    assert len(created_items) == 3
+    parent = next(item for item in created_items if item.kind == WorkItemKind.project)
+    children = [item for item in created_items if item.kind == WorkItemKind.subtask]
+    assert len(children) == 2
+    assert all(child.parent_id == parent.id for child in children)
+    assert applied.tasks_created == 3
+    labels = [item.label for item in applied.items]
+    assert "Project: Research 401k requirements in NYC" in labels
+    assert "Subtask: Review NYC-specific rules" in labels
+    assert "Subtask: Summarize employer filing deadlines" in labels
+
+
+def test_apply_capture_promotes_existing_task_to_project(mock_db):
+    existing = WorkItem(
+        id="tsk_promote",
+        user_id="usr_abc",
+        kind=WorkItemKind.task,
+        title="Apartment renovation",
+        title_norm="apartment renovation",
+        status=WorkItemStatus.open,
+    )
+    result = Mock()
+    result.scalar_one_or_none.return_value = existing
+    mock_db.execute.return_value = result
+
+    _, applied = asyncio.run(
+        _apply_capture(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            source="telegram",
+            message="Turn apartment renovation into a project.",
+            extraction={
+                "tasks": [
+                    {
+                        "title": "Apartment renovation",
+                        "action": "update",
+                        "target_task_id": "tsk_promote",
+                        "kind": "project",
+                    }
+                ],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [],
+            },
+            request_id="req_promote",
+            commit=False,
+            enqueue_summary=False,
+        )
+    )
+
+    assert existing.kind == WorkItemKind.project
+    assert existing.parent_id is None
+    assert applied.tasks_updated == 1
+    assert applied.items[0].label == "Project: Apartment renovation"
 
 
 def test_action_draft_preview_groups_mixed_task_actions():
@@ -1875,3 +2280,300 @@ def test_action_draft_preview_groups_mixed_task_actions():
     assert "Update task:" in preview
     assert "due -&gt; 2026-03-25" in preview
     assert "notes -&gt; Still unresolved issues" in preview
+
+
+def test_action_draft_preview_groups_reminder_actions():
+    preview = _format_action_draft_preview(
+        {
+            "tasks": [],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [
+                {
+                    "action": "create",
+                    "title": "Call Patrick",
+                    "remind_at": "2026-03-25T15:00:00Z",
+                    "message": "Ask about payroll",
+                },
+                {
+                    "action": "complete",
+                    "title": "Follow up with accountant",
+                    "target_reminder_id": "rem_1",
+                },
+            ],
+        }
+    )
+    assert "Create reminder" in preview
+    assert "Mark reminder complete" in preview
+    assert "Create reminder:" in preview
+    assert "Complete reminder:" in preview
+    assert "at -&gt; 2026-03-25T15:00:00Z" in preview
+    assert "message -&gt; Ask about payroll" in preview
+
+
+def test_action_draft_preview_shows_project_and_subtask_metadata():
+    preview = _format_action_draft_preview(
+        {
+            "tasks": [
+                {"action": "create", "kind": "project", "title": "Research 401k requirements in NYC"},
+                {
+                    "action": "create",
+                    "kind": "subtask",
+                    "title": "Review NYC-specific rules",
+                    "parent_title": "Research 401k requirements in NYC",
+                },
+                {
+                    "action": "update",
+                    "kind": "project",
+                    "title": "Apartment renovation",
+                    "target_task_id": "tsk_proj",
+                },
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [],
+        }
+    )
+    assert "Create project:" in preview
+    assert "Create subtask:" in preview
+    assert "Promote to project:" in preview
+    assert "parent -&gt; Research 401k requirements in NYC" in preview
+
+
+def test_best_task_reference_candidate_uses_parent_title_context():
+    candidate = _best_task_reference_candidate(
+        "the NYC rules subtask under 401k research",
+        {
+            "tasks": [
+                {
+                    "id": "tsk_child_1",
+                    "title": "Review NYC-specific rules",
+                    "parent_title": "Research 401k requirements in NYC",
+                    "status": "open",
+                },
+                {
+                    "id": "tsk_other",
+                    "title": "Review NYC-specific rules",
+                    "parent_title": "Apartment renovation",
+                    "status": "open",
+                },
+            ],
+            "recent_task_refs": [],
+            "displayed_task_refs": [],
+        },
+    )
+    assert candidate is not None
+    assert candidate["id"] == "tsk_child_1"
+
+
+def test_best_reminder_reference_candidate_uses_work_item_title_context():
+    candidate = _best_reminder_reference_candidate(
+        "the payroll reminder for 401k research",
+        {
+            "recent_reminder_refs": [
+                {
+                    "id": "rem_401k",
+                    "title": "Payroll reminder",
+                    "work_item_title": "Research 401k requirements in NYC",
+                    "status": "pending",
+                }
+            ],
+            "reminders": [
+                {
+                    "id": "rem_401k",
+                    "title": "Payroll reminder",
+                    "work_item_title": "Research 401k requirements in NYC",
+                    "status": "pending",
+                },
+                {
+                    "id": "rem_apartment",
+                    "title": "Payroll reminder",
+                    "work_item_title": "Apartment renovation",
+                    "status": "pending",
+                },
+            ],
+        },
+    )
+    assert candidate is not None
+    assert candidate["id"] == "rem_401k"
+
+
+def test_non_command_planner_reminder_action_creates_draft(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.88,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "reminder",
+                "action": "create",
+                "title": "Call Patrick",
+                "message": "Ask about payroll",
+                "remind_at": "2026-03-25T15:00:00Z",
+            }
+        ],
+    }
+    fake_draft = _fake_draft(
+        source_message="Remind me to call Patrick this afternoon.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    )
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": [], "reminders": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Remind me to call Patrick this afternoon."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extract_fallback.assert_not_awaited()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == []
+        assert extraction["reminders"] == [
+            {
+                "title": "Call Patrick",
+                "action": "create",
+                "message": "Ask about payroll",
+                "remind_at": "2026-03-25T15:00:00Z",
+            }
+        ]
+
+
+def test_non_command_reminder_without_schedule_requests_time_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.88,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "reminder",
+                "action": "create",
+                "title": "Call Patrick",
+                "message": "Ask about payroll",
+            }
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._stage_clarification_draft", new_callable=AsyncMock
+    ) as stage_clarification, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": [], "reminders": []}
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Remind me to call Patrick about payroll."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        stage_clarification.assert_awaited_once()
+        kwargs = stage_clarification.await_args.kwargs
+        assert "When should I remind you about <code>Call Patrick</code>" in kwargs["clarification_text"]
+        assert kwargs["clarification_state"]["kind"] == "reminder_schedule"
+
+
+def test_non_command_unresolved_reminder_update_requests_reminder_clarification(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.9,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "reminder",
+                "action": "update",
+                "title": "Payroll reminder",
+                "message": "Push it to tomorrow morning",
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [],
+        "reminders": [
+            {"id": "rem_patrick", "title": "Payroll reminder for Patrick", "status": "pending"},
+            {"id": "rem_pat", "title": "Payroll reminder for Pat", "status": "pending"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._stage_clarification_draft", new_callable=AsyncMock
+    ) as stage_clarification, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Update the payroll reminder."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        stage_clarification.assert_awaited_once()
+        kwargs = stage_clarification.await_args.kwargs
+        assert "Which reminder do you want to update?" in kwargs["clarification_text"]
+        assert kwargs["clarification_state"]["kind"] == "reminder_candidates"
+        assert len(kwargs["clarification_state"]["candidates"]) == 2
+
+
+def test_reminder_reference_candidates_prefer_recent_context():
+    candidates = _reminder_reference_candidates(
+        {
+            "recent_reminder_refs": [
+                {"id": "rem_recent", "title": "Payroll reminder for Patrick", "status": "pending"},
+            ],
+            "reminders": [
+                {"id": "rem_recent", "title": "Payroll reminder for Patrick", "status": "pending"},
+                {"id": "rem_other", "title": "Dentist reminder", "status": "pending"},
+            ],
+        }
+    )
+    by_id = {candidate["id"]: candidate for candidate in candidates}
+    assert "recent" in by_id["rem_recent"]["sources"]
+    assert "grounding" in by_id["rem_recent"]["sources"]
+    assert by_id["rem_other"]["sources"] == {"grounding"}
+
+
+def test_remember_recent_reminders_records_reminder_context(mock_db):
+    asyncio.run(
+        _remember_recent_reminders(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            reminder_ids=["rem_1", "rem_1", "rem_2"],
+            reason="capture_apply",
+            ttl_hours=12,
+        )
+    )
+    added = [call.args[0] for call in mock_db.add.call_args_list if call.args]
+    context_items = [item for item in added if isinstance(item, RecentContextItem)]
+    assert len(context_items) == 2
+    assert {item.entity_id for item in context_items} == {"rem_1", "rem_2"}
+    assert all(item.entity_type == EntityType.reminder for item in context_items)

@@ -26,7 +26,7 @@
 ## Verification Checklist
 - `GET /health/ready` returns ready.
 - `GET /health/metrics` returns JSON and queue depth keys.
-- `GET /v1/sync/todoist/status` returns a valid response.
+- `GET /v1/work_items` returns a valid response.
 - Latest expected tasks/goals are visible in DB queries.
 
 ## Rollback Notes

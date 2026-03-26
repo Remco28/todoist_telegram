@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -22,6 +22,9 @@ class LLMAdapter:
         if not isinstance(title, str) or not title.strip():
             return None
         item: Dict[str, Any] = {"title": title.strip()}
+        kind = candidate.get("kind")
+        if isinstance(kind, str) and kind in {"project", "task", "subtask"}:
+            item["kind"] = kind
         action = candidate.get("action")
         if isinstance(action, str) and action in {"create", "update", "complete", "archive", "noop"}:
             item["action"] = action
@@ -54,6 +57,12 @@ class LLMAdapter:
         target_task_id = candidate.get("target_task_id")
         if isinstance(target_task_id, str) and target_task_id.strip():
             item["target_task_id"] = target_task_id.strip()
+        parent_task_id = candidate.get("parent_task_id")
+        if isinstance(parent_task_id, str) and parent_task_id.strip():
+            item["parent_task_id"] = parent_task_id.strip()
+        parent_title = candidate.get("parent_title")
+        if isinstance(parent_title, str) and parent_title.strip():
+            item["parent_title"] = parent_title.strip()
         confidence = candidate.get("confidence")
         if isinstance(confidence, (int, float)):
             item["confidence"] = float(confidence)
@@ -82,6 +91,58 @@ class LLMAdapter:
         if all(isinstance(v, str) and v.strip() for v in link.values()):
             return {k: v.strip() for k, v in link.items()}
         return None
+
+    @staticmethod
+    def _normalize_extract_reminder_item(candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+        title = candidate.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return None
+        item: Dict[str, Any] = {"title": title.strip()}
+        action = candidate.get("action")
+        if isinstance(action, str) and action in {"create", "update", "complete", "dismiss", "cancel", "noop"}:
+            item["action"] = action
+            if action == "complete":
+                item["status"] = "completed"
+            elif action == "dismiss":
+                item["status"] = "dismissed"
+            elif action == "cancel":
+                item["status"] = "canceled"
+        status = candidate.get("status")
+        if isinstance(status, str) and status in {"pending", "sent", "completed", "dismissed", "canceled"}:
+            item["status"] = status
+        message = candidate.get("message")
+        if isinstance(message, str) and message.strip():
+            item["message"] = message.strip()
+        remind_at = candidate.get("remind_at")
+        if isinstance(remind_at, str) and remind_at.strip():
+            text = remind_at.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(text)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                item["remind_at"] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            except ValueError:
+                pass
+        kind = candidate.get("kind")
+        if isinstance(kind, str) and kind in {"one_off", "follow_up", "recurring"}:
+            item["kind"] = kind
+        recurrence_rule = candidate.get("recurrence_rule")
+        if isinstance(recurrence_rule, str) and recurrence_rule.strip():
+            item["recurrence_rule"] = recurrence_rule.strip()
+        target_reminder_id = candidate.get("target_reminder_id")
+        if isinstance(target_reminder_id, str) and target_reminder_id.strip():
+            item["target_reminder_id"] = target_reminder_id.strip()
+        work_item_id = candidate.get("work_item_id")
+        if isinstance(work_item_id, str) and work_item_id.strip():
+            item["work_item_id"] = work_item_id.strip()
+        person_id = candidate.get("person_id")
+        if isinstance(person_id, str) and person_id.strip():
+            item["person_id"] = person_id.strip()
+        return item
 
     @staticmethod
     def _normalize_usage(candidate: Any) -> Optional[Dict[str, int]]:
@@ -116,7 +177,7 @@ class LLMAdapter:
     def _model_for(self, operation: str) -> str:
         if operation == "extract":
             return settings.LLM_MODEL_EXTRACT
-        if operation in {"action_plan", "action_critic"}:
+        if operation in {"action_plan", "action_critic", "telegram_turn"}:
             return settings.LLM_MODEL_EXTRACT
         if operation == "query":
             return settings.LLM_MODEL_QUERY
@@ -218,6 +279,17 @@ class LLMAdapter:
         return content_obj
 
     @staticmethod
+    def _normalize_project_task_item(candidate: Any) -> Optional[Dict[str, Any]]:
+        item = LLMAdapter._normalize_extract_title_item(candidate)
+        if item is None:
+            return None
+        normalized: Dict[str, Any] = {"title": item["title"], "kind": "project"}
+        description = candidate.get("description") if isinstance(candidate, dict) else None
+        if isinstance(description, str) and description.strip():
+            normalized["notes"] = description.strip()
+        return normalized
+
+    @staticmethod
     def _normalize_extract_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         task_actions = payload.get("task_actions")
         if isinstance(task_actions, list):
@@ -233,6 +305,7 @@ class LLMAdapter:
                 "goals": [],
                 "problems": [],
                 "links": [],
+                "reminders": [],
             }
         elif all(isinstance(payload.get(k), list) for k in ("tasks", "goals", "problems", "links")):
             tasks = [
@@ -243,22 +316,22 @@ class LLMAdapter:
                 )
                 if item is not None
             ]
-            goals = [
+            tasks.extend(
                 item
                 for item in (
-                    LLMAdapter._normalize_extract_title_item(goal)
+                    LLMAdapter._normalize_project_task_item(goal)
                     for goal in payload.get("goals", [])
                 )
                 if item is not None
-            ]
-            problems = [
+            )
+            tasks.extend(
                 item
                 for item in (
-                    LLMAdapter._normalize_extract_title_item(problem)
+                    LLMAdapter._normalize_project_task_item(problem)
                     for problem in payload.get("problems", [])
                 )
                 if item is not None
-            ]
+            )
             links = [
                 item
                 for item in (
@@ -267,7 +340,15 @@ class LLMAdapter:
                 )
                 if item is not None
             ]
-            normalized = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
+            reminders = [
+                item
+                for item in (
+                    LLMAdapter._normalize_extract_reminder_item(reminder)
+                    for reminder in payload.get("reminders", [])
+                )
+                if item is not None
+            ]
+            normalized = {"tasks": tasks, "goals": [], "problems": [], "links": links, "reminders": reminders}
         else:
             proposals = payload.get("proposals")
             if not isinstance(proposals, dict):
@@ -288,14 +369,12 @@ class LLMAdapter:
                 if isinstance(priority, int):
                     item["priority"] = priority
                 tasks.append(item)
-            goals = []
             for goal in proposals.get("goals", []):
                 if isinstance(goal, dict) and goal.get("action") != "ignore" and isinstance(goal.get("title"), str):
-                    goals.append({"title": goal["title"].strip(), "status": "active"})
-            problems = []
+                    tasks.append({"title": goal["title"].strip(), "kind": "project"})
             for problem in proposals.get("problems", []):
                 if isinstance(problem, dict) and problem.get("action") != "ignore" and isinstance(problem.get("title"), str):
-                    problems.append({"title": problem["title"].strip(), "status": "active"})
+                    tasks.append({"title": problem["title"].strip(), "kind": "project"})
             links = []
             for link in proposals.get("links", []):
                 if not isinstance(link, dict):
@@ -316,9 +395,10 @@ class LLMAdapter:
                         "link_type": relation.strip(),
                     }
                 )
-            normalized = {"tasks": tasks, "goals": goals, "problems": problems, "links": links}
+            reminders = []
+            normalized = {"tasks": tasks, "goals": [], "problems": [], "links": links, "reminders": reminders}
 
-        for key in ("tasks", "goals", "problems", "links"):
+        for key in ("tasks", "goals", "problems", "links", "reminders"):
             value = normalized.get(key, [])
             if not isinstance(value, list):
                 raise ValueError(f"Extract field {key} is not a list")
@@ -348,20 +428,61 @@ class LLMAdapter:
             normalized["follow_up_question"] = follow_up
         return normalized
 
+    @staticmethod
+    def _normalize_turn_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        speech_act = payload.get("speech_act")
+        if speech_act not in {"smalltalk", "query", "action", "confirmation", "clarification_answer", "unknown"}:
+            raise ValueError("Turn payload missing valid speech_act")
+        normalized: Dict[str, Any] = {"speech_act": speech_act}
+        view_name = payload.get("view_name")
+        if isinstance(view_name, str):
+            normalized_view = view_name.strip().lower()
+            if normalized_view in {"today", "focus", "urgent", "open_tasks"}:
+                normalized["view_name"] = normalized_view
+        draft_action = payload.get("draft_action")
+        if isinstance(draft_action, str):
+            normalized_action = draft_action.strip().lower()
+            if normalized_action in {"confirm", "discard", "edit"}:
+                normalized["draft_action"] = normalized_action
+        draft_edit_text = payload.get("draft_edit_text")
+        if isinstance(draft_edit_text, str) and draft_edit_text.strip():
+            normalized["draft_edit_text"] = draft_edit_text.strip()
+        confidence = payload.get("confidence")
+        if isinstance(confidence, (int, float)):
+            normalized["confidence"] = float(confidence)
+        reply = payload.get("assistant_reply")
+        if isinstance(reply, str) and reply.strip():
+            normalized["assistant_reply"] = reply.strip()
+        return normalized
+
+    @staticmethod
+    def _fallback_turn_interpretation(message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {"speech_act": "unknown", "confidence": 0.0}
+
     async def extract_structured_updates(self, message: str, grounding: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        fallback = {"tasks": [], "goals": [], "problems": [], "links": []}
+        fallback = {"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []}
         prompt = (
             "Operation: extract.\n"
-            "Convert user text into JSON object with keys tasks/goals/problems/links.\n"
+            "Convert user text into JSON object with keys tasks/goals/problems/links/reminders.\n"
+            "Use tasks for all normal local-first work items, including projects and subtasks. If the user talks about a goal or problem, represent it as a project-shaped task instead of using separate goal/problem buckets.\n"
             "Prefer updating/completing existing tasks from grounding before creating new ones.\n"
-            "Each task supports optional action=create|update|complete|archive|noop and target_task_id.\n"
+            "Prefer updating existing reminders from grounding.reminders before creating new ones.\n"
+            "Each task supports optional action=create|update|complete|archive|noop, optional target_task_id, optional kind=project|task|subtask, and optional parent_task_id or parent_title for explicit subtask creation.\n"
+            "Each reminder supports optional action=create|update|complete|dismiss|cancel|noop, optional target_reminder_id, optional message, optional remind_at, optional kind, and optional recurrence_rule.\n"
             "Task fields may include notes, priority (1 highest, 4 lowest), impact_score (1-5), urgency_score (1-5), due_date.\n"
+            "Reminder create actions should include remind_at as an ISO datetime when the user provides a schedule.\n"
             "When dates are explicit or relative (for example tomorrow/next week/tonight), include ISO due_date (YYYY-MM-DD) resolved against grounding.current_date_local and grounding.timezone (fallback grounding.current_date_utc).\n"
+            "When the user asks for a reminder at a specific time or relative time, include remind_at as an ISO datetime resolved against grounding.current_datetime_local and grounding.timezone (fallback grounding.current_datetime_utc).\n"
             "Do not create wrapper task titles like Move 'X' to today or Set X for next week; represent the real task X and use update metadata like due_date instead.\n"
+            "If the user explicitly asks to create subtasks, break something into subtasks, or make a checklist, return one parent item first and then child items with kind=subtask and parent_task_id or parent_title.\n"
+            "If the user explicitly asks to turn an existing task into a project, use action=update with target_task_id and kind=project.\n"
             "Question-form requests like 'can you delete the burpee task?' or 'could you move that to tomorrow?' are still action intent, not query intent.\n"
+            "Completion statements like 'the Tuesday dinner plan is done', 'finished that already', or 'Amy handled that' are also action intent when they refer to a task.\n"
             "If grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
             "If grounding.recent_task_refs includes recently discussed tasks from the assistant's latest answer, use those grounded task ids for named follow-ups like the burpee task, the backpack item, or that apartment task.\n"
+            "If grounding.recent_reminder_refs includes recently discussed reminders, use those grounded reminder ids for follow-ups like that reminder, the payroll reminder, or move it to tomorrow.\n"
             "If user implies completion/cancellation, prefer action=complete/archive with status done/archived.\n"
+            "If grounding includes clarification candidates from a prior unresolved turn, treat short replies like 'the one that says register' or 'that one' as clarification answers, not standalone queries.\n"
             "If the user gives multiple action clauses in one message, return multiple grounded task actions when appropriate.\n"
             "Do not create near-duplicate tasks when a grounded candidate is plausible.\n"
             "Return only JSON."
@@ -380,6 +501,41 @@ class LLMAdapter:
             logger.warning("extract_structured_updates fallback: %s", type(exc).__name__)
             return fallback
 
+    async def interpret_telegram_turn(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        fallback = self._fallback_turn_interpretation(message, context)
+        prompt = (
+            "Operation: telegram_turn.\n"
+            "Classify a Telegram message before any read or write side effects.\n"
+            "Return JSON with keys speech_act, optional view_name, optional draft_action, optional draft_edit_text, optional confidence, and optional assistant_reply.\n"
+            "speech_act must be one of: smalltalk, query, action, confirmation, clarification_answer, unknown.\n"
+            "view_name may be omitted or one of: today, focus, urgent, open_tasks.\n"
+            "Use action when the user is trying to change state, including polite question forms and conversational completion statements.\n"
+            "Use query when the user is asking for information.\n"
+            "Use confirmation for yes/no/apply/cancel style replies to a pending proposal.\n"
+            "Use clarification_answer for short disambiguation replies to a previous question, such as 'the one that says register' or 'that one'.\n"
+            "If context.has_open_draft is true and the user wants to revise the pending proposal, set draft_action=edit.\n"
+            "If they include the revision in the same message, also include draft_edit_text with only the revision content.\n"
+            "If context.has_open_draft is true and the user is accepting or rejecting the pending proposal, set draft_action to confirm or discard.\n"
+            "If the message is asking for a deterministic agenda/list view, set view_name accordingly.\n"
+            "Use today for today's agenda, urgent for high-priority items, open_tasks for listing currently open tasks, and focus only if the user explicitly asks for top priorities.\n"
+            "assistant_reply should only be included for smalltalk, and should be brief.\n"
+            "Use unknown only if the message cannot be classified confidently from the provided context.\n"
+            "Return only JSON."
+        )
+        try:
+            payload: Dict[str, Any] = {"message": message}
+            if isinstance(context, dict):
+                payload["context"] = context
+            raw = await self._invoke_operation("telegram_turn", prompt, json.dumps(payload, ensure_ascii=True))
+            normalized = self._normalize_turn_payload(raw)
+            usage = self._normalize_usage(raw.get("usage"))
+            if usage:
+                normalized["usage"] = usage
+            return normalized
+        except Exception as exc:
+            logger.warning("interpret_telegram_turn fallback: %s", type(exc).__name__)
+            return fallback
+
     async def plan_actions(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         fallback = {
             "intent": "query" if "?" in (message or "") else "action",
@@ -394,12 +550,19 @@ class LLMAdapter:
             "Return JSON with keys: intent, scope, actions, confidence, needs_confirmation.\n"
             "intent must be query or action.\n"
             "scope must be one of single|subset|all_open|all_matching.\n"
-            "actions is an array of objects with entity_type/task-goal-problem, action, optional title, optional target_task_id, optional status, optional notes, optional priority (1 highest, 4 lowest), optional impact_score (1-5), optional urgency_score (1-5), optional due_date.\n"
+            "actions is an array of objects with entity_type/task-goal-problem-reminder, action, optional title, optional target_task_id, optional parent_task_id, optional parent_title, optional target_reminder_id, optional status, optional notes, optional message, optional priority (1 highest, 4 lowest), optional impact_score (1-5), optional urgency_score (1-5), optional due_date, optional remind_at, optional recurrence_rule, optional kind.\n"
+            "Prefer entity_type=task with kind=project|task|subtask for normal local-first work. If the user describes a goal or problem, model it as a project-shaped task instead of using separate goal/problem entities.\n"
             "Resolve relative dates against context.grounding.current_date_local and context.grounding.timezone (fallback context.grounding.current_date_utc) and output due_date as YYYY-MM-DD.\n"
+            "Resolve reminder times against context.grounding.current_datetime_local and context.grounding.timezone (fallback context.grounding.current_datetime_utc) and output remind_at as ISO datetime.\n"
             "Do not create wrapper task titles like Move 'X' to today or Set X for next week; represent the real task X and use update metadata like due_date instead.\n"
+            "If the user explicitly asks to create subtasks or a checklist, return one parent item first and then child actions with kind=subtask and parent_task_id or parent_title.\n"
+            "If the user explicitly asks to make an existing task a project, use action=update with target_task_id and kind=project.\n"
             "Question-form requests like 'can you delete the burpee task?' or 'could you move that to tomorrow?' are still action intent, not query intent.\n"
+            "Completion statements like 'the Tuesday dinner plan is done', 'finished that already', or 'Amy handled that' are also action intent when they refer to a task.\n"
             "If context.grounding.displayed_task_refs includes ordinal items from the latest /today or /focus list, resolve phrases like first task, second one, or item 3 against those task ids.\n"
             "If context.grounding.recent_task_refs includes recently discussed tasks from the assistant's latest answer, use those grounded task ids for named follow-ups like the burpee task, the backpack item, or that apartment task.\n"
+            "If context.grounding.recent_reminder_refs includes recently discussed reminders, use those grounded reminder ids for follow-ups like that reminder, the payroll reminder, or move it to tomorrow.\n"
+            "If context.grounding includes clarification candidates from a prior unresolved turn, treat short replies like 'the one that says register' or 'that one' as clarification answers, not standalone queries.\n"
             "For broad completion statements, prefer action intent with scoped task actions using grounded task ids when possible.\n"
             "If the user gives multiple action clauses in one message, return multiple actions when each clause refers to a concrete task.\n"
             "Return only JSON."

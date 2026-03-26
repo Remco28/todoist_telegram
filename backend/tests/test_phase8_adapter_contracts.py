@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -188,7 +188,7 @@ def test_plan_rewrite_malformed_payload_falls_back_to_valid_schema_before_cache(
         valid_plan_payload = {
             "schema_version": "plan.v1",
             "plan_window": "today",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "today_plan": [],
             "next_actions": [],
             "blocked_items": [],
@@ -231,7 +231,7 @@ def test_plan_rewrite_ignores_extra_unexpected_keys_via_schema_validation():
         valid_plan_payload = {
             "schema_version": "plan.v1",
             "plan_window": "today",
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "today_plan": [],
             "next_actions": [],
             "blocked_items": [],

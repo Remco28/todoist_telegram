@@ -54,9 +54,11 @@ The current command list is:
 - `/start` - Link this chat
 - `/today` - Show what needs attention today
 - `/urgent` - Show high-priority items
+- `/web` - Open the web workbench
 
 Compatibility note:
-- Legacy commands `/plan`, `/focus`, `/done`, and `/ask` still work in the backend during migration, but they are intentionally omitted from the visible Telegram command menu.
+- Slash `/plan`, `/focus`, and `/ask` are retired in favor of the conversation-first flow.
+- Hidden `/done` remains as a deterministic fallback during migration, but it is intentionally omitted from the visible Telegram command menu.
 
 ## Verification
 

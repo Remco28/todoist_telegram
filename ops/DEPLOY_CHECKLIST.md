@@ -11,7 +11,6 @@
    - `REDIS_URL`
    - `APP_AUTH_BEARER_TOKENS` or `APP_AUTH_TOKEN_USER_MAP`
    - `LLM_API_KEY` and model vars
-   - `TODOIST_TOKEN` (if sync enabled)
    - `TELEGRAM_BOT_TOKEN`
 5. Confirm current deployment health:
    - `GET /health/live`
@@ -26,7 +25,7 @@
 4. Run post-deploy smoke checks:
    - `GET /health/ready`
    - `GET /health/metrics`
-   - Trigger capture/query/plan/sync smoke flow (Phase 8 smoke test command).
+   - Trigger capture/query/plan/work-item smoke flow (Phase 8 smoke test command).
 5. If Telegram command definitions changed, register them:
    - `cd /app && ./ops/register_telegram_commands.sh`
 6. Confirm no sustained error growth in metrics (`retry_scheduled`, `moved_to_dlq`).
@@ -39,14 +38,14 @@
 3. After rollback/restore, verify:
    - `GET /health/ready`
    - `GET /health/metrics`
-   - `GET /v1/sync/todoist/status`
+   - `GET /v1/work_items`
 4. Record deployment incident details and timestamps in `comms/log.md`.
 
 ## v1 Release Gates
 ### Automated (Required)
 1. Full backend test suite:
    - `cd backend && pytest -q`
-2. Staging smoke (including reconcile):
+2. Staging smoke:
    - `RUN_STAGING_SMOKE=1 STAGING_API_BASE_URL=<url> STAGING_AUTH_TOKEN=<token> DATABASE_URL=<db> REDIS_URL=<redis> cd backend && pytest -q tests/test_phase8_staging_smoke.py`
 3. Migration dry-run + rollback reference:
    - `cd backend && alembic upgrade head --sql`
@@ -58,8 +57,8 @@
    - Type `/` in Telegram and confirm the command picker is populated.
 2. Query mode sanity:
    - Send one representative `/v1/query/ask` request and verify contract response.
-3. Todoist sync + reconcile sanity:
-   - Trigger `/v1/sync/todoist` and `/v1/sync/todoist/reconcile`; verify `/v1/sync/todoist/status`.
+3. Local-first maintenance sanity:
+   - Create one `/v1/work_items` task and verify it appears in `/v1/work_items`.
 
 ### Sign-off
 - Release timestamp (UTC): `________________`

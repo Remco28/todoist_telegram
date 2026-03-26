@@ -1,55 +1,80 @@
 # Memory and Session Policy
 
 ## Principles
-- API providers are treated as stateless by default.
-- App-level memory is owned by backend storage.
-- Structured records are more important than raw transcript history.
+- Providers are stateless by default.
+- Durable memory belongs to the app database.
+- Structured state is more important than raw transcript replay.
+- Recent visible context is part of the conversational contract, not just a retrieval hint.
 
 ## Session Model
-- Session key: `user_id + chat_id`.
-- Active session: configurable inactivity timeout.
-- New message after timeout starts a new app session window.
-- Session boundaries are metadata; they do not delete structured memory.
+- Session key: `user_id + chat_id`
+- Telegram remains the primary session surface.
+- Session boundaries help organize conversation and summarization, but they do not define durable work state.
 
 ## Retention Model
-- Structured entities (`tasks`, `problems`, `goals`, links): retained until archived/deleted by policy.
-- Session summaries: retained long-term.
-- Raw transcripts: retention window configurable per environment.
-- Event/audit logs: retained for operational and traceability requirements.
+- Structured entities are retained until archived or explicitly deleted by policy.
+- Action history and versions are retained for traceability and undo.
+- Session summaries are retained long-term.
+- Raw transcripts are policy-driven and may be compacted.
+- Recent visible context is short-lived but important for follow-up grounding.
+
+## Primary Structured Memory
+The new memory model should prioritize:
+- `work_items`
+- `work_item_aliases`
+- `work_item_links`
+- `people`
+- `areas`
+- `reminders`
+- `plan_snapshots`
+- `action_batches`
+- `work_item_versions`
 
 ## Memory Layers
-- Hot: recent turns in current session.
-- Warm: rolling daily/weekly summaries.
-- Cold: full source records and event history.
+- Hot: recent turns, pending draft state, recent visible items
+- Warm: rolling summaries, recent plan snapshots, recent action batches
+- Cold: full entity state, versions, reminders, conversation events
 
 ## Context Assembly Rules
-- Always include compact system policy.
-- Always include operation instruction.
-- Always include current user message.
-- Add only relevant memory from latest summary.
-- Add only top related entities by recency and graph relevance.
-- Enforce hard token budget on assembled context.
-- Trim raw turns first when over budget.
-- Trim low-relevance entities next when over budget.
-- Never drop core policy or operation instructions.
+- Always include the current user message.
+- Always include the operation instruction.
+- Include only relevant recent visible work items and aliases.
+- Include parent/child hierarchy when it matters.
+- Include related people/areas when they materially help grounding.
+- Include reminders and plan context when the user is asking about time-sensitive work.
+- Enforce a hard token budget.
+- Trim low-value transcript text before trimming structured state.
 
 ## Write Safety Rules
-- LLM output is proposal only.
-- Backend validates JSON schema and policy constraints.
-- Backend performs transactional writes.
-- All write decisions logged with source and prompt/model versions.
+- Model output is always a proposal.
+- Backend validates schema and policy constraints.
+- Backend resolves or rejects candidate targets.
+- Backend writes transactionally.
+- Every confirmed write creates durable history.
 
 ## Query Safety Rules
-- Query mode is read-only by default.
-- Any detected write intent must route to action mode.
-- Ambiguous action intents must return a clarification prompt (no guessed mutation writes).
+- Queries are read-only by default.
+- Query answers may surface work items for follow-up grounding.
+- Query mode must not silently mutate durable state.
 
-## Recent Context Cache (Optional)
-- On read-only answers, store a short list of surfaced entity ids for quick follow-ups.
-- Limit retention to a short window.
-- Do not treat this cache as canonical memory; it only helps reference resolution.
+## Recent Context
+The app should preserve short-lived context for:
+- recently displayed items
+- recently mentioned items
+- recently changed items
+- pending clarification candidates
+
+This is essential for follow-ups like:
+- "that one"
+- "the register task"
+- "move it to next week"
+
+## Explicit Subtask Policy
+- The system should not auto-generate subtasks by default.
+- If the user explicitly asks for a breakdown, that request becomes structured state in the draft.
+- Suggested subtasks should be retained as part of the proposal until confirmed or discarded.
 
 ## No-Action Message Handling
-- Non-action conversational text may be retained for context and summarization according to retention policy.
-- Retention of non-action text must not bypass write safety rules.
-- No-action text should improve later understanding, not trigger autonomous writes.
+- Non-action conversational text may still contribute to summaries and context.
+- No-action retention must not bypass write safety.
+- The point of retaining no-action text is better future understanding, not hidden automation.

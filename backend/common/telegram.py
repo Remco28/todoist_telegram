@@ -369,6 +369,18 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
             if item.get("reason"):
                 lines.append(f"   <i>{escape_html(item['reason'])}</i>")
 
+    due_reminders = plan_payload.get("due_reminders", [])
+    if due_reminders:
+        lines.append("")
+        lines.append("<b>⏰ Due Reminders</b>")
+        for item in due_reminders[:8]:
+            lines.append(f"• {escape_html(item['title'])}")
+            remind_at = _parse_iso_datetime(item.get("remind_at"))
+            if remind_at:
+                lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
+            if item.get("message"):
+                lines.append(f"  {escape_html(item['message'])}")
+
     blocked = plan_payload.get("blocked_items", [])
     if blocked:
         lines.append("")
@@ -377,9 +389,6 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
             lines.append(f"• {escape_html(user_facing_task_title(item['title']))} (Reason: {', '.join(escape_html(b) for b in item['blocked_by'])})")
             
     return "\n".join(lines)
-
-def format_plan_refresh_ack(job_id: str) -> str:
-    return "🔄 Plan refresh enqueued.\nUse <code>/today</code> in a few seconds to view the refreshed plan."
 
 def format_focus_mode(plan_payload: Dict[str, Any]) -> str:
     """
@@ -416,6 +425,27 @@ def format_urgent_tasks(tasks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_open_tasks(tasks: List[Dict[str, Any]]) -> str:
+    lines = ["<b>📝 Open Tasks</b>", ""]
+    if not tasks:
+        lines.append("You do not have any open tasks right now.")
+        return "\n".join(lines)
+
+    for idx, task in enumerate(tasks[:20], start=1):
+        title = user_facing_task_title(task.get("title"))
+        lines.append(f"{idx}. {escape_html(title)}")
+        details: List[str] = []
+        status_value = str(task.get("status") or "").strip().lower()
+        if status_value == "blocked":
+            details.append("blocked")
+        due_date = task.get("due_date")
+        if isinstance(due_date, str) and due_date.strip():
+            details.append(f"Due {due_date.strip()}")
+        if details:
+            lines.append(f"   <i>{escape_html(' • '.join(details))}</i>")
+    return "\n".join(lines)
+
+
 def format_capture_ack(applied: Dict[str, Any]) -> str:
     """
     Summarizes applied changes for capture/thought.
@@ -436,6 +466,10 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
                 "updated": "Updated",
                 "completed": "Completed",
                 "archived": "Archived",
+                "reminder_created": "Reminders created",
+                "reminder_updated": "Reminders updated",
+                "reminder_completed": "Reminders completed",
+                "reminder_canceled": "Reminders canceled",
                 "goal_created": "Goals",
                 "problem_created": "Problems",
                 "link_created": "Links",
@@ -461,6 +495,8 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
     parts = []
     if applied.get("tasks_created"): parts.append(f"{applied['tasks_created']} task(s) created")
     if applied.get("tasks_updated"): parts.append(f"{applied['tasks_updated']} task(s) updated")
+    if applied.get("reminders_created"): parts.append(f"{applied['reminders_created']} reminder(s) created")
+    if applied.get("reminders_updated"): parts.append(f"{applied['reminders_updated']} reminder(s) updated")
     if applied.get("goals_created"): parts.append(f"{applied['goals_created']} goal(s) created")
     if applied.get("problems_created"): parts.append(f"{applied['problems_created']} problem(s) created")
     if applied.get("links_created"): parts.append(f"{applied['links_created']} link(s) created")

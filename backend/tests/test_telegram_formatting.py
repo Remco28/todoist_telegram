@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_query_answer, format_capture_ack,
+    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -65,6 +65,24 @@ class TestFormattersEscapeHtmlContent:
         assert "Updated just now" in result
         assert "Mar 18" in result
 
+    def test_format_today_plan_includes_due_reminders_section(self):
+        payload = {
+            "generated_at": "2026-03-18T18:40:00Z",
+            "today_plan": [{"task_id": "tsk_1", "title": "Register for the 401k plan"}],
+            "due_reminders": [
+                {
+                    "reminder_id": "rem_1",
+                    "title": "Follow up with Patrick",
+                    "remind_at": "2026-03-18T19:15:00Z",
+                    "message": "Check if the payroll email arrived.",
+                }
+            ],
+        }
+        result = format_today_plan(payload)
+        assert "Due Reminders" in result
+        assert "Follow up with Patrick" in result
+        assert "Check if the payroll email arrived." in result
+
     def test_format_focus_mode_marks_stale_cached_plan(self):
         payload = {
             "generated_at": "2026-03-18T18:40:00Z",
@@ -89,6 +107,19 @@ class TestFormattersEscapeHtmlContent:
         assert "Register for the 401k plan" in rendered
         assert "Due 2026-03-25" in rendered
         assert "Submit payroll correction" in rendered
+
+    def test_format_open_tasks_shows_blocked_and_due_details(self):
+        rendered = format_open_tasks(
+            [
+                {"id": "tsk_1", "title": "Register for the 401k plan", "status": "open", "due_date": "2026-03-25"},
+                {"id": "tsk_2", "title": "Submit payroll correction", "status": "blocked", "due_date": None},
+            ]
+        )
+        assert "Open Tasks" in rendered
+        assert "Register for the 401k plan" in rendered
+        assert "Due 2026-03-25" in rendered
+        assert "Submit payroll correction" in rendered
+        assert "blocked" in rendered
 
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {
@@ -135,6 +166,24 @@ class TestFormattersEscapeHtmlContent:
         )
         assert "Complete Worker's Compensation form for employee" in result
         assert "Move &#x27;Complete Worker" not in result
+
+    def test_format_capture_ack_includes_reminder_sections(self):
+        result = format_capture_ack(
+            {
+                "reminders_created": 1,
+                "reminders_updated": 2,
+                "items": [
+                    {"group": "reminder_created", "label": "Call Patrick"},
+                    {"group": "reminder_completed", "label": "Follow up with accountant"},
+                    {"group": "reminder_updated", "label": "Check New York filing deadline"},
+                ],
+            }
+        )
+        assert "Reminders created" in result
+        assert "Reminders completed" in result
+        assert "Reminders updated" in result
+        assert "Call Patrick" in result
+        assert "reminder(s) created" not in result
 
     def test_format_query_answer_escapes_dynamic_content(self):
         answer = "Use <script>alert(1)</script> & keep moving."

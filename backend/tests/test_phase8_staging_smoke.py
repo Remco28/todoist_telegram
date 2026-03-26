@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -34,7 +34,7 @@ def test_phase8_staging_smoke_core_paths():
     _required_env("DATABASE_URL")
     _required_env("REDIS_URL")
 
-    suffix = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    suffix = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     chat_id = f"phase8-smoke-{suffix}"
 
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
@@ -84,41 +84,35 @@ def test_phase8_staging_smoke_core_paths():
         assert isinstance(plan_get_json.get("today_plan"), list)
         assert isinstance(plan_get_json.get("blocked_items"), list)
 
-        sync_trigger_resp = client.post(
-            "/v1/sync/todoist",
-            headers=_headers(auth_token, idempotency_key=f"phase8-sync-{suffix}"),
+        work_item_create_resp = client.post(
+            "/v1/work_items",
+            headers=_headers(auth_token, idempotency_key=f"phase8-work-item-{suffix}"),
+            json={
+                "kind": "task",
+                "title": f"phase8 work item {suffix}",
+                "status": "open",
+            },
         )
-        assert sync_trigger_resp.status_code == 200, sync_trigger_resp.text
-        sync_trigger_json = sync_trigger_resp.json()
-        assert sync_trigger_json.get("status") == "ok"
-        assert isinstance(sync_trigger_json.get("job_id"), str) and sync_trigger_json["job_id"]
+        assert work_item_create_resp.status_code == 200, work_item_create_resp.text
+        work_item_create_json = work_item_create_resp.json()
+        assert work_item_create_json.get("kind") == "task"
+        assert work_item_create_json.get("title") == f"phase8 work item {suffix}"
 
-        sync_status_resp = client.get(
-            "/v1/sync/todoist/status",
+        work_item_list_resp = client.get(
+            "/v1/work_items",
             headers=_headers(auth_token),
         )
-        assert sync_status_resp.status_code == 200, sync_status_resp.text
-        sync_status_json = sync_status_resp.json()
-        assert "total_mapped" in sync_status_json
-        assert "pending_sync" in sync_status_json
-        assert "error_count" in sync_status_json
-        assert "reconcile_error_count" in sync_status_json
+        assert work_item_list_resp.status_code == 200, work_item_list_resp.text
+        work_item_list_json = work_item_list_resp.json()
+        assert isinstance(work_item_list_json, list)
+        assert any(item.get("id") == work_item_create_json["id"] for item in work_item_list_json)
 
-        reconcile_trigger_resp = client.post(
-            "/v1/sync/todoist/reconcile",
-            headers=_headers(auth_token, idempotency_key=f"phase8-reconcile-{suffix}"),
-        )
-        assert reconcile_trigger_resp.status_code == 200, reconcile_trigger_resp.text
-        reconcile_trigger_json = reconcile_trigger_resp.json()
-        assert reconcile_trigger_json.get("status") == "ok"
-        assert reconcile_trigger_json.get("enqueued") is True
-        assert isinstance(reconcile_trigger_json.get("job_id"), str) and reconcile_trigger_json["job_id"]
-
-        reconcile_status_resp = client.get(
-            "/v1/sync/todoist/status",
+        metrics_resp = client.get(
+            "/health/metrics",
             headers=_headers(auth_token),
         )
-        assert reconcile_status_resp.status_code == 200, reconcile_status_resp.text
-        reconcile_status_json = reconcile_status_resp.json()
-        assert "last_reconcile_at" in reconcile_status_json
-        assert "reconcile_error_count" in reconcile_status_json
+        assert metrics_resp.status_code == 200, metrics_resp.text
+        metrics_json = metrics_resp.json()
+        assert "queue_depth" in metrics_json
+        assert "failure_counters" in metrics_json
+        assert "last_success_by_topic" in metrics_json

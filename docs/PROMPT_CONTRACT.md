@@ -1,64 +1,92 @@
 # Prompt Contract
 
 ## Purpose
-Keep model behavior consistent, auditable, and token-efficient across providers.
+Keep model behavior consistent, auditable, and token-efficient while the product shifts to a local-first `work_item` model.
 
-## Contract Layers (Every Call)
-1. System policy: invariant rules and guardrails.
-2. Operation prompt: one of `extract`, `query`, `plan`, `summarize`.
-3. Retrieved context: compact, relevance-ranked facts.
-4. User input: raw message or command.
+## Contract Layers
+1. System policy
+2. Operation prompt
+3. Retrieved context
+4. User input
 
 ## Operation Types
-- `extract`: parse free-form text into structured update proposals.
-- `query`: answer user questions from current stored state.
-- `plan`: rank and explain next actions.
-- `summarize`: compress recent activity into durable memory.
-- `action_plan`: convert conversational input + grounding into executable actions.
-- `action_critic`: review proposed actions for safety/correctness before execution.
+- `telegram_turn`: classify the current conversational turn
+- `action_plan`: convert conversational input into structured proposed actions
+- `action_critic`: review proposed actions for safety and quality
+- `query`: answer a read-only question from current stored state
+- `plan`: generate or rewrite planning output
+- `summarize`: compress recent activity into durable memory
 
-## Output Requirements
-- `extract` must return strict JSON with schema version.
-- `extract` should include task action semantics where possible:
-  - per-task `action`: `create|update|complete|archive|noop`
-  - optional `target_task_id` when referencing existing tasks.
-  - default preference: resolve against provided grounding candidates before creating near-duplicates.
-- `query` returns concise text plus optional cited entity ids.
-- `plan` returns ordered items and rationale fields.
-- `summarize` returns compact facts and open questions.
-- `action_plan` should return:
-  - `intent` (`query|action`)
-  - `scope` (`single|subset|all_open|all_matching`)
-  - `actions[]` (typed operations with entity refs where possible)
-  - `confidence` (0-1)
-  - `needs_confirmation` (bool)
-  - mutation actions should include `target_task_id` whenever referencing existing tasks.
-- `action_critic` should return:
-  - `approved` (bool)
-  - `issues[]` (duplicates, conflicts, missing target refs, risky bulk updates)
-  - optional `revised_actions[]`
+Optional future operation:
+- `subtask_suggest`: suggest subtasks for an explicitly requested parent item
+
+## Core Output Expectations
+### `telegram_turn`
+- Must classify:
+- `smalltalk`
+- `query`
+- `action`
+- `confirmation`
+- `clarification_answer`
+- `unknown`
+- May include deterministic view requests like `today`, `urgent`, or `open_items`
+- May include draft actions like `confirm`, `discard`, or `edit`
+
+### `action_plan`
+- Must return strict JSON
+- Must use structured actions against the local domain model
+- Must prefer existing candidate ids supplied by the backend when referencing existing work items
+- Must avoid inventing arbitrary ids
+- Must prefer the `tasks[]` payload with `kind=project|task|subtask` for normal work-item writes
+- If the user describes a goal or problem, it should normally be modeled as a `project` work item, not a separate durable entity type
+- May create:
+- projects
+- tasks
+- subtasks
+- reminders
+- links
+
+### `action_critic`
+- Must catch:
+- missing targets
+- contradictory updates
+- overly broad writes
+- duplicate children/subtasks
+- poor quality decomposition
+
+### `subtask_suggest`
+- Must only be used when the user explicitly asks for task breakdown
+- Must prefer concrete, user-informed subtasks over generic filler
+- Must keep suggestions compact and actionable
+
+## Local-First Rules
+- The model interprets semantics; the backend validates and writes.
+- The model never emits raw SQL or direct DB instructions.
+- The model should choose existing ids only from backend-provided candidate sets.
+- If the target is ambiguous, the model should ask for clarification rather than guessing.
+- Subtasks are explicit, not automatic default behavior.
+- The prompt contract should assume a unified `work_item` model, not separate task/goal/problem products.
 
 ## Validation and Retry
 - Parse and validate outputs against schema.
-- If invalid: retry with corrective instruction.
-- If still invalid: fail safely and log for review.
-- Executor does not infer meaning from raw user text; it only executes validated proposed actions.
-- Executor enforces ID-first mutation policy: `update/complete/archive` without valid `target_task_id` are unresolved and must route to clarify mode.
-- Fallback behavior is schema-recovery only; no heuristic broad writes.
+- Retry once or twice when the model returns malformed JSON.
+- If still invalid, fail safely and log it.
+- Fallback behavior may recover from formatting/schema problems only.
+- Fallback behavior must not recreate phrase-based mutating intent logic.
 
 ## Versioning
-- Each prompt template has `prompt_version`.
-- Persist `provider` with each run.
-- Persist `model` with each run.
-- Persist `prompt_version` with each run.
-- Persist token usage with each run.
-- Persist latency with each run.
-- Persist status with each run.
+- Every prompt template has a `prompt_version`
+- Persist:
+- provider
+- model
+- prompt version
+- token usage
+- latency
+- status
 
 ## Cost and Efficiency Controls
-- Keep system policy short and stable.
-- Prefer retrieval snippets over transcript replay.
-- Provide compact extraction grounding (recent tasks/goals/problems) so model can update existing entities rather than inventing duplicates.
-- Avoid LLM use for deterministic transforms.
-- Track per-operation token and cost budgets.
-- Prefer stable planner/critic prompts over growing heuristic code paths.
+- Keep the system policy compact and stable.
+- Prefer bounded context over transcript replay.
+- Include only relevant work items, aliases, reminders, people, areas, and recent context.
+- Let deterministic code handle validation, persistence, and history creation.
+- Use model calls for interpretation, decomposition, planning, and ambiguity handling.

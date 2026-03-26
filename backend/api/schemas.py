@@ -1,7 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from common.models import TaskStatus, GoalStatus, ProblemStatus, LinkType, EntityType
+from common.models import (
+    LinkType,
+    EntityType,
+    WorkItemKind,
+    WorkItemStatus,
+    ReminderKind,
+    ReminderStatus,
+)
 
 class ThoughtCaptureRequest(BaseModel):
     chat_id: str
@@ -17,6 +24,8 @@ class AppliedChangeItem(BaseModel):
 class AppliedChanges(BaseModel):
     tasks_created: int = 0
     tasks_updated: int = 0
+    reminders_created: int = 0
+    reminders_updated: int = 0
     problems_created: int = 0
     goals_created: int = 0
     links_created: int = 0
@@ -30,28 +39,58 @@ class ThoughtCaptureResponse(BaseModel):
     summary_refresh_enqueued: bool = False
     reason: Optional[str] = None
 
-class TaskUpdate(BaseModel):
-    title: Optional[str] = None
-    status: Optional[TaskStatus] = None
-    priority: Optional[int] = Field(None, ge=1, le=4)
-    due_date: Optional[str] = None
+class WorkItemCreate(BaseModel):
+    kind: WorkItemKind
+    title: str = Field(..., min_length=1, max_length=240)
+    parent_id: Optional[str] = None
+    area_id: Optional[str] = None
     notes: Optional[str] = None
-    impact_score: Optional[int] = Field(None, ge=1, le=5)
-    urgency_score: Optional[int] = Field(None, ge=1, le=5)
+    status: WorkItemStatus = WorkItemStatus.open
+    priority: Optional[int] = Field(None, ge=1, le=4)
+    due_at: Optional[str] = None
+    scheduled_for: Optional[str] = None
+    snooze_until: Optional[str] = None
+    estimated_minutes: Optional[int] = Field(None, ge=1, le=1440)
 
-class GoalUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[GoalStatus] = None
-    target_date: Optional[str] = None
-    horizon: Optional[str] = None
 
-class ProblemUpdate(BaseModel):
+class WorkItemUpdate(BaseModel):
+    kind: Optional[WorkItemKind] = None
     title: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[ProblemStatus] = None
-    severity: Optional[int] = Field(None, ge=1, le=5)
-    horizon: Optional[str] = None
+    parent_id: Optional[str] = None
+    area_id: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[WorkItemStatus] = None
+    priority: Optional[int] = Field(None, ge=1, le=4)
+    due_at: Optional[str] = None
+    scheduled_for: Optional[str] = None
+    snooze_until: Optional[str] = None
+    estimated_minutes: Optional[int] = Field(None, ge=1, le=1440)
+
+
+class ReminderCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=240)
+    remind_at: str = Field(..., min_length=1, max_length=80)
+    kind: ReminderKind = ReminderKind.one_off
+    status: ReminderStatus = ReminderStatus.pending
+    message: Optional[str] = None
+    work_item_id: Optional[str] = None
+    person_id: Optional[str] = None
+    recurrence_rule: Optional[str] = None
+
+
+class ReminderUpdate(BaseModel):
+    title: Optional[str] = None
+    remind_at: Optional[str] = None
+    kind: Optional[ReminderKind] = None
+    status: Optional[ReminderStatus] = None
+    message: Optional[str] = None
+    work_item_id: Optional[str] = None
+    person_id: Optional[str] = None
+    recurrence_rule: Optional[str] = None
+
+
+class ReminderSnoozeRequest(BaseModel):
+    preset: str = Field(..., min_length=1, max_length=40)
 
 class LinkCreate(BaseModel):
     from_entity_type: EntityType
@@ -90,6 +129,14 @@ class OrderReason(BaseModel):
     factors: List[str] = Field(..., min_length=1, max_length=6)
     # Valid factors: overdue, due_soon, high_impact, goal_alignment, dependency_ready, stale, quick_win
 
+
+class ReminderPlanItem(BaseModel):
+    reminder_id: str
+    title: str = Field(..., min_length=1, max_length=240)
+    remind_at: str
+    message: Optional[str] = Field(None, max_length=500)
+    work_item_id: Optional[str] = None
+
 class PlanResponseV1(BaseModel):
     schema_version: str = "plan.v1"
     plan_window: str = Field(..., pattern="^(today|this_week)$")
@@ -97,13 +144,14 @@ class PlanResponseV1(BaseModel):
     today_plan: List[PlanItem] = Field(..., max_length=20)
     next_actions: List[PlanItem] = Field(..., max_length=20)
     blocked_items: List[BlockedItem] = Field(..., max_length=20)
+    due_reminders: Optional[List[ReminderPlanItem]] = Field(None, max_length=20)
     why_this_order: Optional[List[OrderReason]] = Field(None, max_length=20)
     assumptions: Optional[List[str]] = Field(None, max_length=10)
 
 # --- Query Response v1 ---
 
 class Citation(BaseModel):
-    entity_type: str = Field(..., pattern="^(task|problem|goal|summary|inbox_item)$")
+    entity_type: str = Field(..., pattern="^(task|problem|goal|reminder|summary|inbox_item)$")
     entity_id: str
     label: Optional[str] = Field(None, max_length=120)
 
@@ -164,33 +212,3 @@ class TelegramLinkTokenCreateResponse(BaseModel):
     link_token: str
     expires_at: datetime
     deep_link: Optional[str] = None
-
-
-
-
-
-
-
-# --- Phase 5 Todoist Sync ---
-
-
-
-
-
-
-
-class TodoistSyncStatusResponse(BaseModel):
-    total_mapped: int
-    pending_sync: int
-    error_count: int
-    last_synced_at: Optional[str] = None
-    last_attempt_at: Optional[str] = None
-    last_reconcile_at: Optional[str] = None
-    reconcile_error_count: int = 0
-    recent_errors: List[Dict[str, Optional[str]]] = Field(default_factory=list, max_length=5)
-
-
-
-
-
-

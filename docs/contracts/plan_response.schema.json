@@ -49,6 +49,13 @@
         "$ref": "#/$defs/blockedItem"
       }
     },
+    "due_reminders": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/reminderPlanItem"
+      }
+    },
     "why_this_order": {
       "type": "array",
       "maxItems": 20,
@@ -130,6 +137,37 @@
             "minLength": 1,
             "maxLength": 240
           }
+        }
+      }
+    },
+    "reminderPlanItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reminder_id",
+        "title",
+        "remind_at"
+      ],
+      "properties": {
+        "reminder_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "remind_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "work_item_id": {
+          "type": "string"
         }
       }
     },

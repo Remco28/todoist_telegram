@@ -14,7 +14,8 @@ read -r -d '' COMMANDS_JSON <<'JSON' || true
 [
   {"command":"start","description":"Link this chat"},
   {"command":"today","description":"Show what needs attention today"},
-  {"command":"urgent","description":"Show high-priority items"}
+  {"command":"urgent","description":"Show high-priority items"},
+  {"command":"web","description":"Open the web workbench"}
 ]
 JSON
 

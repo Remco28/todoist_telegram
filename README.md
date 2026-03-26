@@ -1,60 +1,83 @@
-# Todoist Telegram AI Assistant
+# Telegram-Native AI Assistant
 
-This project lets you chat naturally (Telegram), have AI organize your thoughts into structured tasks/goals/problems, and sync tasks to Todoist.
+This project is being reworked into a local-first personal execution system:
+- Telegram is the primary interface.
+- A lightweight web UI supports review and editing.
+- Postgres is the source of truth.
+- The app no longer targets Todoist as part of the long-term product design.
 
-It is built to run on:
-- local dev machine (for testing),
-- or VPS/Coolify (for always-on usage).
+## Current Direction
+The target product is:
+- a Telegram-native executive assistant
+- backed by a robust local database
+- with projects, tasks, and subtasks
+- explicit reminders
+- daily planning
+- action history and undo
+- minimal reliance on slash commands
 
-## What This App Does
-- You send free-form messages like: "I need to clean my keyboard tomorrow."
-- The AI proposes updates (tasks, priorities, dates, notes, goals).
-- You confirm with `yes`, revise with `edit ...`, or cancel with `no`.
-- Confirmed changes are saved to Postgres and synced to Todoist by a worker.
-- You can ask read-only questions in natural language too.
+The live runtime is local-first. Legacy tables may still exist in the database for one-time export, but the app no longer reads from or mirrors to them during normal operation.
 
-## Core Services
-- `api`: FastAPI app (webhooks, API endpoints, AI orchestration).
-- `worker`: background jobs (summaries, planning, Todoist sync/reconcile).
-- `postgres`: source-of-truth data store.
-- `redis`: queue/cache.
+## Product Surfaces
+- `Telegram`: primary daily-use interface
+- `Web UI`: lightweight maintenance interface
+- `API`: backend logic and service boundary
+- `Worker`: reminders, planning, memory, background jobs
 
-## Current Highlights
-- LLM-first planner + critic path for conversational actions.
-- Confirmation-first writes (`yes/edit/no`) to avoid accidental updates.
-- Task fields supported: `notes`, `priority` (1 highest), `impact_score`, `urgency_score`, `due_date`.
-- Telegram allowlist support (bot can be restricted to your account only).
-- Todoist downstream sync + reconcile.
+## Transition API Note
+- Canonical maintenance surface during the rebuild: `/v1/work_items`
+- Reminder maintenance and dispatch surface during the rebuild: `/v1/reminders`
+- Lightweight maintenance UI during the rebuild: `/app?token=<api_token>`
+- Recent local audit/history surface during the rebuild: `/v1/history/action_batches`, `/v1/work_items/{item_id}/versions`, and `/v1/reminders/{reminder_id}/versions`
+- Undo surface during the rebuild: `POST /v1/history/action_batches/{batch_id}/undo`, now covering both work-item and reminder batches and also exposed from `/app`
+- Reminder recurrence now supports a bounded local vocabulary: `daily`, `weekly`, `weekdays`, and `monthly`
+- Reminder snooze now supports bounded presets through the local-first API and workbench: `1h`, `tomorrow_morning`, and `next_week`
+- Telegram draft/apply flow now treats reminders as first-class actions too: planner/extraction proposals can create, update, complete, or cancel reminders, and Telegram acknowledgements itemize reminder changes alongside task changes
+- Telegram draft/apply flow now supports explicit project promotion and explicit parent/child creation: conversational proposals can create `project -> task -> subtask` structures when the user asks for subtasks or asks to turn a task into a project
+- Hierarchy awareness is now threaded into the local-first UX too: parent titles are part of conversational task grounding, and the `/app` workbench renders work items in parent-aware order instead of a flat id-only list
+- The `/app` workbench now supports bounded maintenance edits for work items in place, so the web surface is useful for cleanup without becoming the main product
+- Reminder follow-through is tighter too: reminder grounding now includes linked work-item titles for better conversational disambiguation, and `/app` now supports bounded reminder edits in place
+- Canonical maintenance surface is now fully local-first: `/v1/work_items` and `/v1/reminders`
+- Legacy `/v1/tasks`, `/v1/goals`, and `/v1/problems` endpoints are no longer registered.
+- Canonical local-first preservation now happens via markdown export: `cd backend && python3 ops/export_local_first_markdown.py`
+- Legacy-row export still exists if you need it for old tables only: `cd backend && python3 ops/export_legacy_markdown.py`
 
 ## Repository Layout
-- `backend/`: API, worker, models, migrations, tests.
-- `docs/`: architecture, roadmap, contracts, policy docs.
-- `ops/`: rollout, backup, restore, and secret-rotation runbooks.
-- `comms/`: implementation logs/spec history.
+- `backend/`: API, worker, models, migrations, tests
+- `docs/`: product direction, architecture, roadmap, prompt and memory policy
+- `ops/`: deploy, backup, restore, and operations runbooks
+- `comms/`: implementation logs and task specs
 
-## Prerequisites
+## Canonical Docs
+- [Project Direction](docs/PROJECT_DIRECTION.md)
+- [Architecture](docs/ARCHITECTURE_V1.md)
+- [Phases](docs/PHASES.md)
+- [Execution Plan](docs/EXECUTION_PLAN.md)
+- [Prompt Contract](docs/PROMPT_CONTRACT.md)
+- [Memory and Session Policy](docs/MEMORY_AND_SESSION_POLICY.md)
+
+## Local Development Setup
+
+### Prerequisites
 - Python 3.12+
-- Docker (recommended for Postgres/Redis in local dev)
-- A Telegram bot token (from BotFather)
-- An xAI/OpenAI/other model API key (currently configured via OpenAI-compatible chat completions interface)
-- A Todoist API token (optional but recommended)
+- Docker, for local Postgres and Redis
+- Telegram bot token
+- LLM API key
 
-## 1) Local Development Setup (Beginner Friendly)
-
-### Step 1: Clone and enter repo
+### 1. Clone the repo
 ```bash
 git clone <your-repo-url>
 cd todoist_mcp
 ```
 
-### Step 2: Create Python env and install deps
+### 2. Create a virtualenv
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 ```
 
-### Step 3: Start Postgres + Redis (local, via Docker)
+### 3. Start Postgres and Redis
 ```bash
 docker run -d --name todoist_pg \
   -e POSTGRES_PASSWORD=postgres \
@@ -65,8 +88,7 @@ docker run -d --name todoist_pg \
 docker run -d --name todoist_redis -p 6379:6379 redis:7
 ```
 
-### Step 4: Create `backend/.env`
-Create `backend/.env` with:
+### 4. Create `backend/.env`
 ```env
 APP_ENV=dev
 APP_PORT=8000
@@ -74,8 +96,6 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
 REDIS_URL=redis://localhost:6379/0
 
 APP_AUTH_BEARER_TOKENS=dev_token
-# Optional token mapping for custom user ids:
-# APP_AUTH_TOKEN_USER_MAP=dev_token:usr_dev
 
 LLM_PROVIDER=grok
 LLM_API_BASE_URL=https://api.x.ai/v1
@@ -88,29 +108,20 @@ LLM_MODEL_SUMMARIZE=grok-4-1-fast-reasoning
 TELEGRAM_BOT_TOKEN=REPLACE_ME
 TELEGRAM_WEBHOOK_SECRET=REPLACE_ME
 TELEGRAM_BOT_USERNAME=REPLACE_ME
-TELEGRAM_LINK_TOKEN_TTL_SECONDS=900
-# Set 0 for non-expiring /start link tokens:
-# TELEGRAM_LINK_TOKEN_TTL_SECONDS=0
+WEB_UI_BASE_URL=https://<your-domain>/app
 
-# Optional bot access restrictions (recommended):
+# Optional restrictions for single-user operation:
 # TELEGRAM_ALLOWED_CHAT_IDS=123456789
 # TELEGRAM_ALLOWED_USERNAMES=your_username
-
-TODOIST_TOKEN=REPLACE_ME
-TODOIST_API_BASE=https://api.todoist.com/api/v1
-
-# Optional preflight tuning (used in staging/prod readiness checks):
-# PREFLIGHT_CACHE_SECONDS=300
-# PREFLIGHT_TIMEOUT_SECONDS=8
 ```
 
-### Step 5: Run DB migrations
+### 5. Run migrations
 ```bash
 cd backend
 alembic upgrade head
 ```
 
-### Step 6: Start API and worker
+### 6. Start API and worker
 Terminal A:
 ```bash
 cd backend
@@ -123,278 +134,86 @@ cd backend
 python -m worker.main
 ```
 
-### Step 7: Health checks
+### 7. Health checks
 ```bash
 curl -sS http://localhost:8000/health/live
 curl -sS http://localhost:8000/health/ready
 curl -sS http://localhost:8000/health/preflight
 ```
 
-## 2) Minimal API Smoke Test
-Set env in shell:
-```bash
-export BASE_URL=http://localhost:8000
-export TOKEN=dev_token
-```
+## Telegram Setup
 
-Capture a thought:
-```bash
-IDEM=$(uuidgen)
-curl -sS -X POST "$BASE_URL/v1/capture/thought" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: $IDEM" \
-  -d '{
-    "chat_id":"local-smoke",
-    "source":"api",
-    "message":"I need to clean my keyboard tomorrow and buy compressed air."
-  }'
-```
-
-Ask a query:
-```bash
-curl -sS -X POST "$BASE_URL/v1/query/ask" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "chat_id":"local-smoke",
-    "query":"What tasks are open?"
-  }'
-```
-
-Trigger Todoist sync:
-```bash
-IDEM=$(uuidgen)
-curl -sS -X POST "$BASE_URL/v1/sync/todoist" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Idempotency-Key: $IDEM"
-```
-
-Sync status:
-```bash
-curl -sS "$BASE_URL/v1/sync/todoist/status" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-## 3) Telegram Setup
-
-### Step 1: Configure webhook
-Use BotFather token and your API domain:
+### 1. Configure the webhook
 ```bash
 curl -sS "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -d "url=https://<your-domain>/v1/integrations/telegram/webhook" \
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 
-Verify:
-```bash
-curl -sS "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
-```
-
-### Step 1b: Register the Telegram command list
-This enables the `/` command picker and bot command menu in Telegram clients.
-
+### 2. Register the command list
 ```bash
 export TELEGRAM_BOT_TOKEN=<your_bot_token>
 ./backend/ops/register_telegram_commands.sh
 ```
 
-Dry-run the payload without calling Telegram:
-
+### 3. Link your Telegram chat
+Generate a link token from the API:
 ```bash
-export TELEGRAM_BOT_TOKEN=<your_bot_token>
-DRY_RUN=1 ./backend/ops/register_telegram_commands.sh
-```
-
-Operational details are in `ops/TELEGRAM_COMMANDS_RUNBOOK.md`.
-
-### Step 2: Generate a link token from your API
-```bash
-curl -sS -X POST "$BASE_URL/v1/integrations/telegram/link_token" \
-  -H "Authorization: Bearer $TOKEN" \
+curl -sS -X POST "http://localhost:8000/v1/integrations/telegram/link_token" \
+  -H "Authorization: Bearer dev_token" \
   -H "Content-Type: application/json"
 ```
 
-You will get `link_token`.
-
-### Step 3: Link your Telegram chat
-In Telegram, send:
+Then send this in Telegram:
 ```text
 /start <link_token>
 ```
 
-### Step 4: Chat naturally
+### 4. Use it naturally
 Examples:
-- "I need to clean my keyboard tomorrow."
-- "What tasks are still open?"
-- Reply `yes` to apply a proposal.
+- `Anything due today?`
+- `Push the 401k registration to next week. Patrick's email is required.`
+- `Amy handled the backpack already.`
+- `Break this into subtasks for me: research 401k requirements in NYC...`
 
-Useful Telegram commands:
-- `/today` to view what needs attention today.
-- `/urgent` to view items marked high priority.
+Visible command menu should stay minimal:
+- `/today`
+- `/urgent`
+- `/web`
+- `/start`
 
-Compatibility note:
-- Legacy commands like `/plan`, `/focus`, `/done`, and `/ask` are still supported during migration, but they are no longer part of the primary Telegram menu.
-
-Note:
-- Telegram has a hard per-message size limit (~4096 chars).
-- This app auto-splits long replies into multiple ordered messages so content is not truncated.
-
-## 4) Restrict Bot Access to Only You
-Set at least one of these env vars:
-- `TELEGRAM_ALLOWED_CHAT_IDS`
-- `TELEGRAM_ALLOWED_USERNAMES`
-
-If these are set, other senders are ignored.
-
-Recommended for single-user setup:
-```env
-TELEGRAM_ALLOWED_CHAT_IDS=<your_private_chat_id>
-TELEGRAM_ALLOWED_USERNAMES=<your_username_without_@>
-```
-
-## 5) Coolify / VPS Deployment (Production-Style)
-
-### What to deploy
-- API service from `backend/Dockerfile`
-- Worker service from `backend/Dockerfile.worker`
-- Postgres service
-- Redis service
-
-### Important
-- API and worker must use the same:
-  - `DATABASE_URL`
-  - `REDIS_URL`
-  - provider and auth env vars
-
-### Required env vars (API + worker)
-- `DATABASE_URL`
-- `REDIS_URL`
-- `UVICORN_WORKERS` (recommended `1` on small VPS)
-- `APP_AUTH_BEARER_TOKENS` (or `APP_AUTH_TOKEN_USER_MAP`)
-- `LLM_API_BASE_URL`
-- `LLM_API_KEY`
-- `LLM_MODEL_EXTRACT`
-- `LLM_MODEL_QUERY`
-- `LLM_MODEL_PLAN`
-- `LLM_MODEL_SUMMARIZE`
-- `TODOIST_TOKEN` (if sync enabled)
-- `TELEGRAM_BOT_TOKEN` (if Telegram enabled)
-- `TELEGRAM_WEBHOOK_SECRET` (if Telegram enabled)
-
-### After deploy
-Run migrations in API runtime:
-```bash
-alembic upgrade head
-```
-
-Then verify:
-```bash
-curl -sS https://<your-domain>/health/live
-curl -sS https://<your-domain>/health/ready
-curl -sS https://<your-domain>/health/preflight
-```
-
-### Off-Server DB Backup (Cloudflare R2 via Coolify Scheduled Task)
-This repo includes a ready script inside the container image:
-- `backend/ops/backup_to_r2.sh`
-
-In Coolify Scheduled Tasks (API service):
-- Name: `db-backup-r2`
-- Frequency: `0 3 * * *` (daily)
-- Command:
-```bash
-/bin/bash -lc 'cd /app && ./ops/backup_to_r2.sh'
-```
-
-Required env vars for the task:
-- `DATABASE_URL`
-- `R2_ACCOUNT_ID`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_BUCKET`
-
-Recommended env vars:
-- `BACKUP_PROJECT=todoist_telegram`
-- `BACKUP_ENV=prod`
-- `R2_PREFIX=database-backups`
-- `BACKUP_RETENTION_DAYS=14`
-
-Full runbook:
-- `ops/R2_BACKUP_RUNBOOK.md`
-
-## 6) Common Pitfalls and Fixes
-
-### "Missing Idempotency-Key header"
-For mutating endpoints (`POST/PATCH/DELETE`), pass:
-```bash
--H "Idempotency-Key: $(uuidgen)"
-```
-
-### "Can't load plugin: sqlalchemy.dialects:postgres.asyncpg"
-Use:
-```env
-DATABASE_URL=postgresql+asyncpg://...
-```
-not:
-```env
-postgres://...
-```
-
-### Worker says "listening" but no jobs process
-- Check API and worker use the same `REDIS_URL`.
-- Check both are deployed on same branch/commit.
-- Check queue depth in `/health/metrics`.
-
-### Todoist not showing expected tasks
-- App DB is source of truth.
-- Completed tasks may be hidden in active Todoist view.
-- Verify with API:
-  - `GET /v1/tasks`
-  - `GET /v1/sync/todoist/status`
-
-### Telegram webhook returns 500
-- Check API logs.
-- Confirm webhook secret matches exactly.
-- Confirm migrations are up to date (`alembic upgrade head`).
-
-## 7) Running Tests
+## Running Tests
 ```bash
 cd backend
 pytest -q
 ```
 
-Optional staging smoke:
+## Security and Ops
+- Never commit `.env` files.
+- Rotate exposed tokens immediately.
+- Keep production DB and Redis isolated.
+- Run backups and restore drills.
+- Prefer Telegram allowlists for single-user deployments.
+
+## Legacy Data Note
+If you still have old `tasks` / `goals` / `problems` / `entity_links` rows that matter, export them once and re-enter only what you want to keep:
+
 ```bash
-RUN_STAGING_SMOKE=1 \
-STAGING_API_BASE_URL=<url> \
-STAGING_AUTH_TOKEN=<token> \
-DATABASE_URL=<db> \
-REDIS_URL=<redis> \
-pytest -q tests/test_phase8_staging_smoke.py
+cd backend
+python3 ops/export_local_first_markdown.py
 ```
 
-## 8) Security Checklist
-- Never commit `.env` files.
-- Rotate exposed tokens immediately (LLM, Telegram, Todoist, API auth).
-- Use strong `TELEGRAM_WEBHOOK_SECRET`.
-- Use Telegram allowlist vars for single-user bots.
-- Keep production DB/Redis isolated from staging.
+If you truly want to start clean, point `DATABASE_URL` at a new empty database and run:
 
-## 9) Additional Documentation
-- Architecture: `docs/ARCHITECTURE_V1.md`
-- Project direction: `docs/PROJECT_DIRECTION.md`
-- Phases/roadmap: `docs/PHASES.md`
-- Prompt contract: `docs/PROMPT_CONTRACT.md`
-- Release/ops runbooks: `ops/`
+```bash
+cd backend
+alembic upgrade head
+```
 
----
+The active runtime no longer depends on those tables, and new work should follow the local-first design described in `docs/`.
 
-If you are brand new and get stuck, start with:
-1. local setup,
-2. health check,
-3. one capture request,
-4. one query request,
-5. one sync request.
-
-That gives you confidence each layer works before Telegram/Coolify complexity.
+If you are working on the redesign, use these as your canonical references:
+- [Project Direction](docs/PROJECT_DIRECTION.md)
+- [Architecture](docs/ARCHITECTURE_V1.md)
+- [Execution Plan](docs/EXECUTION_PLAN.md)
+- [Rework Spec](comms/tasks/2026-03-25-local-first-telegram-rebuild-spec.md)

@@ -58,12 +58,7 @@ class Settings(BaseSettings):
     TELEGRAM_DEEP_LINK_BASE_URL: Optional[str] = None
     TELEGRAM_ALLOWED_CHAT_IDS: Optional[str] = None  # comma-separated
     TELEGRAM_ALLOWED_USERNAMES: Optional[str] = None  # comma-separated (without @)
-
-    # Phase 5 Todoist Settings
-    TODOIST_TOKEN: Optional[str] = None
-    TODOIST_API_BASE: str = "https://api.todoist.com/api/v1"
-    TODOIST_RECONCILE_BATCH_SIZE: int = 200
-    TODOIST_RECONCILE_WINDOW_MINUTES: int = 60
+    WEB_UI_BASE_URL: Optional[str] = None
 
     # Phase 6 Hardening Settings
     OPERATIONS_METRICS_WINDOW_HOURS: int = 24

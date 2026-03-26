@@ -21,8 +21,6 @@
   - `LLM_MODEL_QUERY`
   - `LLM_MODEL_PLAN`
   - `LLM_MODEL_SUMMARIZE`
-  - `TODOIST_TOKEN` (if sync enabled)
-  - `TODOIST_API_BASE` (optional override; default `https://api.todoist.com/api/v1`)
   - `TELEGRAM_BOT_TOKEN` (if Telegram enabled)
   - `TELEGRAM_WEBHOOK_SECRET` (if Telegram enabled)
   - `UVICORN_WORKERS` (recommended `1` on small VPS)
@@ -54,18 +52,15 @@ Use a production test chat scope (for example `prod-smoke`) and a valid bearer t
 2. Query:
   - `POST /v1/query/ask`
   - Expect `200` and non-empty `answer`.
-3. Sync enqueue:
-  - `POST /v1/sync/todoist` (with `Idempotency-Key`)
-  - Expect `200` and `job_id`.
-4. Reconcile enqueue:
-  - `POST /v1/sync/todoist/reconcile` (with `Idempotency-Key`)
-  - Expect `200` and `job_id`.
-5. Sync status:
-  - `GET /v1/sync/todoist/status`
-  - Expect `200` and valid JSON payload.
-6. Worker evidence:
+3. Work item maintenance:
+  - `POST /v1/work_items` (with `Idempotency-Key`)
+  - Expect `200` and a created task payload.
+4. Work item listing:
+  - `GET /v1/work_items`
+  - Expect `200` and the created task visible in the list.
+5. Worker evidence:
   - Confirm worker processed smoke job IDs (or emitted retry events only if upstream failed transiently).
-7. Resource sanity:
+6. Resource sanity:
   - Confirm host memory returns to steady baseline after rollout (no sustained >85% RAM).
 
 ## Rollback Trigger Conditions
@@ -82,7 +77,7 @@ Use a production test chat scope (for example `prod-smoke`) and a valid bearer t
 3. Re-verify:
   - `GET /health/ready`
   - `GET /health/metrics`
-  - `GET /v1/sync/todoist/status`
+  - `GET /v1/work_items`
 
 ## Sign-off
 - Rollout timestamp (UTC): `________________`

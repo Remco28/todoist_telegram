@@ -23,12 +23,12 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
   - `/health/ready` != 200 for more than 5 minutes.
   - `dead_letter_queue` depth > 0 and increasing.
   - `moved_to_dlq` increases continuously over 15 minutes.
-  - API 5xx sustained for core endpoints (`capture`, `query`, `sync`).
+  - API 5xx sustained for core endpoints (`capture`, `query`, `work_items`).
   - Host RAM sustained >85% for more than 10 minutes.
   - Any container repeatedly killed/restarted due to OOM.
 - Warning:
   - `retry_scheduled` spikes but stabilizes within 15 minutes.
-  - queue depth rises temporarily during batch sync windows.
+  - queue depth rises temporarily during plan refresh or memory maintenance windows.
   - Host RAM sustained >75% outside deploy windows.
 
 ## Alert Channels
@@ -43,7 +43,7 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
 2. Check `/health/metrics` and verify no DLQ growth.
 3. Confirm worker service is running.
 4. Spot-check one query response quality.
-5. If Todoist enabled, spot-check `/v1/sync/todoist/status`.
+5. Spot-check `/v1/work_items` or `/today` behavior.
 6. Check host memory and restart counters in Coolify.
 
 ## Weekly Operator Checklist
@@ -66,7 +66,7 @@ Define a lightweight, single-operator baseline for monitoring and incident respo
 
 ## Incident First Actions
 1. Identify scope:
-  - API down, worker down, DB/Redis unreachable, provider outage, or sync outage.
+  - API down, worker down, DB/Redis unreachable, provider outage, or planner/reminder outage.
 2. Freeze risky writes if data integrity is in question.
 3. Capture evidence:
   - timestamps, job IDs, request IDs, failing endpoints, latest logs.

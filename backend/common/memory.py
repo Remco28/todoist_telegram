@@ -4,7 +4,17 @@ from sqlalchemy import select, or_, and_, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.config import settings
-from common.models import InboxItem, MemorySummary, Task, Goal, Problem, EntityLink, EntityType
+from common.models import (
+    InboxItem,
+    MemorySummary,
+    Reminder,
+    ReminderStatus,
+    WorkItem,
+    WorkItemKind,
+    WorkItemLink,
+    WorkItemLinkType,
+    WorkItemStatus,
+)
 from common.telegram import user_facing_task_title
 
 def _estimate_tokens_heuristic(text: str) -> int:
@@ -45,7 +55,7 @@ def token_estimator_mode() -> str:
 
 def get_system_policy() -> str:
     return (
-        "You are a helpful assistant managing tasks, goals, and problems. "
+        "You are a helpful assistant managing local-first work items and reminders. "
         "Use the provided context to answer accurately. "
         "Prioritize recent information and linked entities."
     )
@@ -71,55 +81,86 @@ async def select_related_entities(db: AsyncSession, user_id: str, query: str, li
     Select entities based on recency + link proximity.
     """
     # 1. Start with recent tasks
-    stmt_tasks = select(Task).where(Task.user_id == user_id).order_by(Task.updated_at.desc()).limit(limit // 2)
+    stmt_tasks = (
+        select(WorkItem)
+        .where(
+            WorkItem.user_id == user_id,
+            WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+            WorkItem.status != WorkItemStatus.archived,
+        )
+        .order_by(WorkItem.updated_at.desc())
+        .limit(limit // 2)
+    )
     tasks = (await db.execute(stmt_tasks)).scalars().all()
     task_ids = [t.id for t in tasks]
+    reminders = (
+        await db.execute(
+            select(Reminder)
+            .where(
+                Reminder.user_id == user_id,
+                Reminder.status == ReminderStatus.pending,
+            )
+            .order_by(Reminder.remind_at.asc())
+            .limit(max(2, limit // 4))
+        )
+    ).scalars().all()
     
-    # 2. Include linked goals/problems
-    related_ids = []
+    # 2. Include linked projects
+    related_project_ids = []
     if task_ids:
-        stmt_links = select(EntityLink).where(
-            EntityLink.user_id == user_id,
-            EntityLink.from_entity_id.in_(task_ids),
-            EntityLink.from_entity_type == EntityType.task
+        stmt_links = select(WorkItemLink).where(
+            WorkItemLink.user_id == user_id,
+            WorkItemLink.from_work_item_id.in_(task_ids),
+            WorkItemLink.link_type == WorkItemLinkType.part_of,
         )
         links = (await db.execute(stmt_links)).scalars().all()
-        related_ids = [(l.to_entity_type, l.to_entity_id) for l in links]
+        related_project_ids = [
+            link.to_work_item_id
+            for link in links
+            if isinstance(getattr(link, "to_work_item_id", None), str) and link.to_work_item_id
+        ]
 
-    # 3. Fetch goals/problems by link proximity then recency
-    goals = []
-    problems = []
-    
-    # Fetch specifically linked ones first
-    linked_goal_ids = [rid[1] for rid in related_ids if rid[0] == EntityType.goal]
-    if linked_goal_ids:
-        stmt_g = select(Goal).where(Goal.id.in_(linked_goal_ids))
-        goals.extend((await db.execute(stmt_g)).scalars().all())
-    
-    linked_prob_ids = [rid[1] for rid in related_ids if rid[0] == EntityType.problem]
-    if linked_prob_ids:
-        stmt_p = select(Problem).where(Problem.id.in_(linked_prob_ids))
-        problems.extend((await db.execute(stmt_p)).scalars().all())
+    # 3. Fetch projects by link proximity then recency
+    projects = []
+    if related_project_ids:
+        stmt_projects = select(WorkItem).where(
+            WorkItem.user_id == user_id,
+            WorkItem.id.in_(related_project_ids),
+            WorkItem.kind == WorkItemKind.project,
+            WorkItem.status != WorkItemStatus.archived,
+        )
+        projects.extend((await db.execute(stmt_projects)).scalars().all())
 
     # Fill remaining slots by recency if under limit
-    if len(goals) + len(problems) + len(tasks) < limit:
-        needed = limit - (len(goals) + len(problems) + len(tasks))
-        stmt_g_rec = select(Goal).where(Goal.user_id == user_id).order_by(Goal.updated_at.desc()).limit(needed // 2)
-        more_goals = (await db.execute(stmt_g_rec)).scalars().all()
-        for mg in more_goals:
-            if mg.id not in linked_goal_ids: goals.append(mg)
-            
-        stmt_p_rec = select(Problem).where(Problem.user_id == user_id).order_by(Problem.updated_at.desc()).limit(needed // 2)
-        more_probs = (await db.execute(stmt_p_rec)).scalars().all()
-        for mp in more_probs:
-            if mp.id not in linked_prob_ids: problems.append(mp)
+    if len(projects) + len(tasks) < limit:
+        needed = limit - (len(projects) + len(tasks))
+        stmt_projects_rec = (
+            select(WorkItem)
+            .where(
+                WorkItem.user_id == user_id,
+                WorkItem.kind == WorkItemKind.project,
+                WorkItem.status != WorkItemStatus.archived,
+            )
+            .order_by(WorkItem.updated_at.desc())
+            .limit(max(1, needed // 2))
+        )
+        more_projects = (await db.execute(stmt_projects_rec)).scalars().all()
+        for project in more_projects:
+            if project.id not in related_project_ids:
+                projects.append(project)
 
     # Format
     res = []
     for t in tasks[:limit//2]:
-        res.append(f"Task: {user_facing_task_title(t.title)} (Status: {t.status.value})")
-    for g in goals[:limit//4]: res.append(f"Goal: {g.title} (Status: {g.status.value})")
-    for p in problems[:limit//4]: res.append(f"Problem: {p.title} (Status: {p.status.value})")
+        status = getattr(getattr(t, "status", None), "value", getattr(t, "status", None))
+        res.append(f"Task: {user_facing_task_title(t.title)} (Status: {status})")
+    for reminder in reminders[: max(1, limit // 4)]:
+        remind_at = getattr(reminder, "remind_at", None)
+        remind_text = remind_at.isoformat() if hasattr(remind_at, "isoformat") else "unknown"
+        res.append(f"Reminder: {reminder.title} (Remind at: {remind_text})")
+    for project in projects[: limit // 4]:
+        status = getattr(getattr(project, "status", None), "value", getattr(project, "status", None))
+        res.append(f"Project: {project.title} (Status: {status})")
     return res
 
 def enforce_budget(

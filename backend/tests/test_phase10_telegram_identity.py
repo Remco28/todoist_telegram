@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -84,9 +84,9 @@ def test_consume_link_token_marks_token_used_and_maps_chat():
             id="tlt_1",
             token_hash=_hash_link_token(raw_token),
             user_id="usr_x",
-            expires_at=datetime.utcnow() + timedelta(minutes=10),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             consumed_at=None,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         fake_db = AsyncMock()
         fake_db.execute = AsyncMock(
@@ -117,9 +117,9 @@ def test_consume_link_token_rejects_expired_or_consumed():
             id="tlt_expired",
             token_hash=_hash_link_token(raw_token),
             user_id="usr_x",
-            expires_at=datetime.utcnow() - timedelta(minutes=1),
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
             consumed_at=None,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         fake_db_expired = AsyncMock()
         fake_db_expired.execute = AsyncMock(return_value=_FakeResult(one_or_none=expired))
@@ -129,9 +129,9 @@ def test_consume_link_token_rejects_expired_or_consumed():
             id="tlt_used",
             token_hash=_hash_link_token(raw_token),
             user_id="usr_x",
-            expires_at=datetime.utcnow() + timedelta(minutes=10),
-            consumed_at=datetime.utcnow(),
-            created_at=datetime.utcnow(),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            consumed_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
         )
         fake_db_consumed = AsyncMock()
         fake_db_consumed.execute = AsyncMock(return_value=_FakeResult(one_or_none=consumed))
