@@ -607,6 +607,75 @@ def test_non_command_planner_unusable_actions_uses_extract_fallback(app_no_db, m
         assert extraction["tasks"][0]["title"] == "Return Nico's library books to NYPL"
 
 
+def test_extract_fallback_skips_planner_critic_and_stages_valid_task_update(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.95,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "update", "target_task_id": "tsk_missing_title"}],
+    }
+    extracted = {
+        "tasks": [
+            {
+                "title": "Set up Doris's new workstation",
+                "action": "update",
+                "target_task_id": "tsk_doris",
+                "due_date": "2026-04-01",
+            }
+        ],
+        "goals": [],
+        "problems": [],
+        "links": [],
+    }
+    fake_draft = _fake_draft(
+        source_message="Please change that to Wednesday instead.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding",
+        new_callable=AsyncMock,
+        return_value={
+            "tasks": [{"id": "tsk_doris", "title": "Set up Doris's new workstation", "status": "open"}],
+            "recent_task_refs": [{"id": "tsk_doris", "title": "Set up Doris's new workstation", "status": "open"}],
+        },
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions",
+        new_callable=AsyncMock,
+        return_value={"approved": False, "issues": ["Bad planner proposal"]},
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock, return_value=extracted
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("Please change that to Wednesday instead."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_awaited_once()
+        critique_actions.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Set up Doris's new workstation",
+                "action": "update",
+                "target_task_id": "tsk_doris",
+                "due_date": "2026-04-01",
+            }
+        ]
+
+
 def test_non_command_unusable_critic_revisions_do_not_clobber_planner_extraction(app_no_db, mock_send):
     planned = {
         "intent": "action",
@@ -724,7 +793,7 @@ def test_completion_request_filters_out_non_completion_planner_actions(app_no_db
         extract_fallback.assert_not_awaited()
 
 
-def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no_db, mock_send):
+def test_completion_request_with_empty_fallback_returns_generic_clarification(app_no_db, mock_send):
     planned = {"intent": "action", "scope": "single", "confidence": 0.8, "needs_confirmation": True, "actions": []}
     grounding = {
         "tasks": [
@@ -759,7 +828,7 @@ def test_completion_request_with_already_done_tasks_prompts_no_open_match(app_no
             )
             assert resp.status_code == 200
             create_draft.assert_not_awaited()
-            assert "already done" in mock_send.await_args.args[1].lower()
+            assert "did not find clear actions to apply yet" in mock_send.await_args.args[1].lower()
 
 
 def test_soft_completion_statement_with_explicit_recent_match_creates_review_draft(app_no_db, mock_send):

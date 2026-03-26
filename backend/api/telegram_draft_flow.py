@@ -297,11 +297,19 @@ async def run_handle_telegram_draft_flow(
         await db.commit()
         extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
 
-    critic = await helpers["adapter"].critique_actions(
-        text,
-        context={"grounding": grounding, "chat_id": chat_id},
-        proposal={"intent": intent, "actions": actions},
-    )
+    if used_extract_fallback:
+        critic = {
+            "approved": True,
+            "issues": [],
+            "skipped": True,
+            "reason": "extract_fallback",
+        }
+    else:
+        critic = await helpers["adapter"].critique_actions(
+            text,
+            context={"grounding": grounding, "chat_id": chat_id},
+            proposal={"intent": intent, "actions": actions},
+        )
     db.add(
         helpers["EventLog"](
             id=str(uuid.uuid4()),
@@ -312,6 +320,8 @@ async def run_handle_telegram_draft_flow(
                 "chat_id": chat_id,
                 "approved": critic.get("approved"),
                 "issues": critic.get("issues"),
+                "skipped": critic.get("skipped"),
+                "reason": critic.get("reason"),
             },
             created_at=helpers["utc_now"](),
         )
