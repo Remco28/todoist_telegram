@@ -147,7 +147,7 @@ async def collect_planning_state(db: AsyncSession, user_id: str) -> Dict[str, An
         await db.execute(
             select(WorkItem).where(
                 WorkItem.user_id == user_id,
-                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
                 WorkItem.status != WorkItemStatus.archived,
             )
         )

@@ -750,3 +750,49 @@ def test_build_plan_payload_promotes_parent_over_unscheduled_subtasks():
     assert "tsk_parent" in task_ids
     assert "tsk_child_1" not in task_ids
     assert "tsk_child_2" not in task_ids
+
+
+def test_build_plan_payload_promotes_project_parent_over_unscheduled_subtasks():
+    now = datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc)
+    payload = build_plan_payload(
+        {
+            "tasks": [
+                WorkItem(
+                    id="prj_parent",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.project,
+                    title="Finish 401k registration package",
+                    title_norm="finish 401k registration package",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_child_1",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.subtask,
+                    parent_id="prj_parent",
+                    title="Review Neil's list",
+                    title_norm="review neil s list",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_child_2",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.subtask,
+                    parent_id="prj_parent",
+                    title="Review Cherry's list",
+                    title_norm="review cherry s list",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+            ],
+            "links": [],
+            "reminders": [],
+        },
+        now,
+    )
+    task_ids = [item["task_id"] for item in payload["today_plan"]]
+    assert "prj_parent" in task_ids
+    assert "tsk_child_1" not in task_ids
+    assert "tsk_child_2" not in task_ids
