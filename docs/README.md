@@ -4,6 +4,8 @@
 The repository is entering a local-first redesign.
 
 Canonical planning docs:
+- `docs/RESUME_GUIDE.md`: fastest path for a fresh AI or developer to get oriented.
+- `docs/WORKING_SET.md`: smallest default context worth loading before implementation work.
 - `docs/PROJECT_DIRECTION.md`: product mission, intent, and non-negotiable constraints.
 - `docs/ARCHITECTURE_V1.md`: current architecture target for the local-first rebuild.
 - `docs/PHASES.md`: rework phases and exit criteria.
@@ -19,6 +21,7 @@ Supporting docs:
 - Active architect task specs live in `comms/tasks/`.
 - Completed specs are archived in `comms/tasks/archive/`.
 - The new rework spec is the primary execution reference until implementation begins.
+- `comms/RECENT.md` is the short handoff summary; `comms/log.md` is the append-only history file.
 
 ## Current Active Specs
 - `comms/tasks/2026-03-25-local-first-telegram-rebuild-spec.md`
