@@ -38,6 +38,33 @@ def run_telegram_plan_payload(payload: Dict[str, Any], *, served_from_cache: boo
     return decorated
 
 
+def _telegram_view_work_item_kind(task: Any) -> str:
+    raw_kind = getattr(task, "kind", None)
+    if hasattr(raw_kind, "value"):
+        return str(raw_kind.value or "task")
+    if isinstance(raw_kind, str) and raw_kind.strip():
+        return raw_kind.strip().lower()
+    return "task"
+
+
+def _telegram_view_work_item_status(task: Any) -> str:
+    raw_status = getattr(task, "status", None)
+    if hasattr(raw_status, "value"):
+        return str(raw_status.value)
+    return str(raw_status or "")
+
+
+def _telegram_view_work_item_payload(task: Any, *, helpers: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": getattr(task, "id", None),
+        "title": helpers["_canonical_task_title"](getattr(task, "title", "")),
+        "kind": _telegram_view_work_item_kind(task),
+        "parent_id": getattr(task, "parent_id", None),
+        "status": _telegram_view_work_item_status(task),
+        "due_date": helpers["work_item_due_date_text"](task),
+    }
+
+
 async def run_invalidate_today_plan_cache(user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
     await helpers["redis_client"].delete(helpers["_plan_cache_key"](user_id, chat_id))
 
@@ -205,7 +232,7 @@ async def run_send_urgent_task_view(db, user_id: str, chat_id: str, *, helpers: 
             select(WorkItem)
             .where(
                 WorkItem.user_id == user_id,
-                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
                 WorkItem.status.in_([WorkItemStatus.open, WorkItemStatus.blocked]),
                 WorkItem.priority == 1,
             )
@@ -213,14 +240,7 @@ async def run_send_urgent_task_view(db, user_id: str, chat_id: str, *, helpers: 
             .limit(12)
         )
     ).scalars().all()
-    payload = [
-        {
-            "id": task.id,
-            "title": helpers["_canonical_task_title"](task.title),
-            "due_date": helpers["work_item_due_date_text"](task),
-        }
-        for task in urgent_tasks
-    ]
+    payload = [_telegram_view_work_item_payload(task, helpers=helpers) for task in urgent_tasks]
     sent = await helpers["send_message"](chat_id, helpers["format_urgent_tasks"](payload))
     if not (isinstance(sent, dict) and sent.get("ok") is True):
         return
@@ -250,22 +270,14 @@ async def run_send_open_task_view(db, user_id: str, chat_id: str, *, helpers: Di
             select(WorkItem)
             .where(
                 WorkItem.user_id == user_id,
-                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
                 WorkItem.status.in_([WorkItemStatus.open, WorkItemStatus.blocked]),
             )
             .order_by(WorkItem.priority.asc(), WorkItem.due_at.asc().nulls_last(), WorkItem.updated_at.desc())
-            .limit(20)
+            .limit(60)
         )
     ).scalars().all()
-    payload = [
-        {
-            "id": task.id,
-            "title": helpers["_canonical_task_title"](task.title),
-            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-            "due_date": helpers["work_item_due_date_text"](task),
-        }
-        for task in open_tasks
-    ]
+    payload = [_telegram_view_work_item_payload(task, helpers=helpers) for task in open_tasks]
     sent = await helpers["send_message"](chat_id, helpers["format_open_tasks"](payload))
     if not (isinstance(sent, dict) and sent.get("ok") is True):
         return
@@ -309,7 +321,7 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
             select(WorkItem)
             .where(
                 WorkItem.user_id == user_id,
-                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
                 WorkItem.status.in_([WorkItemStatus.open, WorkItemStatus.blocked]),
                 WorkItem.due_at.is_not(None),
             )
@@ -322,14 +334,7 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
         local_due_at = _telegram_view_local_date(getattr(task, "due_at", None), helpers=helpers)
         if local_due_at is None or local_due_at.date() != local_today:
             continue
-        due_tasks.append(
-            {
-                "id": task.id,
-                "title": helpers["_canonical_task_title"](task.title),
-                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-                "due_date": helpers["work_item_due_date_text"](task),
-            }
-        )
+        due_tasks.append(_telegram_view_work_item_payload(task, helpers=helpers))
 
     reminder_candidates = (
         await db.execute(

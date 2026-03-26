@@ -333,11 +333,15 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     why_this_order: List[Dict[str, Any]] = []
     for idx, candidate in enumerate(visible_candidates[: settings.PLAN_TOP_N_TODAY]):
         task = candidate["task"]
+        parent = task_lookup.get(getattr(task, "parent_id", None))
         today_plan.append(
             {
                 "task_id": task.id,
                 "rank": idx + 1,
                 "title": task.title,
+                "kind": _status_value(getattr(task, "kind", None)),
+                "parent_id": getattr(task, "parent_id", None),
+                "parent_title": getattr(parent, "title", None) if parent is not None else None,
                 "score": candidate["score"],
                 "estimated_minutes": getattr(task, "estimated_minutes", None),
             }
@@ -353,11 +357,15 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     next_slice = visible_candidates[settings.PLAN_TOP_N_TODAY : settings.PLAN_TOP_N_TODAY + settings.PLAN_TOP_N_NEXT]
     for idx, candidate in enumerate(next_slice):
         task = candidate["task"]
+        parent = task_lookup.get(getattr(task, "parent_id", None))
         next_actions.append(
             {
                 "task_id": task.id,
                 "rank": settings.PLAN_TOP_N_TODAY + idx + 1,
                 "title": task.title,
+                "kind": _status_value(getattr(task, "kind", None)),
+                "parent_id": getattr(task, "parent_id", None),
+                "parent_title": getattr(parent, "title", None) if parent is not None else None,
                 "score": candidate["score"],
                 "estimated_minutes": getattr(task, "estimated_minutes", None),
             }

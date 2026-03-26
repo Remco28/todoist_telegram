@@ -68,7 +68,7 @@ class TestFormattersEscapeHtmlContent:
     def test_format_today_plan_includes_due_reminders_section(self):
         payload = {
             "generated_at": "2026-03-18T18:40:00Z",
-            "today_plan": [{"task_id": "tsk_1", "title": "Register for the 401k plan"}],
+            "today_plan": [{"task_id": "tsk_1", "title": "Register for the 401k plan", "kind": "task"}],
             "due_reminders": [
                 {
                     "reminder_id": "rem_1",
@@ -99,7 +99,7 @@ class TestFormattersEscapeHtmlContent:
     def test_format_urgent_tasks_lists_due_dates(self):
         rendered = format_urgent_tasks(
             [
-                {"id": "tsk_1", "title": "Register for the 401k plan", "due_date": "2026-03-25"},
+                {"id": "tsk_1", "title": "Register for the 401k plan", "kind": "task", "due_date": "2026-03-25"},
                 {"id": "tsk_2", "title": "Submit payroll correction", "due_date": None},
             ]
         )
@@ -108,24 +108,30 @@ class TestFormattersEscapeHtmlContent:
         assert "Due 2026-03-25" in rendered
         assert "Submit payroll correction" in rendered
 
-    def test_format_open_tasks_shows_blocked_and_due_details(self):
+    def test_format_open_tasks_groups_projects_and_nested_children(self):
         rendered = format_open_tasks(
             [
-                {"id": "tsk_1", "title": "Register for the 401k plan", "status": "open", "due_date": "2026-03-25"},
-                {"id": "tsk_2", "title": "Submit payroll correction", "status": "blocked", "due_date": None},
+                {"id": "wki_1", "title": "Get glasses at Warby Parker", "kind": "project", "status": "open", "due_date": None, "parent_id": None},
+                {"id": "tsk_1", "title": "Schedule appointment at Warby Parker store", "kind": "task", "status": "open", "due_date": None, "parent_id": "wki_1"},
+                {"id": "tsk_2", "title": "Measure pupillary distance (PD)", "kind": "subtask", "status": "blocked", "due_date": "2026-03-25", "parent_id": "tsk_1"},
+                {"id": "tsk_3", "title": "Wash my car", "kind": "task", "status": "open", "due_date": "2026-03-26", "parent_id": None},
             ]
         )
         assert "Open Tasks" in rendered
-        assert "Register for the 401k plan" in rendered
+        assert "<b>Projects</b>" in rendered
+        assert "Project: Get glasses at Warby Parker" in rendered
+        assert "- Schedule appointment at Warby Parker store" in rendered
+        assert "- Measure pupillary distance (PD)" in rendered
+        assert "<b>Tasks</b>" in rendered
+        assert "Wash my car" in rendered
         assert "Due 2026-03-25" in rendered
-        assert "Submit payroll correction" in rendered
         assert "blocked" in rendered
 
     def test_format_due_today_lists_tasks_and_reminders(self):
         rendered = format_due_today(
             [
-                {"id": "tsk_1", "title": "Process photos from the last tournament", "status": "open"},
-                {"id": "tsk_2", "title": "Review Neil's list", "status": "blocked"},
+                {"id": "wki_1", "title": "Finish registering the 401k account", "kind": "project", "status": "open"},
+                {"id": "tsk_2", "title": "Review Neil's list", "kind": "subtask", "status": "blocked"},
             ],
             [
                 {
@@ -137,8 +143,8 @@ class TestFormattersEscapeHtmlContent:
             ],
         )
         assert "Due Today" in rendered
-        assert "Process photos from the last tournament" in rendered
-        assert "Review Neil's list" in rendered
+        assert "Project: Finish registering the 401k account" in rendered
+        assert "Subtask: Review Neil's list" in rendered
         assert "blocked" in rendered
         assert "Due Reminders" in rendered
         assert "Check on Patrick" in rendered
@@ -150,13 +156,22 @@ class TestFormattersEscapeHtmlContent:
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {
             "today_plan": [
-                {"task_id": "tsk_1", "title": "Move 'Complete Worker\\'s Compensation form for employee' to today"},
+                {"task_id": "tsk_1", "title": "Move 'Complete Worker\\'s Compensation form for employee' to today", "kind": "task"},
             ],
         }
         result = format_today_plan(payload)
         assert "Complete Worker" in result
         assert "Move &#x27;" not in result
         assert "to today" not in result
+
+    def test_format_today_plan_marks_projects(self):
+        payload = {
+            "today_plan": [
+                {"task_id": "wki_1", "title": "Get glasses at Warby Parker", "kind": "project"},
+            ],
+        }
+        result = format_today_plan(payload)
+        assert "Project: Get glasses at Warby Parker" in result
 
     def test_escape_html_covers_required_chars(self):
         assert escape_html("<") == "&lt;"
