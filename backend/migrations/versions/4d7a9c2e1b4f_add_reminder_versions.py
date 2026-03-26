@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -19,13 +20,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    version_operation_enum = postgresql.ENUM(
+        "create",
+        "update",
+        "complete",
+        "archive",
+        "restore",
+        "reparent",
+        "reminder",
+        name="version_operation",
+        create_type=False,
+    )
     op.create_table(
         "reminder_versions",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("user_id", sa.String(), nullable=False),
         sa.Column("reminder_id", sa.String(), sa.ForeignKey("reminders.id"), nullable=False),
         sa.Column("action_batch_id", sa.String(), sa.ForeignKey("action_batches.id"), nullable=True),
-        sa.Column("operation", sa.Enum(name="version_operation", create_type=False), nullable=False),
+        sa.Column("operation", version_operation_enum, nullable=False),
         sa.Column("before_json", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("after_json", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
