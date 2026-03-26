@@ -1,7 +1,7 @@
 import logging
 import re
 import httpx
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape as _html_escape
 from typing import Optional, Tuple, Dict, Any, List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -47,6 +47,7 @@ _TASK_TITLE_WRAPPER_PATTERNS = (
     ),
 )
 PLAN_STALE_WARNING_SECONDS = 300
+PROJECT_MARKER = "◇"
 
 
 def strip_internal_ids(text: str) -> str:
@@ -374,6 +375,64 @@ def _format_local_timestamp(value: datetime) -> str:
     return f"{localized.strftime('%b')} {localized.day}, {hour}:{localized.strftime('%M %p')} local"
 
 
+def _local_today() -> date:
+    return _localize_datetime(_utc_now()).date()
+
+
+def _parse_due_date_value(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return _localize_datetime(value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)).date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    text = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+
+    parsed_dt = _parse_iso_datetime(text)
+    if parsed_dt is not None:
+        return _localize_datetime(parsed_dt).date()
+    return None
+
+
+def _format_us_date(value: date) -> str:
+    return f"{value.month}/{value.day}/{value.year}"
+
+
+def _format_due_date_text(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        original_text = value.strip()
+    else:
+        original_text = ""
+    parsed = _parse_due_date_value(value)
+    if parsed is None:
+        if not original_text:
+            return None
+        return f"Due {original_text}"
+
+    delta_days = (parsed - _local_today()).days
+    relative: Optional[str] = None
+    if delta_days == 0:
+        relative = "today"
+    elif delta_days == 1:
+        relative = "tomorrow"
+    elif delta_days > 1 and delta_days <= 14:
+        relative = f"in {delta_days} days"
+    elif delta_days < 0:
+        overdue_days = abs(delta_days)
+        relative = f"{overdue_days} day overdue" if overdue_days == 1 else f"{overdue_days} days overdue"
+
+    formatted = f"Due {_format_us_date(parsed)}"
+    if relative:
+        formatted += f" ({relative})"
+    return formatted
+
+
 def _format_plan_freshness(plan_payload: Dict[str, Any]) -> Optional[str]:
     generated_at = _parse_iso_datetime(plan_payload.get("generated_at"))
     if not generated_at:
@@ -393,9 +452,9 @@ def _render_task_title(item: Dict[str, Any], *, nested: bool = False) -> str:
     title = user_facing_task_title(item.get("title"))
     kind = _work_item_kind_text(item)
     if kind == "project":
-        return f"Project: {title}"
+        return f"{PROJECT_MARKER} {title}"
     if kind == "subtask" and not nested:
-        return f"Subtask: {title}"
+        return f"- {title}"
     return title
 
 
@@ -404,9 +463,9 @@ def _work_item_detail_text(item: Dict[str, Any]) -> Optional[str]:
     status_value = str(item.get("status") or "").strip().lower()
     if status_value == "blocked":
         details.append("blocked")
-    due_date = item.get("due_date")
-    if isinstance(due_date, str) and due_date.strip():
-        details.append(f"Due {due_date.strip()}")
+    due_text = _format_due_date_text(item.get("due_date"))
+    if due_text:
+        details.append(due_text)
     if not details:
         return None
     return " • ".join(details)

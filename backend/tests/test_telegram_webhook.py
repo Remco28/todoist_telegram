@@ -2302,7 +2302,7 @@ def test_command_urgent_lists_high_priority_tasks(mock_send, mock_db):
     assert "Urgent Items" in text
     assert "Register for the 401k plan" in text
     assert "Submit payroll correction" in text
-    assert "Due 2026-03-25" in text
+    assert "Due 3/25/2026 (1 day overdue)" in text
     remember.assert_awaited_once_with(mock_db, "usr_abc", "12345", ["tsk_urgent_1", "tsk_urgent_2"], "urgent")
     assert mock_db.commit.await_count >= 1
 

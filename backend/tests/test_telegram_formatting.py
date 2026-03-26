@@ -97,34 +97,37 @@ class TestFormattersEscapeHtmlContent:
         assert format_focus_mode({"today_plan": []}) == "Nothing to focus on right now."
 
     def test_format_urgent_tasks_lists_due_dates(self):
-        rendered = format_urgent_tasks(
-            [
-                {"id": "tsk_1", "title": "Register for the 401k plan", "kind": "task", "due_date": "2026-03-25"},
-                {"id": "tsk_2", "title": "Submit payroll correction", "due_date": None},
-            ]
-        )
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)):
+            rendered = format_urgent_tasks(
+                [
+                    {"id": "tsk_1", "title": "Register for the 401k plan", "kind": "task", "due_date": "2026-03-25"},
+                    {"id": "tsk_2", "title": "Submit payroll correction", "due_date": None},
+                ]
+            )
         assert "Urgent Items" in rendered
         assert "Register for the 401k plan" in rendered
-        assert "Due 2026-03-25" in rendered
+        assert "Due 3/25/2026 (1 day overdue)" in rendered
         assert "Submit payroll correction" in rendered
 
     def test_format_open_tasks_groups_projects_and_nested_children(self):
-        rendered = format_open_tasks(
-            [
-                {"id": "wki_1", "title": "Get glasses at Warby Parker", "kind": "project", "status": "open", "due_date": None, "parent_id": None},
-                {"id": "tsk_1", "title": "Schedule appointment at Warby Parker store", "kind": "task", "status": "open", "due_date": None, "parent_id": "wki_1"},
-                {"id": "tsk_2", "title": "Measure pupillary distance (PD)", "kind": "subtask", "status": "blocked", "due_date": "2026-03-25", "parent_id": "tsk_1"},
-                {"id": "tsk_3", "title": "Wash my car", "kind": "task", "status": "open", "due_date": "2026-03-26", "parent_id": None},
-            ]
-        )
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)):
+            rendered = format_open_tasks(
+                [
+                    {"id": "wki_1", "title": "Get glasses at Warby Parker", "kind": "project", "status": "open", "due_date": None, "parent_id": None},
+                    {"id": "tsk_1", "title": "Schedule appointment at Warby Parker store", "kind": "task", "status": "open", "due_date": None, "parent_id": "wki_1"},
+                    {"id": "tsk_2", "title": "Measure pupillary distance (PD)", "kind": "subtask", "status": "blocked", "due_date": "2026-03-25", "parent_id": "tsk_1"},
+                    {"id": "tsk_3", "title": "Wash my car", "kind": "task", "status": "open", "due_date": "2026-03-26", "parent_id": None},
+                ]
+            )
         assert "Open Tasks" in rendered
         assert "<b>Projects</b>" in rendered
-        assert "Project: Get glasses at Warby Parker" in rendered
+        assert "◇ Get glasses at Warby Parker" in rendered
         assert "- Schedule appointment at Warby Parker store" in rendered
         assert "- Measure pupillary distance (PD)" in rendered
         assert "<b>Tasks</b>" in rendered
         assert "Wash my car" in rendered
-        assert "Due 2026-03-25" in rendered
+        assert "Due 3/25/2026 (1 day overdue)" in rendered
+        assert "Due 3/26/2026 (today)" in rendered
         assert "blocked" in rendered
 
     def test_format_due_today_lists_tasks_and_reminders(self):
@@ -143,8 +146,8 @@ class TestFormattersEscapeHtmlContent:
             ],
         )
         assert "Due Today" in rendered
-        assert "Project: Finish registering the 401k account" in rendered
-        assert "Subtask: Review Neil's list" in rendered
+        assert "◇ Finish registering the 401k account" in rendered
+        assert "- Review Neil's list" in rendered
         assert "blocked" in rendered
         assert "Due Reminders" in rendered
         assert "Check on Patrick" in rendered
@@ -171,7 +174,23 @@ class TestFormattersEscapeHtmlContent:
             ],
         }
         result = format_today_plan(payload)
-        assert "Project: Get glasses at Warby Parker" in result
+        assert "◇ Get glasses at Warby Parker" in result
+
+    def test_due_date_text_uses_us_format_and_relative_window(self):
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)):
+            rendered = format_urgent_tasks(
+                [
+                    {"id": "tsk_today", "title": "Today item", "kind": "task", "due_date": "2026-03-26"},
+                    {"id": "tsk_tomorrow", "title": "Tomorrow item", "kind": "task", "due_date": "2026-03-27"},
+                    {"id": "tsk_window", "title": "Window item", "kind": "task", "due_date": "2026-04-07"},
+                    {"id": "tsk_far", "title": "Far item", "kind": "task", "due_date": "2026-04-20"},
+                ]
+            )
+        assert "Due 3/26/2026 (today)" in rendered
+        assert "Due 3/27/2026 (tomorrow)" in rendered
+        assert "Due 4/7/2026 (in 12 days)" in rendered
+        assert "Due 4/20/2026" in rendered
+        assert "Due 4/20/2026 (" not in rendered
 
     def test_escape_html_covers_required_chars(self):
         assert escape_html("<") == "&lt;"
