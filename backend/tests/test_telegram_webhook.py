@@ -3017,6 +3017,78 @@ def test_non_command_unresolved_reminder_update_requests_reminder_clarification(
         assert len(kwargs["clarification_state"]["candidates"]) == 2
 
 
+def test_non_command_recent_reminder_resolution_statement_stages_completion(app_no_db, mock_extract):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 1.0,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "reminder",
+                "action": "complete",
+                "target_reminder_id": "rem_patrick",
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [],
+        "recent_reminder_refs": [
+            {
+                "id": "rem_patrick",
+                "title": "Check on Patrick",
+                "status": "pending",
+            }
+        ],
+        "reminders": [
+            {
+                "id": "rem_patrick",
+                "title": "Check on Patrick",
+                "status": "pending",
+            }
+        ],
+    }
+    fake_draft = _fake_draft(
+        source_message="we checked on patrick, he's alright.",
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    )
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates", new_callable=AsyncMock
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("we checked on patrick, he's alright."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extract_fallback.assert_not_awaited()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == []
+        assert extraction["reminders"] == [
+            {
+                "title": "Check on Patrick",
+                "action": "complete",
+                "status": "completed",
+                "target_reminder_id": "rem_patrick",
+            }
+        ]
+
+
 def test_reminder_reference_candidates_prefer_recent_context():
     candidates = _reminder_reference_candidates(
         {

@@ -356,6 +356,14 @@ def run_actions_to_extraction(actions: Any, *, helpers: Dict[str, Any]) -> Dict[
                 extraction["links"].append({k: v.strip() for k, v in link.items()})
         elif entity_type == "reminder":
             title = action.get("title")
+            target_reminder_id = action.get("target_reminder_id")
+            if not isinstance(title, str) or not title.strip():
+                if isinstance(target_reminder_id, str) and target_reminder_id.strip():
+                    title = target_reminder_id.strip()
+                else:
+                    message = action.get("message") or action.get("notes")
+                    if isinstance(message, str) and message.strip():
+                        title = message.strip()
             if not isinstance(title, str) or not title.strip():
                 continue
             reminder_item: Dict[str, Any] = {"title": title.strip()}
@@ -370,7 +378,6 @@ def run_actions_to_extraction(actions: Any, *, helpers: Dict[str, Any]) -> Dict[
             status = action.get("status")
             if isinstance(status, str) and status in {"pending", "sent", "completed", "dismissed", "canceled"}:
                 reminder_item["status"] = status
-            target_reminder_id = action.get("target_reminder_id")
             if isinstance(target_reminder_id, str) and target_reminder_id.strip():
                 reminder_item["target_reminder_id"] = target_reminder_id.strip()
             message = action.get("message") or action.get("notes")

@@ -735,8 +735,14 @@ def run_sanitize_targeted_reminder_actions(
             if best_candidate:
                 normalized["target_reminder_id"] = best_candidate["id"]
                 normalized["title"] = best_candidate["title"]
-        elif isinstance(target_id, str) and target_id.strip() and target_id.strip() not in row_by_id:
-            normalized.pop("target_reminder_id", None)
+        elif isinstance(target_id, str) and target_id.strip():
+            target_row = row_by_id.get(target_id.strip())
+            if target_row is None:
+                normalized.pop("target_reminder_id", None)
+            else:
+                title_value = normalized.get("title")
+                if not isinstance(title_value, str) or not title_value.strip() or title_value.strip() == target_id.strip():
+                    normalized["title"] = target_row["title"]
         sanitized.append(normalized)
 
     out = dict(extraction)
