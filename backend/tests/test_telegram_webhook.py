@@ -2248,7 +2248,7 @@ def test_edit_button_then_plain_message_revises_draft(app_no_db, mock_send):
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Change this to task B"), headers=_headers())
         assert resp.status_code == 200
         revise_draft.assert_awaited_once()
-        assert "proposed changes" in mock_send.await_args.args[1].lower()
+        assert "review changes" in mock_send.await_args.args[1].lower()
 
 
 def test_clarification_reply_revises_pending_candidate_draft(app_no_db, mock_send):
@@ -2296,7 +2296,7 @@ def test_clarification_reply_revises_pending_candidate_draft(app_no_db, mock_sen
         assert resp.status_code == 200
         revise_draft.assert_awaited_once()
         query_ask.assert_not_awaited()
-        assert "proposed changes" in mock_send.await_args.args[1].lower()
+        assert "review changes" in mock_send.await_args.args[1].lower()
 
 
 def test_revise_edits_existing_proposal_message_in_place(app_no_db, mock_send, mock_extract):
@@ -2979,6 +2979,7 @@ def test_action_draft_preview_groups_mixed_task_actions():
             "links": [],
         }
     )
+    assert "Review changes" in preview
     assert "Mark complete" in preview
     assert "Update existing task" in preview
     assert "Create new task" in preview
@@ -2989,33 +2990,34 @@ def test_action_draft_preview_groups_mixed_task_actions():
 
 
 def test_action_draft_preview_groups_reminder_actions():
-    preview = _format_action_draft_preview(
-        {
-            "tasks": [],
-            "goals": [],
-            "problems": [],
-            "links": [],
-            "reminders": [
-                {
-                    "action": "create",
-                    "title": "Call Patrick",
-                    "remind_at": "2026-03-25T15:00:00Z",
-                    "message": "Ask about payroll",
-                },
-                {
-                    "action": "complete",
-                    "title": "Follow up with accountant",
-                    "target_reminder_id": "rem_1",
-                },
-            ],
-        }
-    )
+    with patch("api.main._local_today", return_value=date(2026, 3, 25)):
+        preview = _format_action_draft_preview(
+            {
+                "tasks": [],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [
+                    {
+                        "action": "create",
+                        "title": "Call Patrick",
+                        "remind_at": "2026-03-25T15:00:00Z",
+                        "message": "Ask about payroll",
+                    },
+                    {
+                        "action": "complete",
+                        "title": "Follow up with accountant",
+                        "target_reminder_id": "rem_1",
+                    },
+                ],
+            }
+        )
     assert "Create reminder" in preview
     assert "Mark reminder complete" in preview
-    assert "Create reminder:" in preview
+    assert "Remind me" in preview
     assert "Complete reminder:" in preview
-    assert "at -&gt; 2026-03-25T15:00:00Z" in preview
-    assert "message -&gt; Ask about payroll" in preview
+    assert "today at" in preview
+    assert "Note: Ask about payroll" in preview
 
 
 def test_action_draft_preview_shows_project_and_subtask_metadata():
@@ -3046,6 +3048,31 @@ def test_action_draft_preview_shows_project_and_subtask_metadata():
     assert "Create subtask:" in preview
     assert "Promote to project:" in preview
     assert "parent -&gt; Research 401k requirements in NYC" in preview
+
+
+def test_action_draft_preview_humanizes_reminder_schedule_when_title_matches_message():
+    with patch("api.main._local_today", return_value=date(2026, 3, 26)):
+        preview = _format_action_draft_preview(
+            {
+                "tasks": [],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [
+                    {
+                        "action": "create",
+                        "title": "Tell Callum about the Telegram Todo app",
+                        "remind_at": "2026-03-26T23:00:00Z",
+                        "message": "Tell Callum about the Telegram Todo app",
+                    }
+                ],
+            }
+        )
+    assert "Remind me" in preview
+    assert "today at" in preview
+    assert "Tell Callum about the Telegram Todo app" in preview
+    assert "message -&gt;" not in preview
+    assert "at -&gt;" not in preview
 
 
 def test_best_task_reference_candidate_uses_parent_title_context():

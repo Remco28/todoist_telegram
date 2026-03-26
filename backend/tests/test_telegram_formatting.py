@@ -239,7 +239,7 @@ class TestFormattersEscapeHtmlContent:
                 ],
             }
         )
-        assert "Applied changes" in result
+        assert "Done" in result
         assert "Completed" in result
         assert "Updated" in result
         assert "Created" in result

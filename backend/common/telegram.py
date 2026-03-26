@@ -729,7 +729,7 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
                 "link_created": "Links",
             }
             shown = normalized_items[:6]
-            lines = ["<b>Applied changes</b>"]
+            lines = ["<b>Done</b>"]
             seen_groups: List[str] = []
             for item in shown:
                 if item["group"] not in seen_groups:
@@ -758,7 +758,7 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
     if not parts:
         return "<i>Logged. No changes made.</i>"
 
-    return "<b>" + escape_html(", ".join(parts)) + ".</b>"
+    return "<b>Done</b>\n\n" + escape_html(", ".join(parts)) + "."
 
 
 def _action_batch_record_snapshot(record: Dict[str, Any]) -> Dict[str, Any]:

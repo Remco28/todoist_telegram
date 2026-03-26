@@ -547,14 +547,73 @@ def _reminder_preview_group(reminder: Dict[str, Any]) -> tuple[str, str, str]:
     return "created", "Create reminder", "Create reminder"
 
 
+def _preview_localize_datetime(value: datetime) -> datetime:
+    tz_name = (settings.APP_TIMEZONE or "").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = timezone.utc
+    base = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return base.astimezone(tz)
+
+
+def _preview_time_text(value: datetime) -> str:
+    local_value = _preview_localize_datetime(value)
+    hour = local_value.strftime("%I").lstrip("0") or "12"
+    return f"{hour}:{local_value.strftime('%M %p')}"
+
+
+def _preview_remind_at_text(value: Any) -> Optional[str]:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    local_value = _preview_localize_datetime(parsed)
+    delta_days = (local_value.date() - _local_today()).days
+    time_text = _preview_time_text(parsed)
+    if delta_days == 0:
+        return f"today at {time_text}"
+    if delta_days == 1:
+        return f"tomorrow at {time_text}"
+    if delta_days == -1:
+        return f"yesterday at {time_text}"
+    return f"{local_value.month}/{local_value.day}/{local_value.year} at {time_text}"
+
+
+def _preview_recurrence_text(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().lower()
+    if raw == "daily":
+        return "Repeats every day"
+    if raw == "weekly":
+        return "Repeats every week"
+    if raw == "weekdays":
+        return "Repeats on weekdays"
+    if raw == "monthly":
+        return "Repeats every month"
+    return None
+
+
+def _reminder_preview_line(reminder: Dict[str, Any], verb: str) -> str:
+    title = str(reminder.get("title") or "").strip()
+    remind_at_text = _preview_remind_at_text(reminder.get("remind_at"))
+    action = str(reminder.get("action") or "").strip().lower()
+    if action == "create" and remind_at_text and title:
+        return f"<b>Remind me</b> {escape_html(remind_at_text)}: {escape_html(title)}"
+    return f"<b>{verb}:</b> {escape_html(title)}"
+
+
 def _reminder_preview_details(reminder: Dict[str, Any]) -> List[str]:
     details: List[str] = []
-    if isinstance(reminder.get("remind_at"), str) and reminder.get("remind_at").strip():
-        details.append(f"at -> {reminder.get('remind_at').strip()}")
-    if isinstance(reminder.get("recurrence_rule"), str) and reminder.get("recurrence_rule").strip():
-        details.append(f"repeat -> {reminder.get('recurrence_rule').strip()}")
-    if isinstance(reminder.get("message"), str) and reminder.get("message").strip():
-        details.append(f"message -> {_truncate_preview_text(reminder.get('message'))}")
+    action = str(reminder.get("action") or "").strip().lower()
+    remind_at_text = _preview_remind_at_text(reminder.get("remind_at"))
+    if remind_at_text and action != "create":
+        details.append(remind_at_text)
+    recurrence_text = _preview_recurrence_text(reminder.get("recurrence_rule"))
+    if recurrence_text:
+        details.append(recurrence_text)
+    title = str(reminder.get("title") or "").strip()
+    message = str(reminder.get("message") or "").strip()
+    if message and message.lower() != title.lower():
+        details.append(f"Note: {_truncate_preview_text(message)}")
     return details
 
 
@@ -596,7 +655,7 @@ def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
             continue
         key, heading, verb = _reminder_preview_group(reminder)
         details = _reminder_preview_details(reminder)
-        reminder_groups[key].append((f"<b>{verb}:</b> {escape_html(title.strip())}", details))
+        reminder_groups[key].append((_reminder_preview_line(reminder, verb), details))
 
     if not any(task_groups.values()) and not any(reminder_groups.values()) and not links:
         return (
@@ -604,7 +663,7 @@ def _format_action_draft_preview(extraction: Dict[str, Any]) -> str:
             "Reply with more details, or ask a question directly."
         )
 
-    lines = ["<b>Proposed changes</b>"]
+    lines = ["<b>Review changes</b>"]
     ordered_groups = [
         ("completed", "Mark complete"),
         ("updated", "Update existing task"),
