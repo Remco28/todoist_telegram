@@ -225,6 +225,17 @@ def run_build_low_confidence_clarification(extraction: Dict[str, Any], *, helper
 
 
 def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], grounding: Dict[str, Any], *, helpers: Dict[str, Any]) -> Dict[str, Any]:
+    return _run_apply_intent_fallbacks(message, extraction, grounding, helpers=helpers, allow_clause_split=True)
+
+
+def _run_apply_intent_fallbacks(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+    allow_clause_split: bool,
+) -> Dict[str, Any]:
     if not isinstance(extraction, dict):
         return helpers["_empty_extraction"]()
     extraction.setdefault("tasks", [])
@@ -232,7 +243,10 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
     extraction.setdefault("problems", [])
     extraction.setdefault("links", [])
     extraction.setdefault("reminders", [])
+    initial_count = run_extraction_action_count(extraction)
     if helpers["_has_actionable_entities"](extraction):
+        if allow_clause_split:
+            return _run_maybe_clause_split_recovery(message, extraction, grounding, helpers=helpers, initial_count=initial_count)
         return extraction
 
     inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
@@ -311,7 +325,78 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
                     "target_task_id": best_candidate["id"],
                 }
             ]
+    if not allow_clause_split:
+        return extraction
+    return _run_maybe_clause_split_recovery(message, extraction, grounding, helpers=helpers, initial_count=initial_count)
+
+
+def _run_maybe_clause_split_recovery(
+    message: str,
+    extraction: Dict[str, Any],
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+    initial_count: int,
+) -> Dict[str, Any]:
+    clause_count = run_estimated_action_clause_count(message)
+    current_count = run_extraction_action_count(extraction)
+    if clause_count < 2:
+        return extraction
+    if current_count >= clause_count:
+        return extraction
+
+    clause_extraction = _run_clause_split_intent_fallbacks(message, grounding, helpers=helpers)
+    clause_action_count = run_extraction_action_count(clause_extraction)
+    if clause_action_count > current_count and clause_action_count > initial_count:
+        return clause_extraction
     return extraction
+
+
+def _run_clause_split_intent_fallbacks(
+    message: str,
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+) -> Dict[str, Any]:
+    combined = helpers["_empty_extraction"]()
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    raw_parts = re.split(r"\n\s*\n+|\n+|(?<=[.!?])\s+", message or "")
+    for part in raw_parts:
+        clause = re.sub(r"^[\s\-*•]+", "", part or "").strip()
+        if not clause:
+            continue
+        if len(re.sub(r"[^A-Za-z0-9]", "", clause)) < 4:
+            continue
+        clause_extraction = _run_apply_intent_fallbacks(
+            clause,
+            helpers["_empty_extraction"](),
+            grounding,
+            helpers=helpers,
+            allow_clause_split=False,
+        )
+        for key in ("tasks", "reminders", "links"):
+            items = clause_extraction.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                dedupe_key = (
+                    key,
+                    str(item.get("action") or item.get("status") or "").strip().lower(),
+                    str(
+                        item.get("target_task_id")
+                        or item.get("target_reminder_id")
+                        or item.get("title")
+                        or ""
+                    ).strip().lower(),
+                    str(item.get("due_date") or item.get("remind_at") or "").strip().lower(),
+                )
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                combined[key].append(item)
+    return combined
 
 
 def run_extract_same_day_reference_update(

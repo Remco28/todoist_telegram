@@ -15,7 +15,7 @@ This file is the short handoff summary for the latest meaningful project state.
 - Writes are versioned and undoable through action batches
 
 ## Recent Important Changes
-- Telegram now does a bounded second model extraction for clearly multi-line or 3+ segment action messages when planner actions undercount the user's requested changes, which improves multi-action follow-ups without reverting to heuristic-first intent routing. Delete/archive follow-ups also now recover cleanly from empty extraction, and stale `goal/problem -> create project` planner conversions no longer override archive intent for project-shaped work items.
+- Telegram now does a bounded second model extraction for clearly multi-line or 3+ segment action messages when planner actions undercount the user's requested changes, and it also does a clause-wise fallback recovery when both planner and extract come back empty for a multi-clause message. That improves multi-action follow-ups like “move wash car to next week” + “delete the Telegram Todo app task” without reverting to heuristic-first intent routing. Delete/archive follow-ups also now recover cleanly from empty extraction, and stale `goal/problem -> create project` planner conversions no longer override archive intent for project-shaped work items.
 - Reminder display text in Telegram no longer appends `local`, suppresses duplicate reminder body text, and labels real reminder body text as `Details:` for better readability.
 - Explicit app-owned session state was added for follow-up continuity.
 - `due_today` is now distinct from the broader `/today` agenda.
