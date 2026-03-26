@@ -205,6 +205,17 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
 
     inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
     if inferred_due_date:
+        displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
+        if displayed_match:
+            extraction["tasks"] = [
+                {
+                    "title": displayed_match["title"],
+                    "action": "update",
+                    "target_task_id": displayed_match["id"],
+                    "due_date": inferred_due_date,
+                }
+            ]
+            return extraction
         best_candidate = helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
         if best_candidate:
             extraction["tasks"] = [
@@ -216,6 +227,77 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
                 }
             ]
     return extraction
+
+
+def run_extract_displayed_ordinal_task(
+    message: str,
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(grounding, dict):
+        return None
+    rows = grounding.get("displayed_task_refs")
+    if not isinstance(rows, list) or not rows:
+        return None
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return None
+
+    ordinal_tokens = [
+        ("second", 2),
+        ("2nd", 2),
+        ("third", 3),
+        ("3rd", 3),
+        ("fourth", 4),
+        ("4th", 4),
+        ("fifth", 5),
+        ("5th", 5),
+        ("sixth", 6),
+        ("6th", 6),
+        ("seventh", 7),
+        ("7th", 7),
+        ("eighth", 8),
+        ("8th", 8),
+        ("ninth", 9),
+        ("9th", 9),
+        ("tenth", 10),
+        ("10th", 10),
+        ("first", 1),
+        ("1st", 1),
+        ("two", 2),
+        ("three", 3),
+        ("four", 4),
+        ("five", 5),
+        ("six", 6),
+        ("seven", 7),
+        ("eight", 8),
+        ("nine", 9),
+        ("ten", 10),
+        ("one", 1),
+    ]
+    ordinal = None
+    for token, value in ordinal_tokens:
+        if re.search(rf"\b{re.escape(token)}\b", normalized):
+            ordinal = value
+            break
+    if ordinal is None:
+        match = re.search(r"\bitem\s+(\d{1,2})\b", normalized)
+        if match:
+            ordinal = int(match.group(1))
+    if ordinal is None:
+        return None
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("ordinal") != ordinal:
+            continue
+        task_id = row.get("id")
+        title = row.get("title")
+        if isinstance(task_id, str) and task_id.strip() and isinstance(title, str) and title.strip():
+            return {"id": task_id.strip(), "title": helpers["_canonical_task_title"](title)}
+    return None
 
 
 def run_extract_relative_due_date(message: str, *, helpers: Dict[str, Any]) -> Optional[str]:
