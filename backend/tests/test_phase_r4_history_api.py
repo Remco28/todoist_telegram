@@ -153,7 +153,9 @@ def test_undo_action_batch_restores_work_item_and_records_revert_batch(app_no_db
         _FakeResult(one_or_none=item),
     ]
 
-    with patch("api.main.save_idempotency", new=AsyncMock()):
+    with patch("api.main.save_idempotency", new=AsyncMock()), patch(
+        "api.main.utc_now", return_value=datetime(2026, 3, 25, 19, 0, tzinfo=timezone.utc)
+    ):
         response = _post(app_no_db, "/v1/history/action_batches/abt_undo_me/undo")
 
     assert response.status_code == 200

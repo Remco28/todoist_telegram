@@ -459,7 +459,7 @@ def _render_task_title(item: Dict[str, Any], *, nested: bool = False) -> str:
 
 
 def _indent_html(width: int) -> str:
-    return "&nbsp;" * max(0, width)
+    return "\u00a0" * max(0, width)
 
 
 def _work_item_detail_text(item: Dict[str, Any]) -> Optional[str]:

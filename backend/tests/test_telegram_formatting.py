@@ -179,6 +179,7 @@ class TestFormattersEscapeHtmlContent:
         assert "Due 3/31/2026 (in 5 days)" in rendered
         assert "Due Reminders" in rendered
         assert "Check New York filing deadline" in rendered
+        assert "&nbsp;" not in rendered
 
     def test_format_due_next_week_empty_state(self):
         rendered = format_due_next_week([], [], week_label="Week of 3/30/2026")
