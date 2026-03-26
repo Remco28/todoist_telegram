@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    build_applied_reply_markup, escape_html, format_action_batch_details, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_query_answer, format_capture_ack,
+    build_applied_reply_markup, escape_html, format_action_batch_details, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_due_next_week, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -155,6 +155,34 @@ class TestFormattersEscapeHtmlContent:
     def test_format_due_today_empty_state(self):
         rendered = format_due_today([], [])
         assert "Nothing is due today." in rendered
+
+    def test_format_due_next_week_lists_tasks_and_reminders(self):
+        rendered = format_due_next_week(
+            [
+                {"id": "wki_1", "title": "Sign up for a Vanguard investment account", "kind": "project", "status": "open", "due_date": "2026-03-31"},
+                {"id": "tsk_2", "title": "Deposit money into Roth IRA account", "kind": "task", "status": "open", "due_date": "2026-03-31"},
+            ],
+            [
+                {
+                    "id": "rem_1",
+                    "title": "Check New York filing deadline",
+                    "remind_at": "2026-04-01T13:00:00Z",
+                    "message": "Confirm whether the state filing is due Wednesday.",
+                }
+            ],
+            week_label="Week of 3/30/2026",
+        )
+        assert "Due Next Week" in rendered
+        assert "Week of 3/30/2026" in rendered
+        assert "▣ Sign up for a Vanguard investment account" in rendered
+        assert "Deposit money into Roth IRA account" in rendered
+        assert "Due 3/31/2026 (in 5 days)" in rendered
+        assert "Due Reminders" in rendered
+        assert "Check New York filing deadline" in rendered
+
+    def test_format_due_next_week_empty_state(self):
+        rendered = format_due_next_week([], [], week_label="Week of 3/30/2026")
+        assert "Nothing is due next week." in rendered
 
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {

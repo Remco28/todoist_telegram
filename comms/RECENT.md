@@ -17,8 +17,10 @@ This file is the short handoff summary for the latest meaningful project state.
 ## Recent Important Changes
 - Explicit app-owned session state was added for follow-up continuity.
 - `due_today` is now distinct from the broader `/today` agenda.
+- `due_next_week` now has its own deterministic Telegram view instead of falling back to the generic query-answer formatter.
 - Planner hierarchy behavior was tightened so deferred parents and unscheduled subtasks behave more sensibly.
 - Telegram applied-change acknowledgements now support `Show more` and `Show subtasks`.
+- Maintenance API idempotency storage now JSON-encodes route responses, which fixes `/app` status changes that committed successfully but returned `Internal Server Error`.
 - Retired `/plan`, `/focus`, and `/ask` command behavior was removed from the live Telegram command path.
 - Completed historical specs were archived so `comms/tasks/` only contains the active rebuild spec.
 

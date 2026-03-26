@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import Any, Dict
 
 from fastapi import HTTPException, status
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 
 
@@ -245,6 +246,7 @@ async def run_save_idempotency(
     *,
     helpers: Dict[str, Any],
 ):
+    encoded_body = jsonable_encoder(response_body)
     async with helpers["AsyncSessionLocal"]() as db:
         ik = helpers["IdempotencyKey"](
             id=str(uuid.uuid4()),
@@ -252,7 +254,7 @@ async def run_save_idempotency(
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             response_status=status_code,
-            response_body=response_body,
+            response_body=encoded_body,
             created_at=helpers["utc_now"](),
             expires_at=helpers["utc_now"]() + timedelta(hours=helpers["settings"].IDEMPOTENCY_TTL_HOURS),
         )

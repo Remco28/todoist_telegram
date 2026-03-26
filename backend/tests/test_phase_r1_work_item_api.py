@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, Mock, patch
 
 from httpx import ASGITransport, AsyncClient
 
@@ -28,6 +29,14 @@ class _FakeResult:
 
     def scalar_one_or_none(self):
         return self._one_or_none
+
+
+def _session_factory(fake_db):
+    @asynccontextmanager
+    async def _ctx():
+        yield fake_db
+
+    return lambda: _ctx()
 
 
 def _get(app, url):
@@ -169,6 +178,41 @@ def test_update_work_item_records_action_batch_and_version(app_no_db, mock_db):
     assert any(isinstance(entry, ActionBatch) for entry in added)
     version = next(entry for entry in added if isinstance(entry, WorkItemVersion))
     assert version.operation.value == "complete"
+
+
+def test_update_work_item_save_idempotency_serializes_datetime_payloads(app_no_db, mock_db):
+    item = WorkItem(
+        id="tsk_local_3",
+        user_id="usr_dev",
+        kind=WorkItemKind.task,
+        title="Review payroll checklist",
+        title_norm="review payroll checklist",
+        status=WorkItemStatus.done,
+        completed_at=datetime(2026, 3, 25, 17, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 3, 25, 16, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 25, 17, 0, tzinfo=timezone.utc),
+    )
+    mock_db.execute.side_effect = [_FakeResult(one_or_none=None), _FakeResult(one_or_none=item)]
+    idempotency_db = AsyncMock()
+    idempotency_db.add = Mock()
+    idempotency_db.commit = AsyncMock(return_value=None)
+
+    with patch("api.main.AsyncSessionLocal", _session_factory(idempotency_db)), patch(
+        "api.main.utc_now", return_value=datetime(2026, 3, 25, 18, 0, tzinfo=timezone.utc)
+    ):
+        response = _patch(
+            app_no_db,
+            "/v1/work_items/tsk_local_3",
+            {
+                "status": "open",
+            },
+        )
+
+    assert response.status_code == 200
+    stored_entry = idempotency_db.add.call_args.args[0]
+    assert stored_entry.response_body["status"] == "open"
+    assert stored_entry.response_body["updated_at"] == "2026-03-25T18:00:00+00:00"
+    assert stored_entry.response_body["completed_at"] is None
 
 
 def test_goal_compatibility_endpoint_is_unregistered(app_no_db):

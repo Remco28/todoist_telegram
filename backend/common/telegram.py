@@ -664,6 +664,42 @@ def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[
     return "\n".join(lines)
 
 
+def format_due_next_week(
+    tasks: List[Dict[str, Any]],
+    reminders: Optional[List[Dict[str, Any]]] = None,
+    *,
+    week_label: Optional[str] = None,
+) -> str:
+    lines = ["<b>🗓️ Due Next Week</b>"]
+    if isinstance(week_label, str) and week_label.strip():
+        lines.extend([f"<i>{escape_html(week_label.strip())}</i>", ""])
+    else:
+        lines.append("")
+    reminders = reminders if isinstance(reminders, list) else []
+    if not tasks and not reminders:
+        lines.append("Nothing is due next week.")
+        return "\n".join(lines)
+
+    if tasks:
+        for idx, task in enumerate(tasks[:30], start=1):
+            lines.append(f"{idx}. {escape_html(_render_task_title(task))}")
+            details = _work_item_detail_text(task)
+            if details:
+                lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
+
+    if reminders:
+        lines.append("")
+        lines.append("<b>⏰ Due Reminders</b>")
+        for item in reminders[:12]:
+            lines.append(f"• {escape_html(str(item.get('title') or '').strip())}")
+            remind_at = _parse_iso_datetime(item.get("remind_at"))
+            if remind_at:
+                lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
+            if item.get("message"):
+                lines.append(f"  {escape_html(item['message'])}")
+    return "\n".join(lines)
+
+
 def format_capture_ack(applied: Dict[str, Any]) -> str:
     """
     Summarizes applied changes for capture/thought.

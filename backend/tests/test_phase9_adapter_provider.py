@@ -280,6 +280,32 @@ def test_telegram_turn_success_normalization():
     asyncio.run(_run())
 
 
+def test_telegram_turn_supports_due_next_week_view():
+    async def _run():
+        adapter = LLMAdapter()
+        original = _set_provider_settings()
+        try:
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"speech_act":"query","view_name":"due_next_week","confidence":0.91}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4},
+            }
+            with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
+                out = await adapter.interpret_telegram_turn("What is due next week?")
+            assert out["speech_act"] == "query"
+            assert out["view_name"] == "due_next_week"
+            assert out["confidence"] == 0.91
+        finally:
+            _restore_provider_settings(original)
+
+    asyncio.run(_run())
+
+
 def test_telegram_turn_malformed_payload_uses_fallback_policy():
     async def _run():
         adapter = LLMAdapter()

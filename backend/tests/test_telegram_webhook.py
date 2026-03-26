@@ -260,6 +260,25 @@ def test_natural_language_due_today_query_uses_deterministic_due_today_view(app_
         build_grounding.assert_not_awaited()
 
 
+def test_natural_language_due_next_week_query_uses_deterministic_view(app_no_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "due_next_week",
+        "confidence": 0.9,
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._send_due_next_week_view", new_callable=AsyncMock
+    ) as send_due_next_week, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("What is due next week?"), headers=_headers())
+        assert resp.status_code == 200
+        send_due_next_week.assert_awaited_once()
+        build_grounding.assert_not_awaited()
+
+
 def test_multiline_for_today_list_prefers_action_capture_over_today_view(app_no_db, mock_extract):
     mock_extract.interpret_telegram_turn.return_value = {
         "speech_act": "query",
