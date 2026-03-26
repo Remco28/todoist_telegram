@@ -74,6 +74,8 @@ from api.draft_runtime import (
     run_confirm_action_draft,
     run_create_action_draft,
     run_discard_action_draft,
+    run_estimated_action_clause_count,
+    run_extraction_action_count,
     run_generic_unresolved_clarification_text,
     run_get_open_action_draft,
     run_has_unresolved_reminder_target,
@@ -878,6 +880,14 @@ def _planner_confidence(planned: Any) -> float:
 
 def _is_safe_completion_extraction(extraction: Dict[str, Any]) -> bool:
     return run_is_safe_completion_extraction(extraction)
+
+
+def _extraction_action_count(extraction: Dict[str, Any]) -> int:
+    return run_extraction_action_count(extraction)
+
+
+def _estimated_action_clause_count(message: str) -> int:
+    return run_estimated_action_clause_count(message)
 
 
 def _is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:

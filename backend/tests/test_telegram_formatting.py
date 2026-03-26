@@ -81,7 +81,8 @@ class TestFormattersEscapeHtmlContent:
         result = format_today_plan(payload)
         assert "Due Reminders" in result
         assert "Follow up with Patrick" in result
-        assert "Check if the payroll email arrived." in result
+        assert "Details: Check if the payroll email arrived." in result
+        assert "local" not in result
 
     def test_format_focus_mode_marks_stale_cached_plan(self):
         payload = {
@@ -151,6 +152,22 @@ class TestFormattersEscapeHtmlContent:
         assert "blocked" in rendered
         assert "Due Reminders" in rendered
         assert "Check on Patrick" in rendered
+        assert "Details: Send the follow-up text." in rendered
+
+    def test_format_due_today_suppresses_duplicate_reminder_body(self):
+        rendered = format_due_today(
+            [],
+            [
+                {
+                    "id": "rem_1",
+                    "title": "Tell Callum about the Telegram Todo app",
+                    "remind_at": "2026-03-26T23:00:00Z",
+                    "message": "Tell Callum about the Telegram Todo app",
+                }
+            ],
+        )
+        assert "Tell Callum about the Telegram Todo app" in rendered
+        assert "Details:" not in rendered
 
     def test_format_due_today_empty_state(self):
         rendered = format_due_today([], [])
@@ -179,6 +196,7 @@ class TestFormattersEscapeHtmlContent:
         assert "Due 3/31/2026 (in 5 days)" in rendered
         assert "Due Reminders" in rendered
         assert "Check New York filing deadline" in rendered
+        assert "Details: Confirm whether the state filing is due Wednesday." in rendered
         assert "&nbsp;" not in rendered
 
     def test_format_due_next_week_empty_state(self):

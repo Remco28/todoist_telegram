@@ -55,6 +55,38 @@ def run_is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:
     return True
 
 
+def run_extraction_action_count(extraction: Dict[str, Any]) -> int:
+    if not isinstance(extraction, dict):
+        return 0
+    total = 0
+    for key in ("tasks", "reminders", "links"):
+        value = extraction.get(key)
+        if isinstance(value, list):
+            total += sum(1 for item in value if isinstance(item, dict))
+    return total
+
+
+def run_estimated_action_clause_count(message: str) -> int:
+    if not isinstance(message, str) or not message.strip():
+        return 0
+    raw_parts = re.split(r"\n\s*\n+|\n+|(?<=[.!?])\s+", message)
+    clauses = []
+    for part in raw_parts:
+        cleaned = re.sub(r"^[\s\-*•]+", "", part or "").strip()
+        if not cleaned:
+            continue
+        if len(re.sub(r"[^A-Za-z0-9]", "", cleaned)) < 4:
+            continue
+        clauses.append(cleaned)
+    if not clauses:
+        return 0
+    if re.search(r"\n\s*\n+|\n+", message):
+        return len(clauses)
+    if len(clauses) >= 3:
+        return len(clauses)
+    return 1
+
+
 def run_unresolved_mutation_titles(extraction: Dict[str, Any], *, helpers: Dict[str, Any]) -> List[str]:
     if not isinstance(extraction, dict):
         return []
@@ -233,6 +265,30 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
         extraction["tasks"] = [same_day_update]
         return extraction
 
+    if run_is_archive_like_message(message, helpers=helpers):
+        displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
+        if displayed_match:
+            extraction["tasks"] = [
+                {
+                    "title": displayed_match["title"],
+                    "action": "archive",
+                    "status": "archived",
+                    "target_task_id": displayed_match["id"],
+                }
+            ]
+            return extraction
+        best_candidate = helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
+        if best_candidate:
+            extraction["tasks"] = [
+                {
+                    "title": best_candidate["title"],
+                    "action": "archive",
+                    "status": "archived",
+                    "target_task_id": best_candidate["id"],
+                }
+            ]
+            return extraction
+
     if run_is_completion_like_message(message, helpers=helpers):
         displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
         if displayed_match:
@@ -368,6 +424,22 @@ def run_is_completion_like_message(message: str, *, helpers: Dict[str, Any]) -> 
         r"\btook care of\b",
     )
     return any(re.search(pattern, normalized) for pattern in completion_patterns)
+
+
+def run_is_archive_like_message(message: str, *, helpers: Dict[str, Any]) -> bool:
+    if not isinstance(message, str) or not message.strip():
+        return False
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return False
+    archive_patterns = (
+        r"\bdelete\b",
+        r"\bremove\b",
+        r"\barchive\b",
+        r"\bdiscard\b",
+        r"\bget rid of\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in archive_patterns)
 
 
 def run_extract_displayed_ordinal_task(
@@ -559,14 +631,31 @@ def run_actions_to_extraction(actions: Any, *, helpers: Dict[str, Any]) -> Dict[
                 except ValueError:
                     pass
             extraction["tasks"].append(task_item)
-        elif entity_type == "goal":
+        elif entity_type in {"goal", "problem"}:
             title = action.get("title")
-            if isinstance(title, str) and title.strip():
-                extraction["tasks"].append({"title": title.strip(), "kind": "project"})
-        elif entity_type == "problem":
-            title = action.get("title")
-            if isinstance(title, str) and title.strip():
-                extraction["tasks"].append({"title": title.strip(), "kind": "project"})
+            if not isinstance(title, str) or not title.strip():
+                continue
+            task_item: Dict[str, Any] = {"title": title.strip(), "kind": "project"}
+            if isinstance(op, str) and op in {"create", "update", "complete", "archive", "noop"}:
+                task_item["action"] = op
+                if op == "complete":
+                    task_item["status"] = "done"
+                elif op == "archive":
+                    task_item["status"] = "archived"
+            status = action.get("status")
+            if isinstance(status, str) and status in {"open", "blocked", "done", "archived"}:
+                task_item["status"] = status
+            target_task_id = action.get("target_task_id") or action.get("target_goal_id") or action.get("target_problem_id")
+            if isinstance(target_task_id, str) and target_task_id.strip():
+                task_item["target_task_id"] = target_task_id.strip()
+            due_date = action.get("due_date")
+            if isinstance(due_date, str):
+                try:
+                    date.fromisoformat(due_date.strip()[:10])
+                    task_item["due_date"] = due_date.strip()[:10]
+                except ValueError:
+                    pass
+            extraction["tasks"].append(task_item)
         elif entity_type == "link":
             link = {
                 "from_type": action.get("from_type"),

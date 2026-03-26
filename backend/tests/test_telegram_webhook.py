@@ -1752,6 +1752,123 @@ def test_displayed_task_delete_reference_creates_archive_draft(app_no_db, mock_s
         ]
 
 
+def test_named_project_delete_request_with_empty_extract_falls_back_to_archive(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.2,
+        "needs_confirmation": True,
+        "actions": [],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "wki_proj", "title": "Telegram Todo app", "status": "open", "kind": "project"},
+        ],
+        "recent_task_refs": [
+            {"id": "wki_proj", "title": "Telegram Todo app", "status": "open", "kind": "project"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": []},
+    ):
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("delete the telegram todo app project"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Telegram Todo app",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "wki_proj",
+            }
+        ]
+
+
+def test_goal_archive_planner_action_stays_archive_not_create(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.95,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "goal",
+                "title": "Telegram Todo app",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "wki_proj",
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "wki_proj", "title": "Telegram Todo app", "status": "open", "kind": "project"},
+        ],
+        "recent_task_refs": [
+            {"id": "wki_proj", "title": "Telegram Todo app", "status": "open", "kind": "project"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock, return_value={"approved": True, "issues": []}
+    ), patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+    ) as extract_fallback:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("delete the telegram todo app project"),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Telegram Todo app",
+                "kind": "project",
+                "action": "archive",
+                "status": "archived",
+                "target_task_id": "wki_proj",
+            }
+        ]
+
+
 def test_recent_named_references_create_multi_action_draft(app_no_db, mock_send):
     planned = {
         "intent": "action",
@@ -3346,6 +3463,96 @@ def test_non_command_recent_reminder_resolution_statement_stages_completion(app_
                 "target_reminder_id": "rem_patrick",
             }
         ]
+
+
+def test_non_command_multi_action_message_uses_richer_extract_when_planner_only_returns_one_action(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "action",
+        "confidence": 0.96,
+    }
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.95,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "reminder",
+                "action": "complete",
+                "status": "completed",
+                "target_reminder_id": "rem_callum",
+                "title": "Tell Callum about the Telegram Todo app",
+            }
+        ],
+    }
+    mock_extract.extract_structured_updates.return_value = {
+        "tasks": [
+            {
+                "action": "update",
+                "title": "Wash my car",
+                "target_task_id": "tsk_wash",
+                "due_date": "2026-04-02",
+            },
+            {
+                "action": "complete",
+                "status": "done",
+                "title": "Pack for tournament",
+                "target_task_id": "tsk_pack",
+            },
+        ],
+        "goals": [],
+        "problems": [],
+        "links": [],
+        "reminders": [
+            {
+                "action": "complete",
+                "status": "completed",
+                "title": "Tell Callum about the Telegram Todo app",
+                "target_reminder_id": "rem_callum",
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "tsk_wash", "title": "Wash my car", "status": "open", "due_date": "2026-03-26"},
+            {"id": "tsk_pack", "title": "Pack for tournament", "status": "open", "due_date": "2026-03-26"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_wash", "title": "Wash my car", "status": "open"},
+            {"id": "tsk_pack", "title": "Pack for tournament", "status": "open"},
+        ],
+        "recent_reminder_refs": [
+            {"id": "rem_callum", "title": "Tell Callum about the Telegram Todo app", "status": "pending"},
+        ],
+        "reminders": [
+            {"id": "rem_callum", "title": "Tell Callum about the Telegram Todo app", "status": "pending"},
+        ],
+        "current_date_local": "2026-03-26",
+        "timezone": "America/New_York",
+    }
+    message = 'I told callum about the app.\n\nmove the "wash car" to next week\n\nI finished packing for the tournament as well.'
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(message), headers=_headers())
+        assert resp.status_code == 200
+        critique_actions.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert len(extraction["tasks"]) == 2
+        assert len(extraction["reminders"]) == 1
+        assert extraction["tasks"][0]["target_task_id"] == "tsk_wash"
+        assert extraction["tasks"][1]["target_task_id"] == "tsk_pack"
+        assert extraction["reminders"][0]["target_reminder_id"] == "rem_callum"
+        send_preview.assert_awaited_once()
 
 
 def test_reminder_reference_candidates_prefer_recent_context():

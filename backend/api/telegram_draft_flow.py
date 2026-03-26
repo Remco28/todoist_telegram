@@ -375,6 +375,29 @@ async def run_handle_telegram_draft_flow(
             )
             await db.commit()
             extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
+        else:
+            clause_count = helpers["_estimated_action_clause_count"](text)
+            extraction_count = helpers["_extraction_action_count"](extraction)
+            if clause_count >= 2 and extraction_count < clause_count:
+                recovery_extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
+                recovery_count = helpers["_extraction_action_count"](recovery_extraction)
+                if recovery_count > extraction_count:
+                    used_extract_fallback = True
+                    db.add(
+                        helpers["EventLog"](
+                            id=str(uuid.uuid4()),
+                            request_id=request_id,
+                            user_id=user_id,
+                            event_type="action_extract_fallback_used",
+                            payload_json={
+                                "chat_id": chat_id,
+                                "reason": "planner_actions_incomplete_multi_action",
+                            },
+                            created_at=helpers["utc_now"](),
+                        )
+                    )
+                    await db.commit()
+                    extraction = recovery_extraction
     else:
         used_extract_fallback = True
         db.add(

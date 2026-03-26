@@ -372,7 +372,7 @@ def _format_relative_seconds(seconds: int) -> str:
 def _format_local_timestamp(value: datetime) -> str:
     localized = _localize_datetime(value)
     hour = localized.strftime("%I").lstrip("0") or "12"
-    return f"{localized.strftime('%b')} {localized.day}, {hour}:{localized.strftime('%M %p')} local"
+    return f"{localized.strftime('%b')} {localized.day}, {hour}:{localized.strftime('%M %p')}"
 
 
 def _local_today() -> date:
@@ -475,6 +475,16 @@ def _work_item_detail_text(item: Dict[str, Any]) -> Optional[str]:
     return " • ".join(details)
 
 
+def _reminder_detail_text(title: Any, message: Any) -> Optional[str]:
+    title_text = str(title or "").strip()
+    message_text = str(message or "").strip()
+    if not message_text:
+        return None
+    if title_text and message_text.lower() == title_text.lower():
+        return None
+    return f"Details: {message_text}"
+
+
 def _append_nested_open_task_lines(
     lines: List[str],
     item: Dict[str, Any],
@@ -544,8 +554,9 @@ def format_today_plan(plan_payload: Dict[str, Any]) -> str:
             remind_at = _parse_iso_datetime(item.get("remind_at"))
             if remind_at:
                 lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
-            if item.get("message"):
-                lines.append(f"  {escape_html(item['message'])}")
+            detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
+            if detail_text:
+                lines.append(f"  {escape_html(detail_text)}")
 
     blocked = plan_payload.get("blocked_items", [])
     if blocked:
@@ -659,8 +670,9 @@ def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[
             remind_at = _parse_iso_datetime(item.get("remind_at"))
             if remind_at:
                 lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
-            if item.get("message"):
-                lines.append(f"  {escape_html(item['message'])}")
+            detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
+            if detail_text:
+                lines.append(f"  {escape_html(detail_text)}")
     return "\n".join(lines)
 
 
@@ -695,8 +707,9 @@ def format_due_next_week(
             remind_at = _parse_iso_datetime(item.get("remind_at"))
             if remind_at:
                 lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
-            if item.get("message"):
-                lines.append(f"  {escape_html(item['message'])}")
+            detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
+            if detail_text:
+                lines.append(f"  {escape_html(detail_text)}")
     return "\n".join(lines)
 
 
