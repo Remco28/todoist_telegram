@@ -22,29 +22,36 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.execute("ALTER TYPE entity_type ADD VALUE IF NOT EXISTS 'work_item'")
 
-    work_item_kind_enum = postgresql.ENUM("project", "task", "subtask", name="work_item_kind")
-    work_item_status_enum = postgresql.ENUM("open", "blocked", "done", "archived", name="work_item_status")
+    work_item_kind_enum = postgresql.ENUM("project", "task", "subtask", name="work_item_kind", create_type=False)
+    work_item_status_enum = postgresql.ENUM(
+        "open", "blocked", "done", "archived", name="work_item_status", create_type=False
+    )
     work_item_link_type_enum = postgresql.ENUM(
-        "blocks", "depends_on", "related_to", "part_of", name="work_item_link_type"
+        "blocks", "depends_on", "related_to", "part_of", name="work_item_link_type", create_type=False
     )
     work_item_person_role_enum = postgresql.ENUM(
-        "owner", "waiting_on", "collaborator", "mentioned", name="work_item_person_role"
+        "owner", "waiting_on", "collaborator", "mentioned", name="work_item_person_role", create_type=False
     )
-    reminder_kind_enum = postgresql.ENUM("one_off", "follow_up", "recurring", name="reminder_kind")
+    reminder_kind_enum = postgresql.ENUM("one_off", "follow_up", "recurring", name="reminder_kind", create_type=False)
     reminder_status_enum = postgresql.ENUM(
-        "pending", "sent", "completed", "dismissed", "canceled", name="reminder_status"
+        "pending", "sent", "completed", "dismissed", "canceled", name="reminder_status", create_type=False
     )
     plan_snapshot_type_enum = postgresql.ENUM(
-        "today", "urgent", "daily_brief", "weekly_review", name="plan_snapshot_type"
+        "today", "urgent", "daily_brief", "weekly_review", name="plan_snapshot_type", create_type=False
     )
-    conversation_source_enum = postgresql.ENUM("telegram", "web", "system", name="conversation_source")
+    conversation_source_enum = postgresql.ENUM(
+        "telegram", "web", "system", name="conversation_source", create_type=False
+    )
     conversation_direction_enum = postgresql.ENUM(
-        "inbound", "outbound", "system", name="conversation_direction"
+        "inbound", "outbound", "system", name="conversation_direction", create_type=False
     )
-    action_batch_status_enum = postgresql.ENUM("applied", "reverted", "failed", name="action_batch_status")
+    action_batch_status_enum = postgresql.ENUM(
+        "applied", "reverted", "failed", name="action_batch_status", create_type=False
+    )
     version_operation_enum = postgresql.ENUM(
         "create", "update", "complete", "archive", "restore", "reparent", "reminder",
         name="version_operation",
+        create_type=False,
     )
 
     work_item_kind_enum.create(op.get_bind(), checkfirst=True)
