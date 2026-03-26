@@ -215,6 +215,9 @@ async def run_handle_telegram_draft_flow(
             view_name=requested_view,
         )
         return
+    if requested_view == "due_today":
+        await helpers["_send_due_today_view"](db, user_id, chat_id)
+        return
     if requested_view == "open_tasks":
         await helpers["_send_open_task_view"](db, user_id, chat_id)
         return

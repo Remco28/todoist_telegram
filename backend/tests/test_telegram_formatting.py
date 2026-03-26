@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_query_answer, format_capture_ack,
+    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -120,6 +120,32 @@ class TestFormattersEscapeHtmlContent:
         assert "Due 2026-03-25" in rendered
         assert "Submit payroll correction" in rendered
         assert "blocked" in rendered
+
+    def test_format_due_today_lists_tasks_and_reminders(self):
+        rendered = format_due_today(
+            [
+                {"id": "tsk_1", "title": "Process photos from the last tournament", "status": "open"},
+                {"id": "tsk_2", "title": "Review Neil's list", "status": "blocked"},
+            ],
+            [
+                {
+                    "id": "rem_1",
+                    "title": "Check on Patrick",
+                    "remind_at": "2026-03-26T13:00:00Z",
+                    "message": "Send the follow-up text.",
+                }
+            ],
+        )
+        assert "Due Today" in rendered
+        assert "Process photos from the last tournament" in rendered
+        assert "Review Neil's list" in rendered
+        assert "blocked" in rendered
+        assert "Due Reminders" in rendered
+        assert "Check on Patrick" in rendered
+
+    def test_format_due_today_empty_state(self):
+        rendered = format_due_today([], [])
+        assert "Nothing is due today." in rendered
 
     def test_format_today_plan_normalizes_wrapper_task_title(self):
         payload = {

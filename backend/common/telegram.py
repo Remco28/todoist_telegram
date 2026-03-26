@@ -446,6 +446,34 @@ def format_open_tasks(tasks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[str, Any]]] = None) -> str:
+    lines = ["<b>🗓️ Due Today</b>", ""]
+    reminders = reminders if isinstance(reminders, list) else []
+    if not tasks and not reminders:
+        lines.append("Nothing is due today.")
+        return "\n".join(lines)
+
+    if tasks:
+        for idx, task in enumerate(tasks[:20], start=1):
+            title = user_facing_task_title(task.get("title"))
+            lines.append(f"{idx}. {escape_html(title)}")
+            status_value = str(task.get("status") or "").strip().lower()
+            if status_value == "blocked":
+                lines.append("   <i>blocked</i>")
+
+    if reminders:
+        lines.append("")
+        lines.append("<b>⏰ Due Reminders</b>")
+        for item in reminders[:8]:
+            lines.append(f"• {escape_html(str(item.get('title') or '').strip())}")
+            remind_at = _parse_iso_datetime(item.get("remind_at"))
+            if remind_at:
+                lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
+            if item.get("message"):
+                lines.append(f"  {escape_html(item['message'])}")
+    return "\n".join(lines)
+
+
 def format_capture_ack(applied: Dict[str, Any]) -> str:
     """
     Summarizes applied changes for capture/thought.

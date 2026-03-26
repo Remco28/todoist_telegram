@@ -1,11 +1,12 @@
 import copy
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
-from common.models import WorkItem, WorkItemKind, WorkItemStatus
+from common.models import Reminder, ReminderStatus, WorkItem, WorkItemKind, WorkItemStatus
 
 
 def run_plan_cache_key(user_id: str, chat_id: str) -> str:
@@ -283,6 +284,117 @@ async def run_send_open_task_view(db, user_id: str, chat_id: str, *, helpers: Di
                 for item in payload
                 if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
             ][:12],
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
+
+
+def _telegram_view_local_date(value: Any, *, helpers: Dict[str, Any]) -> Optional[datetime]:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    tz_name = (helpers["settings"].APP_TIMEZONE or "").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = timezone.utc
+    return value.astimezone(tz)
+
+
+async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
+    local_today = helpers["_local_today"]()
+    due_candidates = (
+        await db.execute(
+            select(WorkItem)
+            .where(
+                WorkItem.user_id == user_id,
+                WorkItem.kind.in_([WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.status.in_([WorkItemStatus.open, WorkItemStatus.blocked]),
+                WorkItem.due_at.is_not(None),
+            )
+            .order_by(WorkItem.priority.asc(), WorkItem.due_at.asc(), WorkItem.updated_at.desc())
+            .limit(40)
+        )
+    ).scalars().all()
+    due_tasks = []
+    for task in due_candidates:
+        local_due_at = _telegram_view_local_date(getattr(task, "due_at", None), helpers=helpers)
+        if local_due_at is None or local_due_at.date() != local_today:
+            continue
+        due_tasks.append(
+            {
+                "id": task.id,
+                "title": helpers["_canonical_task_title"](task.title),
+                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+                "due_date": helpers["work_item_due_date_text"](task),
+            }
+        )
+
+    reminder_candidates = (
+        await db.execute(
+            select(Reminder)
+            .where(
+                Reminder.user_id == user_id,
+                Reminder.status == ReminderStatus.pending,
+            )
+            .order_by(Reminder.remind_at.asc(), Reminder.updated_at.desc())
+            .limit(20)
+        )
+    ).scalars().all()
+    due_reminders = []
+    for reminder in reminder_candidates:
+        local_remind_at = _telegram_view_local_date(getattr(reminder, "remind_at", None), helpers=helpers)
+        if local_remind_at is None or local_remind_at.date() != local_today:
+            continue
+        due_reminders.append(
+            {
+                "id": reminder.id,
+                "title": reminder.title,
+                "remind_at": reminder.remind_at.isoformat() if isinstance(reminder.remind_at, datetime) else None,
+                "message": reminder.message,
+            }
+        )
+
+    sent = await helpers["send_message"](chat_id, helpers["format_due_today"](due_tasks, due_reminders))
+    if not (isinstance(sent, dict) and sent.get("ok") is True):
+        return
+    task_ids = [task["id"] for task in due_tasks if isinstance(task.get("id"), str) and task.get("id")]
+    if task_ids:
+        await helpers["_remember_displayed_tasks"](db, user_id, chat_id, task_ids, "due_today")
+        await db.commit()
+    reminder_ids = [item["id"] for item in due_reminders if isinstance(item.get("id"), str) and item.get("id")]
+    if reminder_ids and "_remember_recent_reminders" in helpers:
+        await helpers["_remember_recent_reminders"](
+            db=db,
+            user_id=user_id,
+            chat_id=chat_id,
+            reminder_ids=reminder_ids,
+            reason="due_today_view",
+            ttl_hours=12,
+        )
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        active_refs = [
+            {"entity_type": "work_item", "entity_id": item["id"], "title": item["title"], "source": "due_today"}
+            for item in due_tasks
+            if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+        ][:12]
+        active_refs.extend(
+            {
+                "entity_type": "reminder",
+                "entity_id": item["id"],
+                "title": item["title"],
+                "source": "due_today",
+            }
+            for item in due_reminders
+            if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+        )
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="due_today",
+            active_entity_refs=active_refs[:12],
             pending_draft_id=None,
             pending_clarification=None,
         )

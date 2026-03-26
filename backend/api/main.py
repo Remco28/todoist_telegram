@@ -185,6 +185,7 @@ from api.telegram_views import (
     run_plan_cache_key,
     run_plan_payload_generated_at,
     run_plan_payload_is_fresh,
+    run_send_due_today_view,
     run_send_open_task_view,
     run_send_today_plan_view,
     run_send_urgent_task_view,
@@ -200,7 +201,7 @@ from api.schemas import (
 )
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message, edit_message, answer_callback_query, build_draft_reply_markup,
-    format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_capture_ack,
+    format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_capture_ack,
     escape_html, format_query_answer, user_facing_task_title
 )
 
@@ -1226,6 +1227,10 @@ async def _send_today_plan_view(
 
 async def _send_urgent_task_view(db: AsyncSession, user_id: str, chat_id: str) -> None:
     await run_send_urgent_task_view(db, user_id, chat_id, helpers=globals())
+
+
+async def _send_due_today_view(db: AsyncSession, user_id: str, chat_id: str) -> None:
+    await run_send_due_today_view(db, user_id, chat_id, helpers=globals())
 
 
 async def _send_open_task_view(db: AsyncSession, user_id: str, chat_id: str) -> None:

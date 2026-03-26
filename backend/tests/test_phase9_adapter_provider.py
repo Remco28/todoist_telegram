@@ -262,7 +262,7 @@ def test_telegram_turn_success_normalization():
                 "choices": [
                     {
                         "message": {
-                            "content": '{"speech_act":"query","view_name":"today","confidence":0.88}'
+                            "content": '{"speech_act":"query","view_name":"due_today","confidence":0.88}'
                         }
                     }
                 ],
@@ -271,7 +271,7 @@ def test_telegram_turn_success_normalization():
             with patch("common.adapter.httpx.AsyncClient.post", new=AsyncMock(return_value=_FakeResponse(payload))):
                 out = await adapter.interpret_telegram_turn("Anything due today?")
             assert out["speech_act"] == "query"
-            assert out["view_name"] == "today"
+            assert out["view_name"] == "due_today"
             assert out["confidence"] == 0.88
             assert out["usage"]["input_tokens"] == 12
         finally:
