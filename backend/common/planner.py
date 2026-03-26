@@ -114,6 +114,12 @@ def _work_item_schedule_date(item: Any, now: Optional[datetime] = None) -> Optio
     return None
 
 
+def _has_explicit_schedule(item: Any) -> bool:
+    return isinstance(getattr(item, "scheduled_for", None), datetime) or isinstance(getattr(item, "due_at", None), datetime) or isinstance(
+        getattr(item, "due_date", None), date
+    )
+
+
 def _status_value(value: Any) -> str:
     if hasattr(value, "value"):
         return str(value.value)
@@ -247,6 +253,25 @@ def _is_deferred_beyond_today(task: Any, task_lookup: Dict[str, Any], now: datet
     return False
 
 
+def _agenda_representative(task: Any, task_lookup: Dict[str, Any], now: datetime) -> Any:
+    if getattr(task, "kind", None) != WorkItemKind.subtask:
+        return task
+    if _has_explicit_schedule(task):
+        return task
+    parent_id = getattr(task, "parent_id", None)
+    if not isinstance(parent_id, str) or not parent_id.strip():
+        return task
+    parent = task_lookup.get(parent_id)
+    if not parent:
+        return task
+    parent_status = _status_value(getattr(parent, "status", None))
+    if parent_status != "open":
+        return task
+    if _is_deferred_beyond_today(parent, task_lookup, now):
+        return task
+    return parent
+
+
 def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
     now_utc = _as_utc_datetime(now)
     all_tasks: List[WorkItem] = state["tasks"]
@@ -261,10 +286,24 @@ def build_plan_payload(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         if task.id in ready_ids and not _is_deferred_beyond_today(task, task_lookup, now_utc)
     ]
 
-    scored_candidates: List[Dict[str, Any]] = []
+    scored_by_task_id: Dict[str, Dict[str, Any]] = {}
     for task in candidate_tasks:
+        representative = _agenda_representative(task, task_lookup, now_utc)
         score, factors = score_task(task, state, now_utc)
-        scored_candidates.append({"task": task, "score": score, "factors": factors})
+        rep_score, rep_factors = score_task(representative, state, now_utc) if representative is not task else (score, factors)
+        merged_score = max(score, rep_score)
+        merged_factors = list(dict.fromkeys((rep_factors if representative is not task else factors) + (["subtask_ready"] if representative is not task else [])))
+        existing = scored_by_task_id.get(representative.id)
+        if existing is None or merged_score > existing["score"]:
+            scored_by_task_id[representative.id] = {
+                "task": representative,
+                "score": merged_score,
+                "factors": merged_factors,
+            }
+        elif representative is not task:
+            existing["factors"] = list(dict.fromkeys(existing.get("factors", []) + ["subtask_ready"]))
+
+    scored_candidates: List[Dict[str, Any]] = list(scored_by_task_id.values())
 
     scored_candidates.sort(
         key=lambda row: (

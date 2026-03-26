@@ -695,3 +695,58 @@ def test_build_plan_payload_excludes_subtask_when_parent_is_deferred():
     assert "tsk_other" in task_ids
     assert "tsk_parent" not in task_ids
     assert "tsk_child" not in task_ids
+
+
+def test_build_plan_payload_promotes_parent_over_unscheduled_subtasks():
+    now = datetime(2026, 3, 26, 4, 0, tzinfo=timezone.utc)
+    payload = build_plan_payload(
+        {
+            "tasks": [
+                WorkItem(
+                    id="tsk_parent",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Finish 401k registration package",
+                    title_norm="finish 401k registration package",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_child_1",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.subtask,
+                    parent_id="tsk_parent",
+                    title="Review Neil's list",
+                    title_norm="review neil s list",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_child_2",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.subtask,
+                    parent_id="tsk_parent",
+                    title="Review Cherry's list",
+                    title_norm="review cherry s list",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+                WorkItem(
+                    id="tsk_other",
+                    user_id="usr_dev",
+                    kind=WorkItemKind.task,
+                    title="Process photos from the last tournament",
+                    title_norm="process photos from the last tournament",
+                    status=WorkItemStatus.open,
+                    updated_at=now,
+                ),
+            ],
+            "links": [],
+            "reminders": [],
+        },
+        now,
+    )
+    task_ids = [item["task_id"] for item in payload["today_plan"]]
+    assert "tsk_parent" in task_ids
+    assert "tsk_child_1" not in task_ids
+    assert "tsk_child_2" not in task_ids
