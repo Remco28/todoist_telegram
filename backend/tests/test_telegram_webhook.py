@@ -2492,6 +2492,48 @@ def test_apply_capture_repairs_wrapper_title_on_touched_task(mock_db):
     assert WorkItemVersion in added_types
 
 
+def test_apply_capture_flushes_inbox_item_before_creating_work_items(mock_db):
+    flush_called = False
+
+    async def _flush():
+        nonlocal flush_called
+        flush_called = True
+
+    def _add(obj):
+        if isinstance(obj, WorkItem):
+            assert flush_called is True
+
+    mock_db.flush = AsyncMock(side_effect=_flush)
+    mock_db.add.side_effect = _add
+
+    _, applied = asyncio.run(
+        _apply_capture(
+            db=mock_db,
+            user_id="usr_abc",
+            chat_id="12345",
+            source="telegram",
+            message="For today:\n\nPack for tournament\n\nGet Amy the tax documents\n\nWash my car",
+            extraction={
+                "tasks": [
+                    {"title": "Pack for tournament", "action": "create", "due_date": "2026-03-26"},
+                    {"title": "Get Amy the tax documents", "action": "create", "due_date": "2026-03-26"},
+                    {"title": "Wash my car", "action": "create", "due_date": "2026-03-26"},
+                ],
+                "goals": [],
+                "problems": [],
+                "links": [],
+                "reminders": [],
+            },
+            request_id="req_inbox_flush",
+            commit=False,
+            enqueue_summary=False,
+        )
+    )
+
+    mock_db.flush.assert_awaited_once()
+    assert applied.tasks_created == 3
+
+
 def test_apply_capture_updates_targeted_reminder(mock_db):
     existing = Reminder(
         id="rem_payroll",

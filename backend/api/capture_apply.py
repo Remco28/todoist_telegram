@@ -414,6 +414,7 @@ async def run_apply_capture(
             received_at=helpers["utc_now"](),
         )
     )
+    await db.flush()
     conversation_source = ConversationSource.telegram
     if source not in {helpers["settings"].TELEGRAM_DEFAULT_SOURCE, "telegram"}:
         conversation_source = ConversationSource.system if source == "system" else ConversationSource.web
