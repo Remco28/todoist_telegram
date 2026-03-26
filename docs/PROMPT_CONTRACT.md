@@ -73,6 +73,7 @@ Optional future operation:
 - If still invalid, fail safely and log it.
 - Fallback behavior may recover from formatting/schema problems only.
 - Fallback behavior must not recreate phrase-based mutating intent logic.
+- If a rescue path is needed for production reliability, keep it grounded in explicit visible context or deterministic normalization, not general language understanding.
 
 ## Versioning
 - Every prompt template has a `prompt_version`

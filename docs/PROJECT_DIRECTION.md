@@ -42,6 +42,7 @@ This product is a Telegram-native executive assistant that lets a user think out
 - The system must support projects, tasks, and subtasks cleanly.
 - Subtasks must only be generated when explicitly requested by the user or explicitly confirmed after a suggestion.
 - The system must preserve recent visible context so follow-ups like "that one" or "move the register task" work naturally.
+- Deterministic rescue logic may exist only as a narrow safety/grounding layer; it must not become the primary interpreter of user intent again.
 - The system must remain single-user and opinionated rather than trying to become a generic collaboration platform.
 - The web UI must stay lightweight and maintenance-oriented.
 - The system must run reliably on a VPS with backups, restore drills, and clear operational logs.
@@ -51,6 +52,7 @@ This product is a Telegram-native executive assistant that lets a user think out
 - Telegram first: the best experience should happen in conversation, not in a dashboard.
 - Structured state over transcript sprawl: the DB should store enough shape, aliases, and history that the model can reason against real entities.
 - Backend-enforced safety: the model can interpret intent and propose structure, but the backend validates and writes.
+- Model-first semantics: bug fixes should prefer better prompts, better grounding, and better session/context over growing English phrase-matching trees.
 - Reversible operations: prefer archives, versions, action batches, and undo over irreversible edits.
 - Shallow useful hierarchy: support projects/tasks/subtasks, but avoid deep nested workflow trees.
 - Explicit decomposition: task breakdown is a capability the user asks for, not background automation.

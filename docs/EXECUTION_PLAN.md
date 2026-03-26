@@ -45,6 +45,7 @@
 - Telegram now has a distinct due-today read path: natural-language questions like “what is due today?” no longer collapse into the broader ranked agenda used by `/today`.
 - Planner hierarchy deferral semantics are tighter too: future-dated parent work now suppresses child leakage into `/today` unless a child carries its own explicit earlier date.
 - Immediate next implementation phase: finish final local-first polish rather than more architectural churn, with emphasis on maintenance UX, reminder follow-through, and remaining repo/schema cleanup.
+- Ongoing design constraint: keep Telegram interpretation model-first. Deterministic rescue logic is allowed only as a narrow grounding/safety layer and should not grow back into phrase-based intent routing.
 
 ## Active Implementation Tracks
 - Track A: Data model and migrations
@@ -84,6 +85,8 @@
   - Mitigation: add the lightweight web interface early enough to replace the missing maintenance path.
 - Risk: model autonomy causes wrong task targeting.
   - Mitigation: bounded candidate resolution, action history, undo, and version snapshots.
+- Risk: repeated Telegram hotfixes slowly reintroduce heuristic-first behavior.
+  - Mitigation: prefer prompt/grounding/session improvements first, keep rescue logic narrowly scoped to visible-context recovery, and periodically prune fallback code that starts carrying semantic interpretation.
 - Risk: reminder logic becomes coupled to planner logic.
   - Mitigation: keep reminders as a separate model and scheduler layer.
 - Risk: rework stalls because legacy code remains partially active too long.

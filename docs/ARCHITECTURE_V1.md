@@ -166,6 +166,20 @@ Recommended pattern:
 
 This gives the model semantic flexibility without giving it unlimited authority over the database.
 
+## Heuristic Drift Guardrail
+Small deterministic rescue paths are acceptable only when they are:
+- grounded in explicit visible context
+- limited to safe target recovery or date normalization
+- easy to inspect and remove later
+
+They are not acceptable as a replacement for model interpretation.
+
+That means:
+- do not rebuild broad phrase-based intent routing in code
+- do not keep adding English-only command synonyms as the primary fix for conversation bugs
+- prefer improving prompts, grounding, session state, and candidate sets first
+- keep deterministic code focused on validation, grounding, normalization, and writes
+
 ## Write Pipeline
 1. Store raw message in `conversation_events`.
 2. Build grounding:
