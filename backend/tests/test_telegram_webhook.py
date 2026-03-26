@@ -2186,7 +2186,7 @@ def test_unlinked_chat_command_receives_link_guidance(app_no_db, mock_send):
     with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value=None), patch(
         "api.main.handle_telegram_command", new_callable=AsyncMock
     ) as mocked:
-        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/plan"), headers=_headers())
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("/today"), headers=_headers())
         assert resp.status_code == 200
         mocked.assert_not_awaited()
         mock_send.assert_awaited_once()

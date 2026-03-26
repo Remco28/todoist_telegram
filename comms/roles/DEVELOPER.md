@@ -35,7 +35,7 @@ This project uses a clear separation of concerns between the Architect and the D
 Your typical workflow as the developer:
 
 1. **Orient:** Read `docs/ARCHITECTURE.md` to understand how components interact before starting any implementation task.
-2. **Check for Tasks:** Read `comms/log.md` to see if there are new specifications marked as `SPEC READY`.
+2. **Check for Tasks:** Inspect `comms/tasks/` first, then consult recent task-relevant entries in `comms/log.md` if needed. Do not load the full append-only log by default.
 3. **Read Specification:** Find the current task specification in `comms/tasks/` (authored by the Architect).
 4. **Log Start:** Update `comms/log.md` with `IMPL IN_PROGRESS` status.
 5. **Implement:** Write the code according to the specification:

@@ -49,6 +49,8 @@ We use a `comms/` directory to manage our workflow:
 All AIs should post status updates to `comms/log.md` upon starting and completing major actions. The format is:
 `[TIMESTAMP] [AUTHOR]: MESSAGE`
 
+Use the log selectively. Read recent or task-relevant entries first; do not treat the full append-only file as default context unless chronology is the task.
+
 ## Workflow
 
 Our collaboration follows a structured, multi-stage process:
