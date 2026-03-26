@@ -151,6 +151,41 @@ def build_draft_reply_markup(draft_id: str) -> Dict[str, Any]:
     }
 
 
+def build_applied_reply_markup(applied: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    items = applied.get("items")
+    normalized_items = items if isinstance(items, list) else []
+    overflow = max(0, len(normalized_items) - 6)
+    work_item_batch_id = str(applied.get("work_item_action_batch_id") or "").strip()
+    reminder_batch_id = str(applied.get("reminder_action_batch_id") or "").strip()
+    try:
+        work_item_subtasks_count = max(0, int(applied.get("work_item_subtasks_count") or 0))
+    except (TypeError, ValueError):
+        work_item_subtasks_count = 0
+
+    first_row: List[Dict[str, str]] = []
+    if overflow > 0:
+        if work_item_batch_id and reminder_batch_id:
+            first_row.extend(
+                [
+                    {"text": "Show tasks", "callback_data": f"batch:show:{work_item_batch_id}"},
+                    {"text": "Show reminders", "callback_data": f"batch:show:{reminder_batch_id}"},
+                ]
+            )
+        else:
+            batch_id = work_item_batch_id or reminder_batch_id
+            if batch_id:
+                first_row.append({"text": "Show more", "callback_data": f"batch:show:{batch_id}"})
+    if work_item_subtasks_count > 0 and work_item_batch_id:
+        first_row.append({"text": "Show subtasks", "callback_data": f"batch:subtasks:{work_item_batch_id}"})
+    if not first_row:
+        return None
+
+    rows = [first_row[:2]]
+    if len(first_row) > 2:
+        rows.append(first_row[2:4])
+    return {"inline_keyboard": rows}
+
+
 async def answer_callback_query(callback_query_id: str, text: Optional[str] = None) -> Dict[str, Any]:
     if not settings.TELEGRAM_BOT_TOKEN:
         return {"ok": False, "error": "token_missing"}
@@ -533,6 +568,97 @@ def format_capture_ack(applied: Dict[str, Any]) -> str:
         return "<i>Logged. No changes made.</i>"
 
     return "<b>" + escape_html(", ".join(parts)) + ".</b>"
+
+
+def _action_batch_record_snapshot(record: Dict[str, Any]) -> Dict[str, Any]:
+    after_json = record.get("after_json") if isinstance(record.get("after_json"), dict) else {}
+    if after_json:
+        return after_json
+    before_json = record.get("before_json") if isinstance(record.get("before_json"), dict) else {}
+    return before_json
+
+
+def _action_batch_record_group(record: Dict[str, Any]) -> str:
+    operation = str(record.get("operation") or "").strip().lower()
+    if operation == "create":
+        return "Created"
+    if operation == "complete":
+        return "Completed"
+    if operation == "archive":
+        return "Archived"
+    if operation == "restore":
+        return "Restored"
+    return "Updated"
+
+
+def _action_batch_record_label(record: Dict[str, Any]) -> str:
+    snapshot = _action_batch_record_snapshot(record)
+    title = str(snapshot.get("title") or "").strip()
+    if not title:
+        title = str(record.get("work_item_id") or record.get("reminder_id") or "Untitled").strip()
+    kind = str(snapshot.get("kind") or "").strip().lower()
+    if kind == "project":
+        prefix = "Project"
+    elif kind == "subtask":
+        prefix = "Subtask"
+    elif record.get("reminder_id"):
+        prefix = "Reminder"
+    else:
+        prefix = "Task"
+    return f"{prefix}: {user_facing_task_title(title)}"
+
+
+def format_action_batch_details(
+    records: List[Dict[str, Any]],
+    *,
+    heading: str,
+    subtasks_only: bool = False,
+) -> str:
+    normalized_records = [record for record in records if isinstance(record, dict)]
+    if subtasks_only:
+        normalized_records = [
+            record
+            for record in normalized_records
+            if str(_action_batch_record_snapshot(record).get("kind") or "").strip().lower() == "subtask"
+        ]
+
+    lines = [f"<b>{escape_html(heading)}</b>"]
+    if not normalized_records:
+        lines.extend(["", "Nothing to show."])
+        return "\n".join(lines)
+
+    if subtasks_only:
+        lines.append("")
+        for record in normalized_records[:40]:
+            label = _action_batch_record_label(record)
+            if label.startswith("Subtask: "):
+                label = label[len("Subtask: "):]
+            lines.append(f"• {escape_html(label)}")
+        return "\n".join(lines)
+
+    grouped_order = ["Created", "Updated", "Completed", "Archived", "Restored"]
+    grouped: Dict[str, List[str]] = {name: [] for name in grouped_order}
+    extras: Dict[str, List[str]] = {}
+    for record in normalized_records[:40]:
+        group = _action_batch_record_group(record)
+        label = _action_batch_record_label(record)
+        if group in grouped:
+            grouped[group].append(label)
+        else:
+            extras.setdefault(group, []).append(label)
+
+    for group in grouped_order:
+        labels = grouped[group]
+        if not labels:
+            continue
+        lines.extend(["", f"<b>{escape_html(group)}</b>"])
+        for label in labels:
+            lines.append(f"• {escape_html(label)}")
+    for group, labels in extras.items():
+        lines.extend(["", f"<b>{escape_html(group)}</b>"])
+        for label in labels:
+            lines.append(f"• {escape_html(label)}")
+    return "\n".join(lines)
 
 
 def format_query_answer(answer: str, follow_up: Optional[str] = None) -> str:

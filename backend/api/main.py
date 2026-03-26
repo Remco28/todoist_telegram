@@ -172,8 +172,10 @@ from api.telegram_orchestration import (
     run_handle_telegram_message_update,
     run_hash_link_token,
     run_issue_telegram_link_token,
+    run_parse_action_batch_callback,
     run_preferred_auth_token_for_user,
     run_resolve_telegram_user,
+    run_show_action_batch_details,
 )
 from api.telegram_draft_flow import run_handle_telegram_draft_flow
 from api.telegram_views import (
@@ -201,7 +203,8 @@ from api.schemas import (
 )
 from common.telegram import (
     verify_telegram_secret, parse_update, extract_command, send_message, edit_message, answer_callback_query, build_draft_reply_markup,
-    format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_capture_ack,
+    build_applied_reply_markup, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_capture_ack,
+    format_action_batch_details,
     escape_html, format_query_answer, user_facing_task_title
 )
 
@@ -379,6 +382,10 @@ def _parse_draft_callback(callback_data: str) -> tuple[Optional[str], Optional[s
     return action, draft_id.strip()
 
 
+def _parse_action_batch_callback(callback_data: str) -> tuple[Optional[str], Optional[str]]:
+    return run_parse_action_batch_callback(callback_data)
+
+
 def _draft_set_awaiting_edit_input(draft: ActionDraft, value: bool) -> None:
     proposal = copy.deepcopy(draft.proposal_json) if isinstance(draft.proposal_json, dict) else {}
     meta = proposal.get("_meta") if isinstance(proposal.get("_meta"), dict) else {}
@@ -448,6 +455,30 @@ async def _send_or_edit_draft_preview(chat_id: str, draft: ActionDraft, text: st
     result = sent.get("result") if isinstance(sent, dict) else None
     if isinstance(result, dict) and isinstance(result.get("message_id"), int):
         _draft_set_proposal_message_id(draft, result["message_id"])
+
+
+async def _send_capture_ack(chat_id: str, applied: AppliedChanges) -> None:
+    payload = applied.model_dump() if hasattr(applied, "model_dump") else dict(applied or {})
+    markup = build_applied_reply_markup(payload)
+    await send_message(chat_id, format_capture_ack(payload), reply_markup=markup)
+
+
+async def _show_action_batch_details(
+    *,
+    chat_id: str,
+    user_id: str,
+    batch_id: str,
+    detail: str,
+    db: AsyncSession,
+) -> None:
+    await run_show_action_batch_details(
+        chat_id=chat_id,
+        user_id=user_id,
+        batch_id=batch_id,
+        detail=detail,
+        db=db,
+        helpers=globals(),
+    )
 
 
 def _truncate_preview_text(value: Any, limit: int = 80) -> str:

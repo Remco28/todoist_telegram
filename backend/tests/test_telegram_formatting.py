@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    escape_html, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_query_answer, format_capture_ack,
+    build_applied_reply_markup, escape_html, format_action_batch_details, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -210,6 +210,39 @@ class TestFormattersEscapeHtmlContent:
         assert "Reminders updated" in result
         assert "Call Patrick" in result
         assert "reminder(s) created" not in result
+
+    def test_build_applied_reply_markup_offers_show_more_and_subtasks(self):
+        markup = build_applied_reply_markup(
+            {
+                "items": [{"group": "created", "label": f"Task {idx}"} for idx in range(8)],
+                "work_item_action_batch_id": "abt_123",
+                "work_item_subtasks_count": 4,
+            }
+        )
+        assert markup is not None
+        labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
+        assert "Show more" in labels
+        assert "Show subtasks" in labels
+
+    def test_format_action_batch_details_groups_project_and_subtask_records(self):
+        text = format_action_batch_details(
+            [
+                {
+                    "operation": "create",
+                    "after_json": {"kind": "project", "title": "Get glasses at Warby Parker"},
+                    "before_json": {},
+                },
+                {
+                    "operation": "create",
+                    "after_json": {"kind": "subtask", "title": "Measure pupillary distance (PD)"},
+                    "before_json": {},
+                },
+            ],
+            heading="All task changes",
+        )
+        assert "All task changes" in text
+        assert "Project: Get glasses at Warby Parker" in text
+        assert "Subtask: Measure pupillary distance (PD)" in text
 
     def test_format_query_answer_escapes_dynamic_content(self):
         answer = "Use <script>alert(1)</script> & keep moving."

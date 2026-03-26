@@ -2210,13 +2210,6 @@ def test_start_command_with_invalid_token_returns_guidance(app_no_db, mock_send)
         assert "link failed" in mock_send.await_args.args[1].lower()
 
 
-def test_command_plan_redirects_to_today(mock_send, mock_db):
-    asyncio.run(handle_telegram_command("/plan", None, "12345", "usr_abc", mock_db))
-    text = mock_send.await_args.args[1]
-    assert "Manual plan refresh" in text
-    assert "/today" in text
-
-
 def test_command_today_handles_live_plan_with_naive_task_timestamp(mock_redis, mock_send, mock_db):
     state = {
         "tasks": [
@@ -2351,17 +2344,19 @@ def test_unknown_command_shows_minimal_visible_menu(mock_send, mock_db):
     assert "/ask" not in text
 
 
-def test_command_ask_redirects_to_natural_language(mock_send, mock_db):
-    asyncio.run(handle_telegram_command("/ask", "what is blocked", "12345", "usr_abc", mock_db))
-    text = mock_send.await_args.args[1]
-    assert "Just ask the question directly" in text
-    assert "What tasks are overdue?" in text
-
-
-def test_command_focus_redirects_to_natural_language(mock_send, mock_db):
-    asyncio.run(handle_telegram_command("/focus", None, "12345", "usr_abc", mock_db))
-    text = mock_send.await_args.args[1]
-    assert "What should I focus on right now?" in text
+def test_action_batch_callback_shows_details(app_no_db, mock_send):
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_abc"), patch(
+        "api.main._show_action_batch_details", new_callable=AsyncMock
+    ) as show_details, patch("api.main.answer_callback_query", new_callable=AsyncMock) as ack:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_callback_update("batch:show:abt_1"), headers=_headers())
+        assert resp.status_code == 200
+        ack.assert_awaited_once()
+        show_details.assert_awaited_once()
+        kwargs = show_details.await_args.kwargs
+        assert kwargs["chat_id"] == "12345"
+        assert kwargs["user_id"] == "usr_abc"
+        assert kwargs["batch_id"] == "abt_1"
+        assert kwargs["detail"] == "show"
 
 
 def test_command_today_suppresses_near_duplicate_visible_tasks(mock_redis, mock_send, mock_db):

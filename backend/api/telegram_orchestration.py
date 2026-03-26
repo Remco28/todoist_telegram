@@ -8,15 +8,18 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from sqlalchemy import select
 
 from common.models import (
+    ActionBatch,
     ConversationDirection,
     ConversationEvent,
     ConversationSource,
+    ReminderVersion,
     TelegramLinkToken,
     TelegramUserMap,
     VersionOperation,
     WorkItem,
     WorkItemKind,
     WorkItemStatus,
+    WorkItemVersion,
 )
 
 
@@ -67,18 +70,6 @@ async def run_handle_telegram_command(
             chat_id,
             f'Open the <a href="{helpers["escape_html"](url)}">web workbench</a>.\n'
             f"<i>{helpers['escape_html'](note)}</i>",
-        )
-
-    elif command == "/plan":
-        await helpers["send_message"](
-            chat_id,
-            "Manual plan refresh is no longer part of normal use.\nUse <code>/today</code> to see the latest plan.",
-        )
-
-    elif command == "/focus":
-        await helpers["send_message"](
-            chat_id,
-            "Ask naturally instead, for example:\n<code>What should I focus on right now?</code>",
         )
 
     elif command == "/done":
@@ -175,13 +166,6 @@ async def run_handle_telegram_command(
         await helpers["send_message"](
             chat_id,
             f"Marked as done: <b>{helpers['escape_html'](helpers['_canonical_task_title'](task.title))}</b>.",
-        )
-
-    elif command == "/ask":
-        await helpers["send_message"](
-            chat_id,
-            "Just ask the question directly without <code>/ask</code>.\n"
-            "Example: <code>What tasks are overdue?</code>",
         )
 
     else:
@@ -317,10 +301,21 @@ async def run_handle_telegram_callback_update(data: Dict[str, Any], db, *, helpe
         return
     session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
 
-    open_draft = await helpers["_get_open_action_draft"](user_id=user_id, chat_id=chat_id, db=db)
-    action, draft_id = helpers["_parse_draft_callback"](callback_data)
+    batch_action, batch_id = helpers["_parse_action_batch_callback"](callback_data)
     if callback_query_id:
         await helpers["answer_callback_query"](callback_query_id)
+    if batch_action and batch_id:
+        await helpers["_show_action_batch_details"](
+            chat_id=chat_id,
+            user_id=user_id,
+            batch_id=batch_id,
+            detail=batch_action,
+            db=db,
+        )
+        return
+
+    open_draft = await helpers["_get_open_action_draft"](user_id=user_id, chat_id=chat_id, db=db)
+    action, draft_id = helpers["_parse_draft_callback"](callback_data)
     if not open_draft or not action or draft_id != open_draft.id:
         await helpers["send_message"](chat_id, "This proposal is no longer active. Send a new message to continue.")
         return
@@ -333,7 +328,7 @@ async def run_handle_telegram_callback_update(data: Dict[str, Any], db, *, helpe
             request_id=request_id,
             db=db,
         )
-        await helpers["send_message"](chat_id, helpers["format_capture_ack"](applied.model_dump()))
+        await helpers["_send_capture_ack"](chat_id, applied)
     elif action == "discard":
         await helpers["_discard_action_draft"](open_draft, user_id=user_id, request_id=request_id, db=db)
         await helpers["send_message"](chat_id, "Discarded the pending proposal.")
@@ -354,6 +349,71 @@ async def run_handle_telegram_callback_update(data: Dict[str, Any], db, *, helpe
             chat_id,
             "Reply with your changes in one message, and I will revise the proposal.",
         )
+
+
+def run_parse_action_batch_callback(callback_data: str) -> tuple[Optional[str], Optional[str]]:
+    parts = (callback_data or "").split(":", 2)
+    if len(parts) != 3 or parts[0] != "batch":
+        return None, None
+    action = parts[1]
+    batch_id = parts[2]
+    if action not in {"show", "subtasks"}:
+        return None, None
+    if not batch_id.strip():
+        return None, None
+    return action, batch_id.strip()
+
+
+async def run_show_action_batch_details(
+    *,
+    chat_id: str,
+    user_id: str,
+    batch_id: str,
+    detail: str,
+    db,
+    helpers: Dict[str, Any],
+) -> None:
+    batch = (
+        await db.execute(select(ActionBatch).where(ActionBatch.id == batch_id, ActionBatch.user_id == user_id))
+    ).scalar_one_or_none()
+    if batch is None:
+        await helpers["send_message"](chat_id, "Those details are no longer available.")
+        return
+
+    work_versions = (
+        await db.execute(
+            select(WorkItemVersion)
+            .where(WorkItemVersion.action_batch_id == batch.id, WorkItemVersion.user_id == user_id)
+            .order_by(WorkItemVersion.created_at.asc())
+        )
+    ).scalars().all()
+    if work_versions:
+        records = [helpers["_work_item_version_view_payload"](version) for version in work_versions]
+        text = helpers["format_action_batch_details"](
+            records,
+            heading="Subtasks in this change" if detail == "subtasks" else "All task changes",
+            subtasks_only=detail == "subtasks",
+        )
+        await helpers["send_message"](chat_id, text)
+        return
+
+    reminder_versions = (
+        await db.execute(
+            select(ReminderVersion)
+            .where(ReminderVersion.action_batch_id == batch.id, ReminderVersion.user_id == user_id)
+            .order_by(ReminderVersion.created_at.asc())
+        )
+    ).scalars().all()
+    if reminder_versions:
+        if detail == "subtasks":
+            await helpers["send_message"](chat_id, "That change did not create any subtasks.")
+            return
+        records = [helpers["_reminder_version_view_payload"](version) for version in reminder_versions]
+        text = helpers["format_action_batch_details"](records, heading="Reminder changes")
+        await helpers["send_message"](chat_id, text)
+        return
+
+    await helpers["send_message"](chat_id, "Those details are no longer available.")
 
 
 async def run_handle_telegram_message_update(data: Dict[str, Any], db, *, helpers: Dict[str, Any]) -> None:

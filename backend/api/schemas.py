@@ -30,6 +30,9 @@ class AppliedChanges(BaseModel):
     goals_created: int = 0
     links_created: int = 0
     items: List[AppliedChangeItem] = Field(default_factory=list, max_length=40)
+    work_item_action_batch_id: Optional[str] = None
+    reminder_action_batch_id: Optional[str] = None
+    work_item_subtasks_count: int = 0
 
 class ThoughtCaptureResponse(BaseModel):
     status: str

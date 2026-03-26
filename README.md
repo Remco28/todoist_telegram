@@ -34,6 +34,7 @@ The live runtime is local-first. Legacy tables may still exist in the database f
 - Reminder snooze now supports bounded presets through the local-first API and workbench: `1h`, `tomorrow_morning`, and `next_week`
 - Telegram draft/apply flow now treats reminders as first-class actions too: planner/extraction proposals can create, update, complete, or cancel reminders, and Telegram acknowledgements itemize reminder changes alongside task changes
 - Telegram draft/apply flow now supports explicit project promotion and explicit parent/child creation: conversational proposals can create `project -> task -> subtask` structures when the user asks for subtasks or asks to turn a task into a project
+- Telegram applied-change acknowledgements now support inline expansion: long change sets can expose `Show more` and `Show subtasks` buttons instead of collapsing permanently behind `+N more change(s)`
 - Hierarchy awareness is now threaded into the local-first UX too: parent titles are part of conversational task grounding, and the `/app` workbench renders work items in parent-aware order instead of a flat id-only list
 - The `/app` workbench now supports bounded maintenance edits for work items in place, so the web surface is useful for cleanup without becoming the main product
 - Reminder follow-through is tighter too: reminder grounding now includes linked work-item titles for better conversational disambiguation, and `/app` now supports bounded reminder edits in place
@@ -41,6 +42,7 @@ The live runtime is local-first. Legacy tables may still exist in the database f
 - The today planner now respects explicit deferrals in the hierarchy: if a task or parent task is moved into the future, it should not keep leaking into `/today` unless a child has its own earlier explicit date
 - Canonical maintenance surface is now fully local-first: `/v1/work_items` and `/v1/reminders`
 - Legacy `/v1/tasks`, `/v1/goals`, and `/v1/problems` endpoints are no longer registered.
+- Retired slash `/plan`, `/focus`, and `/ask` command handlers have now been removed from the live Telegram command path; hidden `/done` remains the only deterministic fallback command.
 - Canonical local-first preservation now happens via markdown export: `cd backend && python3 ops/export_local_first_markdown.py`
 - Legacy-row export still exists if you need it for old tables only: `cd backend && python3 ops/export_legacy_markdown.py`
 

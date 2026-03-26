@@ -831,7 +831,7 @@ async def run_apply_capture(
     )
 
     if version_records:
-        await helpers["_record_work_item_action_batch"](
+        work_item_batch = await helpers["_record_work_item_action_batch"](
             db,
             user_id=user_id,
             conversation_event_id=conversation_event.id,
@@ -839,8 +839,24 @@ async def run_apply_capture(
             proposal_json=extraction if isinstance(extraction, dict) else {},
             version_records=version_records,
         )
+        applied.work_item_action_batch_id = work_item_batch.id
+        applied.work_item_subtasks_count = sum(
+            1
+            for record in version_records
+            if str(
+                (
+                    record.get("after_json")
+                    if isinstance(record.get("after_json"), dict) and record.get("after_json")
+                    else record.get("before_json")
+                    if isinstance(record.get("before_json"), dict)
+                    else {}
+                ).get("kind")
+                or ""
+            ).strip().lower()
+            == "subtask"
+        )
     if reminder_version_records:
-        await helpers["_record_reminder_action_batch"](
+        reminder_batch = await helpers["_record_reminder_action_batch"](
             db,
             user_id=user_id,
             conversation_event_id=conversation_event.id,
@@ -848,6 +864,7 @@ async def run_apply_capture(
             proposal_json=extraction if isinstance(extraction, dict) else {},
             version_records=reminder_version_records,
         )
+        applied.reminder_action_batch_id = reminder_batch.id
 
     if session is None and session_id and "_get_latest_session" in helpers:
         session = await helpers["_get_latest_session"](db=db, user_id=user_id, chat_id=chat_id)

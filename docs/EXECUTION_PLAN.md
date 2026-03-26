@@ -19,7 +19,7 @@
 - Telegram reminder clarification is now live for incomplete conversational reminder writes: missing reminder targets trigger reminder-name clarification, and missing reminder times trigger a direct scheduling clarification instead of a generic dead end.
 - Recent reminder context is now part of grounding too: active reminder changes are remembered in `recent_context_items`, reminder candidate resolution prefers recent reminder refs, and the conversational path can reuse recent reminder context without leaking reminder ids to the user.
 - `/today` and worker reminder dispatch now both feed reminder visibility back into recent context, and reminder-aware query answers do the same for follow-up grounding.
-- Legacy slash `/plan`, `/focus`, and `/ask` are now retired from Telegram in favor of the conversation-first flow; hidden `/done` remains as the single deterministic fallback during migration.
+- Legacy slash `/plan`, `/focus`, and `/ask` are now fully removed from the live Telegram command handler in favor of the conversation-first flow; hidden `/done` remains as the single deterministic fallback.
 - Dead Todoist adapter/config residue has been removed from the live codebase; remaining cleanup is now mostly archive/export support and doc tightening rather than active runtime code.
 - Capture and memory no longer treat `Goal` / `Problem` rows as primary: new goal/problem entities are created as project-shaped `work_items` first and mirrored back only for compatibility.
 - The legacy `/v1/tasks`, `/v1/goals`, and `/v1/problems` maintenance endpoints are no longer registered. The canonical local-first API is the only supported maintenance surface.
@@ -44,6 +44,7 @@
 - Goal/problem compatibility buckets are now folded immediately into project-shaped `tasks[]` entries during validation/normalization, so the live write path no longer carries separate runtime branches for those legacy entity types.
 - Telegram now has a distinct due-today read path: natural-language questions like “what is due today?” no longer collapse into the broader ranked agenda used by `/today`.
 - Planner hierarchy deferral semantics are tighter too: future-dated parent work now suppresses child leakage into `/today` unless a child carries its own explicit earlier date.
+- Telegram applied-change acknowledgements are now expandable too: long change sets can expose inline `Show more` and `Show subtasks` callbacks backed by recorded action-batch history instead of permanently hiding overflow behind `+N more change(s)`.
 - Immediate next implementation phase: finish final local-first polish rather than more architectural churn, with emphasis on maintenance UX, reminder follow-through, and remaining repo/schema cleanup.
 - Ongoing design constraint: keep Telegram interpretation model-first. Deterministic rescue logic is allowed only as a narrow grounding/safety layer and should not grow back into phrase-based intent routing.
 

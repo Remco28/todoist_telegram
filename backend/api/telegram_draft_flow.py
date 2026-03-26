@@ -93,7 +93,7 @@ async def run_handle_telegram_draft_flow(
             request_id=request_id,
             db=db,
         )
-        await helpers["send_message"](chat_id, helpers["format_capture_ack"](applied.model_dump()))
+        await helpers["_send_capture_ack"](chat_id, applied)
         return
     if open_draft and draft_action == "discard":
         await helpers["_discard_action_draft"](open_draft, user_id=user_id, request_id=request_id, db=db)
@@ -587,7 +587,7 @@ async def run_handle_telegram_draft_flow(
             commit=True,
             enqueue_summary=True,
         )
-        await helpers["send_message"](chat_id, helpers["format_capture_ack"](applied.model_dump()))
+        await helpers["_send_capture_ack"](chat_id, applied)
         return
 
     draft = await helpers["_create_action_draft"](

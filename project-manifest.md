@@ -19,7 +19,9 @@ This file is the high-level map of canonical project assets.
 
 ## Operational Context
 - Repo overview: `README.md`
+- Default working set: `README.md`, `docs/PROJECT_DIRECTION.md`, `docs/EXECUTION_PLAN.md`, `docs/PROMPT_CONTRACT.md`, `docs/MEMORY_AND_SESSION_POLICY.md`
 - Project communication logs/roles: `comms/`
+- Append-only historical log: `comms/log.md` (consult targeted/recent entries; do not treat the full file as default context)
 - Active Architect task specs: `comms/tasks/`
 - Completed Architect task specs: `comms/tasks/archive/`
 - Project-scoped Gemini configuration: `.gemini/settings.json`
