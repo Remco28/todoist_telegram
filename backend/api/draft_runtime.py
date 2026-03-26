@@ -1,5 +1,6 @@
 import copy
 import uuid
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -199,7 +200,85 @@ def run_apply_intent_fallbacks(message: str, extraction: Dict[str, Any], groundi
     extraction.setdefault("problems", [])
     extraction.setdefault("links", [])
     extraction.setdefault("reminders", [])
+    if helpers["_has_actionable_entities"](extraction):
+        return extraction
+
+    inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
+    if inferred_due_date:
+        best_candidate = helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
+        if best_candidate:
+            extraction["tasks"] = [
+                {
+                    "title": best_candidate["title"],
+                    "action": "update",
+                    "target_task_id": best_candidate["id"],
+                    "due_date": inferred_due_date,
+                }
+            ]
     return extraction
+
+
+def run_extract_relative_due_date(message: str, *, helpers: Dict[str, Any]) -> Optional[str]:
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return None
+    today = helpers["_local_today"]()
+    if re.search(r"\btomorrow\b", normalized):
+        return (today + timedelta(days=1)).isoformat()
+    if re.search(r"\b(today|tonight)\b", normalized):
+        return today.isoformat()
+    if re.search(r"\bnext week\b", normalized):
+        return (today + timedelta(days=7)).isoformat()
+
+    weekday_map = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    for name, weekday in weekday_map.items():
+        if re.search(rf"\b(?:next\s+)?{name}\b", normalized):
+            delta_days = (weekday - today.weekday()) % 7
+            if delta_days == 0:
+                delta_days = 7
+            return (today + timedelta(days=delta_days)).isoformat()
+    return None
+
+
+def run_resolve_relative_due_date_overrides(
+    message: str,
+    extraction: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(extraction, dict):
+        return helpers["_empty_extraction"]()
+    inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
+    if not inferred_due_date:
+        return extraction
+    raw_tasks = extraction.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        return extraction
+    normalized_tasks: List[Any] = []
+    updated = False
+    for task in raw_tasks:
+        if not isinstance(task, dict):
+            normalized_tasks.append(task)
+            continue
+        normalized = dict(task)
+        action = str(normalized.get("action") or "").lower()
+        if action in {"create", "update"} and not normalized.get("due_date"):
+            normalized["due_date"] = inferred_due_date
+            updated = True
+        normalized_tasks.append(normalized)
+    if not updated:
+        return extraction
+    out = dict(extraction)
+    out["tasks"] = normalized_tasks
+    return out
 
 
 def run_actions_to_extraction(actions: Any, *, helpers: Dict[str, Any]) -> Dict[str, Any]:

@@ -74,6 +74,7 @@ from api.draft_runtime import (
     run_is_low_risk_action_extraction,
     run_is_safe_completion_extraction,
     run_planner_confidence,
+    run_resolve_relative_due_date_overrides,
     run_revise_action_draft,
     run_unresolved_mutation_titles,
 )
@@ -294,7 +295,7 @@ def _result_rows(value: Any) -> list[Any]:
 
 
 def _resolve_relative_due_date_overrides(message: str, extraction: Dict[str, Any]) -> Dict[str, Any]:
-    return extraction
+    return run_resolve_relative_due_date_overrides(message, extraction, helpers=globals())
 
 
 def _is_telegram_sender_allowed(chat_id: str, username: Optional[str]) -> bool:

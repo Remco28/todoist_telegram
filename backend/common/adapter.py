@@ -498,7 +498,7 @@ class LLMAdapter:
                 normalized["usage"] = usage
             return normalized
         except Exception as exc:
-            logger.warning("extract_structured_updates fallback: %s", type(exc).__name__)
+            logger.warning("extract_structured_updates fallback: %s: %s", type(exc).__name__, exc)
             return fallback
 
     async def interpret_telegram_turn(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
