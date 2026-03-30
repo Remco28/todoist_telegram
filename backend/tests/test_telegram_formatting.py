@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
-    build_applied_reply_markup, escape_html, format_action_batch_details, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_due_next_week, format_query_answer, format_capture_ack,
+    build_applied_reply_markup, escape_html, format_action_batch_details, format_today_plan, format_focus_mode, format_urgent_tasks, format_open_tasks, format_due_today, format_due_next_week, format_overdue, format_query_answer, format_capture_ack,
     split_telegram_text, strip_internal_ids, render_markdownish_text
 )
 
@@ -172,6 +172,46 @@ class TestFormattersEscapeHtmlContent:
     def test_format_due_today_empty_state(self):
         rendered = format_due_today([], [])
         assert "Nothing is due today." in rendered
+
+    def test_format_due_today_can_include_overdue_sections(self):
+        rendered = format_due_today(
+            [
+                {"id": "tsk_today", "title": "Submit Worker's Compensation form for employee", "kind": "task", "status": "open", "due_date": "2026-03-30"},
+            ],
+            [],
+            overdue_tasks=[
+                {"id": "wki_401k", "title": "Finish registering the 401k account", "kind": "project", "status": "open", "due_date": "2026-03-25"},
+            ],
+        )
+        assert "Due Today &amp; Overdue" in rendered
+        assert "Overdue Tasks" in rendered
+        assert "Due Today" in rendered
+        assert "▣ Finish registering the 401k account" in rendered
+        assert "Submit Worker" in rendered
+        assert "Due 3/25/2026" in rendered
+        assert "Due 3/30/2026" in rendered
+
+    def test_format_overdue_lists_tasks_and_reminders(self):
+        with patch("common.telegram._utc_now", return_value=datetime(2026, 3, 26, 12, 0, 0, tzinfo=timezone.utc)):
+            rendered = format_overdue(
+                [
+                    {"id": "tsk_1", "title": "Submit Worker's Compensation form for employee", "kind": "task", "status": "open", "due_date": "2026-03-25"},
+                ],
+                [
+                    {
+                        "id": "rem_1",
+                        "title": "Check on Patrick",
+                        "remind_at": "2026-03-25T13:00:00Z",
+                        "message": "Send the follow-up text.",
+                    }
+                ],
+            )
+        assert "Overdue" in rendered
+        assert "Submit Worker" in rendered
+        assert "Due 3/25/2026 (1 day overdue)" in rendered
+        assert "Overdue Reminders" in rendered
+        assert "Check on Patrick" in rendered
+        assert "Details: Send the follow-up text." in rendered
 
     def test_format_due_next_week_lists_tasks_and_reminders(self):
         with patch("common.telegram._local_today", return_value=date(2026, 3, 26)):

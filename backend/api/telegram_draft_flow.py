@@ -1,4 +1,5 @@
 import uuid
+import re
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -41,6 +42,13 @@ def _looks_like_structured_capture_message(text: str) -> bool:
         item_lines = lines[1:]
         return len(item_lines) >= 2 and all(len(line.split()) <= 16 for line in item_lines)
     return len(lines) >= 3 and all(len(line.split()) <= 16 for line in lines)
+
+
+def _query_mentions_overdue(text: str) -> bool:
+    if not isinstance(text, str) or not text.strip():
+        return False
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return bool(re.search(r"\boverdue\b|\bpast due\b", normalized))
 
 
 async def run_handle_telegram_draft_flow(
@@ -160,9 +168,16 @@ async def run_handle_telegram_draft_flow(
                         view_name=query_view,
                     )
                 elif query_view == "due_today":
-                    await helpers["_send_due_today_view"](db, user_id, chat_id)
+                    await helpers["_send_due_today_view"](
+                        db,
+                        user_id,
+                        chat_id,
+                        include_overdue=_query_mentions_overdue(query_text),
+                    )
                 elif query_view == "due_next_week":
                     await helpers["_send_due_next_week_view"](db, user_id, chat_id)
+                elif query_view == "overdue" or _query_mentions_overdue(query_text):
+                    await helpers["_send_overdue_view"](db, user_id, chat_id)
                 elif query_view == "open_tasks":
                     await helpers["_send_open_task_view"](db, user_id, chat_id)
                 elif query_view == "urgent":
@@ -394,10 +409,18 @@ async def run_handle_telegram_draft_flow(
         )
         return
     if requested_view == "due_today":
-        await helpers["_send_due_today_view"](db, user_id, chat_id)
+        await helpers["_send_due_today_view"](
+            db,
+            user_id,
+            chat_id,
+            include_overdue=_query_mentions_overdue(text),
+        )
         return
     if requested_view == "due_next_week":
         await helpers["_send_due_next_week_view"](db, user_id, chat_id)
+        return
+    if requested_view == "overdue" or (speech_act == "query" and requested_view is None and _query_mentions_overdue(text)):
+        await helpers["_send_overdue_view"](db, user_id, chat_id)
         return
     if requested_view == "open_tasks":
         await helpers["_send_open_task_view"](db, user_id, chat_id)

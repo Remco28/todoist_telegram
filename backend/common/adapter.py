@@ -437,7 +437,7 @@ class LLMAdapter:
         view_name = payload.get("view_name")
         if isinstance(view_name, str):
             normalized_view = view_name.strip().lower()
-            if normalized_view in {"today", "due_today", "due_next_week", "focus", "urgent", "open_tasks"}:
+            if normalized_view in {"today", "due_today", "due_next_week", "overdue", "focus", "urgent", "open_tasks"}:
                 normalized["view_name"] = normalized_view
         draft_action = payload.get("draft_action")
         if isinstance(draft_action, str):
@@ -511,7 +511,7 @@ class LLMAdapter:
             "Classify a Telegram message before any read or write side effects.\n"
             "Return JSON with keys speech_act, optional view_name, optional draft_action, optional draft_edit_text, optional confidence, and optional assistant_reply.\n"
             "speech_act must be one of: smalltalk, query, action, confirmation, clarification_answer, unknown.\n"
-            "view_name may be omitted or one of: today, due_today, due_next_week, focus, urgent, open_tasks.\n"
+            "view_name may be omitted or one of: today, due_today, due_next_week, overdue, focus, urgent, open_tasks.\n"
             "Use action when the user is trying to change state, including polite question forms and conversational completion statements.\n"
             "Messages that provide a heading followed by a multi-line list of tasks or errands are action/capture, not query, even if the heading mentions today.\n"
             "Status updates about a recent reminder being handled or resolved are also action intent, not query intent.\n"
@@ -523,7 +523,8 @@ class LLMAdapter:
             "If context.has_open_draft is true and the user is accepting or rejecting the pending proposal, set draft_action to confirm or discard.\n"
             "If the message is asking for a deterministic agenda/list view, set view_name accordingly.\n"
             "If context.session_state includes active_entity_refs or a pending clarification, use that session state to interpret follow-ups like that one, change it to Wednesday, or move it to tomorrow.\n"
-            "Use today for today's agenda, due_today when the user explicitly asks what is due today or what remains due today, due_next_week when the user explicitly asks what is due next week, urgent for high-priority items, open_tasks for listing currently open tasks, and focus only if the user explicitly asks for top priorities.\n"
+            "Use today for today's agenda, due_today when the user explicitly asks what is due today or what remains due today, due_next_week when the user explicitly asks what is due next week, overdue when the user explicitly asks what is overdue or past due, urgent for high-priority items, open_tasks for listing currently open tasks, and focus only if the user explicitly asks for top priorities.\n"
+            "If the user asks what is due today and explicitly says to include overdue items, still use due_today.\n"
             "assistant_reply should only be included for smalltalk, and should be brief.\n"
             "Use unknown only if the message cannot be classified confidently from the provided context.\n"
             "Return only JSON."

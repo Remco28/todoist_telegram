@@ -648,11 +648,11 @@ def format_open_tasks(tasks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[str, Any]]] = None) -> str:
-    lines = ["<b>🗓️ Due Today</b>", ""]
+def format_overdue(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[str, Any]]] = None) -> str:
+    lines = ["<b>🕰️ Overdue</b>", ""]
     reminders = reminders if isinstance(reminders, list) else []
     if not tasks and not reminders:
-        lines.append("Nothing is due today.")
+        lines.append("Nothing is overdue.")
         return "\n".join(lines)
 
     if tasks:
@@ -663,8 +663,9 @@ def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[
                 lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
 
     if reminders:
-        lines.append("")
-        lines.append("<b>⏰ Due Reminders</b>")
+        if tasks:
+            lines.append("")
+        lines.append("<b>⏰ Overdue Reminders</b>")
         for item in reminders[:8]:
             lines.append(f"• {escape_html(str(item.get('title') or '').strip())}")
             remind_at = _parse_iso_datetime(item.get("remind_at"))
@@ -673,6 +674,72 @@ def format_due_today(tasks: List[Dict[str, Any]], reminders: Optional[List[Dict[
             detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
             if detail_text:
                 lines.append(f"  {escape_html(detail_text)}")
+    return "\n".join(lines)
+
+
+def format_due_today(
+    tasks: List[Dict[str, Any]],
+    reminders: Optional[List[Dict[str, Any]]] = None,
+    *,
+    overdue_tasks: Optional[List[Dict[str, Any]]] = None,
+    overdue_reminders: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    reminders = reminders if isinstance(reminders, list) else []
+    overdue_tasks = overdue_tasks if isinstance(overdue_tasks, list) else []
+    overdue_reminders = overdue_reminders if isinstance(overdue_reminders, list) else []
+    include_overdue = bool(overdue_tasks or overdue_reminders)
+    lines = ["<b>🗓️ Due Today &amp; Overdue</b>" if include_overdue else "<b>🗓️ Due Today</b>", ""]
+    if not tasks and not reminders and not overdue_tasks and not overdue_reminders:
+        lines.append("Nothing is due today.")
+        return "\n".join(lines)
+
+    next_index = 1
+    if overdue_tasks:
+        lines.append("<b>Overdue Tasks</b>")
+        for task in overdue_tasks[:20]:
+            lines.append(f"{next_index}. {escape_html(_render_task_title(task))}")
+            details = _work_item_detail_text(task)
+            if details:
+                lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
+            next_index += 1
+        if tasks:
+            lines.append("")
+
+    if tasks:
+        if include_overdue:
+            lines.append("<b>Due Today</b>")
+        for task in tasks[:20]:
+            lines.append(f"{next_index}. {escape_html(_render_task_title(task))}")
+            details = _work_item_detail_text(task)
+            if details:
+                lines.append(f"{_indent_html(5)}<i>{escape_html(details)}</i>")
+            next_index += 1
+
+    if overdue_reminders or reminders:
+        if tasks or overdue_tasks:
+            lines.append("")
+        if overdue_reminders:
+            lines.append("<b>⏰ Overdue Reminders</b>")
+            for item in overdue_reminders[:8]:
+                lines.append(f"• {escape_html(str(item.get('title') or '').strip())}")
+                remind_at = _parse_iso_datetime(item.get("remind_at"))
+                if remind_at:
+                    lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
+                detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
+                if detail_text:
+                    lines.append(f"  {escape_html(detail_text)}")
+            if reminders:
+                lines.append("")
+        if reminders:
+            lines.append("<b>⏰ Due Reminders</b>")
+            for item in reminders[:8]:
+                lines.append(f"• {escape_html(str(item.get('title') or '').strip())}")
+                remind_at = _parse_iso_datetime(item.get("remind_at"))
+                if remind_at:
+                    lines.append(f"  <i>{escape_html(_format_local_timestamp(remind_at))}</i>")
+                detail_text = _reminder_detail_text(item.get("title"), item.get("message"))
+                if detail_text:
+                    lines.append(f"  {escape_html(detail_text)}")
     return "\n".join(lines)
 
 

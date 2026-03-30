@@ -329,7 +329,14 @@ def _telegram_view_next_week_range(*, helpers: Dict[str, Any]) -> tuple[datetime
     )
 
 
-async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
+async def run_send_due_today_view(
+    db,
+    user_id: str,
+    chat_id: str,
+    *,
+    helpers: Dict[str, Any],
+    include_overdue: bool = False,
+) -> None:
     local_today = helpers["_local_today"]()
     due_candidates = (
         await db.execute(
@@ -345,11 +352,16 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
         )
     ).scalars().all()
     due_tasks = []
+    overdue_tasks = []
     for task in due_candidates:
         local_due_at = _telegram_view_local_date(getattr(task, "due_at", None), helpers=helpers)
-        if local_due_at is None or local_due_at.date() != local_today:
+        if local_due_at is None:
             continue
-        due_tasks.append(_telegram_view_work_item_payload(task, helpers=helpers))
+        local_due_date = local_due_at.date()
+        if local_due_date == local_today:
+            due_tasks.append(_telegram_view_work_item_payload(task, helpers=helpers))
+        elif include_overdue and local_due_date < local_today:
+            overdue_tasks.append(_telegram_view_work_item_payload(task, helpers=helpers))
 
     reminder_candidates = (
         await db.execute(
@@ -363,27 +375,41 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
         )
     ).scalars().all()
     due_reminders = []
+    overdue_reminders = []
     for reminder in reminder_candidates:
         local_remind_at = _telegram_view_local_date(getattr(reminder, "remind_at", None), helpers=helpers)
-        if local_remind_at is None or local_remind_at.date() != local_today:
+        if local_remind_at is None:
             continue
-        due_reminders.append(
-            {
-                "id": reminder.id,
-                "title": reminder.title,
-                "remind_at": reminder.remind_at.isoformat() if isinstance(reminder.remind_at, datetime) else None,
-                "message": reminder.message,
-            }
-        )
+        reminder_payload = {
+            "id": reminder.id,
+            "title": reminder.title,
+            "remind_at": reminder.remind_at.isoformat() if isinstance(reminder.remind_at, datetime) else None,
+            "message": reminder.message,
+        }
+        local_remind_date = local_remind_at.date()
+        if local_remind_date == local_today:
+            due_reminders.append(reminder_payload)
+        elif include_overdue and local_remind_date < local_today:
+            overdue_reminders.append(reminder_payload)
 
-    sent = await helpers["send_message"](chat_id, helpers["format_due_today"](due_tasks, due_reminders))
+    sent = await helpers["send_message"](
+        chat_id,
+        helpers["format_due_today"](
+            due_tasks,
+            due_reminders,
+            overdue_tasks=overdue_tasks,
+            overdue_reminders=overdue_reminders,
+        ),
+    )
     if not (isinstance(sent, dict) and sent.get("ok") is True):
         return
-    task_ids = [task["id"] for task in due_tasks if isinstance(task.get("id"), str) and task.get("id")]
+    visible_tasks = overdue_tasks + due_tasks
+    task_ids = [task["id"] for task in visible_tasks if isinstance(task.get("id"), str) and task.get("id")]
     if task_ids:
         await helpers["_remember_displayed_tasks"](db, user_id, chat_id, task_ids, "due_today")
         await db.commit()
-    reminder_ids = [item["id"] for item in due_reminders if isinstance(item.get("id"), str) and item.get("id")]
+    visible_reminders = overdue_reminders + due_reminders
+    reminder_ids = [item["id"] for item in visible_reminders if isinstance(item.get("id"), str) and item.get("id")]
     if reminder_ids and "_remember_recent_reminders" in helpers:
         await helpers["_remember_recent_reminders"](
             db=db,
@@ -397,7 +423,7 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
         session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
         active_refs = [
             {"entity_type": "work_item", "entity_id": item["id"], "title": item["title"], "source": "due_today"}
-            for item in due_tasks
+            for item in visible_tasks
             if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
         ][:12]
         active_refs.extend(
@@ -407,13 +433,104 @@ async def run_send_due_today_view(db, user_id: str, chat_id: str, *, helpers: Di
                 "title": item["title"],
                 "source": "due_today",
             }
-            for item in due_reminders
+            for item in visible_reminders
             if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
         )
         await helpers["_update_session_state"](
             db=db,
             session=session,
             current_mode="due_today",
+            active_entity_refs=active_refs[:12],
+            pending_draft_id=None,
+            pending_clarification=None,
+        )
+
+
+async def run_send_overdue_view(db, user_id: str, chat_id: str, *, helpers: Dict[str, Any]) -> None:
+    local_today = helpers["_local_today"]()
+    due_candidates = (
+        await db.execute(
+            select(WorkItem)
+            .where(
+                WorkItem.user_id == user_id,
+                WorkItem.kind.in_([WorkItemKind.project, WorkItemKind.task, WorkItemKind.subtask]),
+                WorkItem.status.in_([WorkItemStatus.open, WorkItemStatus.blocked]),
+                WorkItem.due_at.is_not(None),
+            )
+            .order_by(WorkItem.priority.asc(), WorkItem.due_at.asc(), WorkItem.updated_at.desc())
+            .limit(40)
+        )
+    ).scalars().all()
+    overdue_tasks = []
+    for task in due_candidates:
+        local_due_at = _telegram_view_local_date(getattr(task, "due_at", None), helpers=helpers)
+        if local_due_at is None or local_due_at.date() >= local_today:
+            continue
+        overdue_tasks.append(_telegram_view_work_item_payload(task, helpers=helpers))
+
+    reminder_candidates = (
+        await db.execute(
+            select(Reminder)
+            .where(
+                Reminder.user_id == user_id,
+                Reminder.status == ReminderStatus.pending,
+            )
+            .order_by(Reminder.remind_at.asc(), Reminder.updated_at.desc())
+            .limit(20)
+        )
+    ).scalars().all()
+    overdue_reminders = []
+    for reminder in reminder_candidates:
+        local_remind_at = _telegram_view_local_date(getattr(reminder, "remind_at", None), helpers=helpers)
+        if local_remind_at is None or local_remind_at.date() >= local_today:
+            continue
+        overdue_reminders.append(
+            {
+                "id": reminder.id,
+                "title": reminder.title,
+                "remind_at": reminder.remind_at.isoformat() if isinstance(reminder.remind_at, datetime) else None,
+                "message": reminder.message,
+            }
+        )
+
+    sent = await helpers["send_message"](chat_id, helpers["format_overdue"](overdue_tasks, overdue_reminders))
+    if not (isinstance(sent, dict) and sent.get("ok") is True):
+        return
+    task_ids = [task["id"] for task in overdue_tasks if isinstance(task.get("id"), str) and task.get("id")]
+    if task_ids:
+        await helpers["_remember_displayed_tasks"](db, user_id, chat_id, task_ids, "overdue")
+        await db.commit()
+    reminder_ids = [item["id"] for item in overdue_reminders if isinstance(item.get("id"), str) and item.get("id")]
+    if reminder_ids and "_remember_recent_reminders" in helpers:
+        await helpers["_remember_recent_reminders"](
+            db=db,
+            user_id=user_id,
+            chat_id=chat_id,
+            reminder_ids=reminder_ids,
+            reason="overdue_view",
+            ttl_hours=12,
+        )
+    if "_get_or_create_session" in helpers and "_update_session_state" in helpers:
+        session = await helpers["_get_or_create_session"](db=db, user_id=user_id, chat_id=chat_id)
+        active_refs = [
+            {"entity_type": "work_item", "entity_id": item["id"], "title": item["title"], "source": "overdue"}
+            for item in overdue_tasks
+            if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+        ][:12]
+        active_refs.extend(
+            {
+                "entity_type": "reminder",
+                "entity_id": item["id"],
+                "title": item["title"],
+                "source": "overdue",
+            }
+            for item in overdue_reminders
+            if isinstance(item.get("id"), str) and item.get("id") and isinstance(item.get("title"), str)
+        )
+        await helpers["_update_session_state"](
+            db=db,
+            session=session,
+            current_mode="overdue",
             active_entity_refs=active_refs[:12],
             pending_draft_id=None,
             pending_clarification=None,

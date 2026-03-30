@@ -260,6 +260,45 @@ def test_natural_language_due_today_query_uses_deterministic_due_today_view(app_
         build_grounding.assert_not_awaited()
 
 
+def test_due_today_query_can_request_overdue_items_too(app_no_db, mock_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "due_today",
+        "confidence": 0.9,
+    }
+    message = "What else is due today? Make sure to include all the overdue ones."
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._send_due_today_view", new_callable=AsyncMock
+    ) as send_due_today, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(message), headers=_headers())
+        assert resp.status_code == 200
+        send_due_today.assert_awaited_once_with(mock_db, "usr_123", "12345", include_overdue=True)
+        build_grounding.assert_not_awaited()
+
+
+def test_natural_language_overdue_query_uses_deterministic_overdue_view(app_no_db, mock_db, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "query",
+        "view_name": "overdue",
+        "confidence": 0.9,
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._send_overdue_view", new_callable=AsyncMock
+    ) as send_overdue, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock
+    ) as build_grounding:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Anything else that's overdue?"), headers=_headers())
+        assert resp.status_code == 200
+        send_overdue.assert_awaited_once_with(mock_db, "usr_123", "12345")
+        build_grounding.assert_not_awaited()
+
+
 def test_natural_language_due_next_week_query_uses_deterministic_view(app_no_db, mock_extract):
     mock_extract.interpret_telegram_turn.return_value = {
         "speech_act": "query",
@@ -470,17 +509,17 @@ def test_mixed_query_and_action_message_answers_query_then_stages_action(app_no_
     ), patch(
         "api.main._remember_query_surface_context", new_callable=AsyncMock
     ) as remember_query, patch(
-        "api.main.query_ask", new_callable=AsyncMock, return_value=QueryResponseV1(answer="You have 1 overdue task.", confidence=0.9)
-    ) as query_ask, patch(
+        "api.main._send_overdue_view", new_callable=AsyncMock
+    ) as send_overdue, patch(
         "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
     ) as create_draft, patch(
         "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
     ) as send_preview:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(full_message), headers=_headers())
         assert resp.status_code == 200
-        query_ask.assert_awaited_once()
+        send_overdue.assert_awaited_once()
         create_draft.assert_awaited_once()
-        remember_query.assert_awaited_once()
+        remember_query.assert_not_awaited()
         extraction = create_draft.await_args.kwargs["extraction"]
         assert extraction["tasks"] == [
             {
@@ -491,7 +530,7 @@ def test_mixed_query_and_action_message_answers_query_then_stages_action(app_no_
             }
         ]
         send_preview.assert_awaited_once()
-        assert "You have 1 overdue task." in mock_send.await_args_list[0].args[1]
+        mock_send.assert_not_awaited()
 
 
 def test_mixed_query_and_action_message_recovers_priority_update_from_grounding_only_match(
@@ -523,7 +562,6 @@ def test_mixed_query_and_action_message_recovers_priority_update_from_grounding_
         "links": [],
         "reminders": [],
     }
-    query_grounding = {"tasks": [], "recent_task_refs": [], "displayed_task_refs": []}
     action_grounding = {
         "tasks": [
             {"id": "wki_401k", "title": "Finish registering the 401k account", "status": "open", "kind": "project"},
@@ -538,23 +576,21 @@ def test_mixed_query_and_action_message_recovers_priority_update_from_grounding_
     ), patch(
         "api.main._build_extraction_grounding",
         new_callable=AsyncMock,
-        side_effect=[query_grounding, action_grounding],
+        return_value=action_grounding,
     ), patch(
         "api.main._remember_query_surface_context", new_callable=AsyncMock
     ) as remember_query, patch(
-        "api.main.query_ask",
-        new_callable=AsyncMock,
-        return_value=QueryResponseV1(answer="No, you do not have any overdue tasks.", confidence=0.9),
-    ) as query_ask, patch(
+        "api.main._send_overdue_view", new_callable=AsyncMock
+    ) as send_overdue, patch(
         "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
     ) as create_draft, patch(
         "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
     ) as send_preview:
         resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(full_message), headers=_headers())
         assert resp.status_code == 200
-        query_ask.assert_awaited_once()
+        send_overdue.assert_awaited_once()
         create_draft.assert_awaited_once()
-        remember_query.assert_awaited_once()
+        remember_query.assert_not_awaited()
         extraction = create_draft.await_args.kwargs["extraction"]
         assert extraction["tasks"] == [
             {
@@ -565,7 +601,7 @@ def test_mixed_query_and_action_message_recovers_priority_update_from_grounding_
             }
         ]
         send_preview.assert_awaited_once()
-        assert "No, you do not have any overdue tasks." in mock_send.await_args_list[0].args[1]
+        mock_send.assert_not_awaited()
 
 
 def test_non_command_text_low_confidence_requests_clarification(app_no_db, mock_extract, mock_send):
