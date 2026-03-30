@@ -1833,6 +1833,8 @@ def test_multi_clause_empty_extract_recovers_update_and_archive_actions(app_no_d
     ) as create_draft, patch(
         "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
     ) as send_preview, patch(
+        "api.main._local_today", return_value=date(2026, 3, 26)
+    ), patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
     ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
@@ -2648,7 +2650,9 @@ def test_command_urgent_lists_high_priority_tasks(mock_send, mock_db):
     ]
     result.scalars.return_value = scalars_result
     mock_db.execute.return_value = result
-    with patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember:
+    with patch("api.main._remember_displayed_tasks", new_callable=AsyncMock) as remember, patch(
+        "common.telegram._local_today", return_value=date(2026, 3, 26)
+    ):
         asyncio.run(handle_telegram_command("/urgent", None, "12345", "usr_abc", mock_db))
     text = mock_send.await_args.args[1]
     assert "Urgent Items" in text
@@ -3153,7 +3157,14 @@ def test_action_draft_preview_groups_mixed_task_actions():
         {
             "tasks": [
                 {"action": "complete", "title": "Remind Amy to find the compact backpack"},
-                {"action": "update", "title": "Reach out to Ben and Jason", "notes": "Still unresolved issues", "due_date": "2026-03-25", "target_task_id": "tsk_1"},
+                {
+                    "action": "update",
+                    "title": "Reach out to Ben and Jason",
+                    "notes": "Still unresolved issues",
+                    "due_date": "2026-03-25",
+                    "priority": 1,
+                    "target_task_id": "tsk_1",
+                },
                 {"action": "create", "title": "Decide our intentions regarding Ginseng ordering"},
             ],
             "goals": [],
@@ -3168,6 +3179,7 @@ def test_action_draft_preview_groups_mixed_task_actions():
     assert "Complete task:" in preview
     assert "Update task:" in preview
     assert "due -&gt; 2026-03-25" in preview
+    assert "priority -&gt; high" in preview
     assert "notes -&gt; Still unresolved issues" in preview
 
 
@@ -3617,6 +3629,105 @@ def test_non_command_multi_action_message_uses_richer_extract_when_planner_only_
         assert extraction["tasks"][0]["target_task_id"] == "tsk_wash"
         assert extraction["tasks"][1]["target_task_id"] == "tsk_pack"
         assert extraction["reminders"][0]["target_reminder_id"] == "rem_callum"
+        send_preview.assert_awaited_once()
+
+
+def test_multi_field_and_multi_task_priority_message_augments_incomplete_planner_update(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "action",
+        "confidence": 0.97,
+    }
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.93,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "update",
+                "title": "Submit Worker's Compensation form for employee",
+                "target_task_id": "tsk_workers_comp",
+                "due_date": "2026-03-30",
+            }
+        ],
+    }
+    mock_extract.extract_structured_updates.return_value = {
+        "tasks": [
+            {
+                "action": "update",
+                "title": "Submit Worker's Compensation form for employee",
+                "target_task_id": "tsk_workers_comp",
+                "due_date": "2026-03-30",
+            }
+        ],
+        "goals": [],
+        "problems": [],
+        "links": [],
+        "reminders": [],
+    }
+    grounding = {
+        "tasks": [
+            {
+                "id": "tsk_workers_comp",
+                "title": "Submit Worker's Compensation form for employee",
+                "status": "open",
+                "due_date": "2026-03-31",
+            },
+            {
+                "id": "wki_401k",
+                "title": "Finish registering the 401k account",
+                "status": "open",
+                "kind": "project",
+            },
+        ],
+        "recent_task_refs": [
+            {
+                "id": "tsk_workers_comp",
+                "title": "Submit Worker's Compensation form for employee",
+                "status": "open",
+                "due_date": "2026-03-31",
+            },
+            {
+                "id": "wki_401k",
+                "title": "Finish registering the 401k account",
+                "status": "open",
+                "kind": "project",
+            },
+        ],
+        "displayed_task_refs": [],
+        "current_date_local": "2026-03-30",
+        "timezone": "America/New_York",
+    }
+    message = "Make the worker's comp form high priority and due today.\n\nAlso make the 401k registration high priority."
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(message), headers=_headers())
+        assert resp.status_code == 200
+        create_draft.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Submit Worker's Compensation form for employee",
+                "action": "update",
+                "target_task_id": "tsk_workers_comp",
+                "due_date": "2026-03-30",
+                "priority": 1,
+            },
+            {
+                "title": "Finish registering the 401k account",
+                "action": "update",
+                "target_task_id": "wki_401k",
+                "priority": 1,
+            },
+        ]
         send_preview.assert_awaited_once()
 
 

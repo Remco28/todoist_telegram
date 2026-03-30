@@ -75,7 +75,9 @@ from api.draft_runtime import (
     run_create_action_draft,
     run_discard_action_draft,
     run_estimated_action_clause_count,
+    run_estimated_requested_change_count,
     run_extraction_action_count,
+    run_extraction_mutation_count,
     run_generic_unresolved_clarification_text,
     run_get_open_action_draft,
     run_has_unresolved_reminder_target,
@@ -529,7 +531,8 @@ def _task_preview_details(task: Dict[str, Any]) -> List[str]:
     if isinstance(notes, str) and notes.strip():
         details.append(f"notes -> {_truncate_preview_text(notes)}")
     if isinstance(task.get("priority"), int):
-        details.append(f"priority -> {task['priority']}")
+        priority_labels = {1: "high", 2: "medium-high", 3: "medium", 4: "low"}
+        details.append(f"priority -> {priority_labels.get(task['priority'], task['priority'])}")
     if isinstance(task.get("impact_score"), int):
         details.append(f"impact -> {task['impact_score']}")
     if isinstance(task.get("urgency_score"), int):
@@ -888,6 +891,14 @@ def _extraction_action_count(extraction: Dict[str, Any]) -> int:
 
 def _estimated_action_clause_count(message: str) -> int:
     return run_estimated_action_clause_count(message)
+
+
+def _estimated_requested_change_count(message: str) -> int:
+    return run_estimated_requested_change_count(message, helpers=globals())
+
+
+def _extraction_mutation_count(extraction: Dict[str, Any]) -> int:
+    return run_extraction_mutation_count(extraction)
 
 
 def _is_low_risk_action_extraction(extraction: Dict[str, Any]) -> bool:

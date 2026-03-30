@@ -66,18 +66,33 @@ def run_extraction_action_count(extraction: Dict[str, Any]) -> int:
     return total
 
 
-def run_estimated_action_clause_count(message: str) -> int:
-    if not isinstance(message, str) or not message.strip():
-        return 0
-    raw_parts = re.split(r"\n\s*\n+|\n+|(?<=[.!?])\s+", message)
-    clauses = []
+def _split_action_clauses(message: str) -> List[str]:
+    text = message or ""
+    if re.search(r"\n\s*\n+|\n+", text):
+        raw_parts = re.split(r"\n\s*\n+|\n+", text)
+    else:
+        raw_parts = re.split(
+            r"(?<=[.!?])\s+(?=(?:also|and also|then|next|plus|separately)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    clauses: List[str] = []
     for part in raw_parts:
         cleaned = re.sub(r"^[\s\-*•]+", "", part or "").strip()
         if not cleaned:
             continue
         if len(re.sub(r"[^A-Za-z0-9]", "", cleaned)) < 4:
             continue
+        if cleaned.endswith(":") and len(cleaned.split()) <= 4 and len(raw_parts) > 1:
+            continue
         clauses.append(cleaned)
+    return clauses
+
+
+def run_estimated_action_clause_count(message: str) -> int:
+    if not isinstance(message, str) or not message.strip():
+        return 0
+    clauses = _split_action_clauses(message)
     if not clauses:
         return 0
     if re.search(r"\n\s*\n+|\n+", message):
@@ -85,6 +100,99 @@ def run_estimated_action_clause_count(message: str) -> int:
     if len(clauses) >= 3:
         return len(clauses)
     return 1
+
+
+def run_extract_priority_value(message: str, *, helpers: Dict[str, Any]) -> Optional[int]:
+    if not isinstance(message, str) or not message.strip():
+        return None
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return None
+    if re.search(r"\bnot\s+urgent\b", normalized) or re.search(r"\bnot\s+a\s+priority\b", normalized):
+        return None
+    if re.search(r"\b(high|highest|top)\s+priority\b", normalized) or re.search(r"\burgent\b", normalized):
+        return 1
+    if re.search(r"\bmedium\s+priority\b", normalized):
+        return 3
+    if re.search(r"\b(low|lowest)\s+priority\b", normalized):
+        return 4
+    return None
+
+
+def run_extraction_mutation_count(extraction: Dict[str, Any]) -> int:
+    if not isinstance(extraction, dict):
+        return 0
+    total = 0
+    for task in extraction.get("tasks", []) if isinstance(extraction.get("tasks"), list) else []:
+        if not isinstance(task, dict):
+            continue
+        action = str(task.get("action") or "").strip().lower()
+        status = str(task.get("status") or "").strip().lower()
+        if action == "create" and not task.get("target_task_id"):
+            total += 1
+            continue
+        if action in {"complete", "archive"} or status in {"done", "archived"}:
+            total += 1
+            continue
+        field_count = 0
+        if isinstance(task.get("due_date"), str) and task.get("due_date").strip():
+            field_count += 1
+        if isinstance(task.get("priority"), int):
+            field_count += 1
+        if isinstance(task.get("impact_score"), int):
+            field_count += 1
+        if isinstance(task.get("urgency_score"), int):
+            field_count += 1
+        if isinstance(task.get("notes"), str) and task.get("notes").strip():
+            field_count += 1
+        if isinstance(task.get("kind"), str) and task.get("kind").strip():
+            field_count += 1
+        if isinstance(task.get("parent_task_id"), str) and task.get("parent_task_id").strip():
+            field_count += 1
+        if isinstance(task.get("parent_title"), str) and task.get("parent_title").strip():
+            field_count += 1
+        total += max(1 if action == "update" else 0, field_count)
+    for reminder in extraction.get("reminders", []) if isinstance(extraction.get("reminders"), list) else []:
+        if not isinstance(reminder, dict):
+            continue
+        action = str(reminder.get("action") or "").strip().lower()
+        status = str(reminder.get("status") or "").strip().lower()
+        if action in {"complete", "dismiss", "cancel"} or status in {"completed", "dismissed", "canceled"}:
+            total += 1
+            continue
+        field_count = 0
+        if isinstance(reminder.get("remind_at"), str) and reminder.get("remind_at").strip():
+            field_count += 1
+        if isinstance(reminder.get("message"), str) and reminder.get("message").strip():
+            field_count += 1
+        if isinstance(reminder.get("recurrence_rule"), str) and reminder.get("recurrence_rule").strip():
+            field_count += 1
+        total += max(1 if action in {"create", "update"} else 0, field_count)
+    for key in ("links",):
+        rows = extraction.get(key)
+        if isinstance(rows, list):
+            total += sum(1 for item in rows if isinstance(item, dict))
+    return total
+
+
+def run_estimated_requested_change_count(message: str, *, helpers: Dict[str, Any]) -> int:
+    if not isinstance(message, str) or not message.strip():
+        return 0
+    total = 0
+    for clause in _split_action_clauses(message):
+        clause_total = 0
+        if run_extract_relative_due_date(clause, helpers=helpers):
+            clause_total += 1
+        if run_extract_same_day_reference_update(clause, {}, helpers=helpers):
+            clause_total += 1
+        if run_extract_priority_value(clause, helpers=helpers) is not None:
+            clause_total += 1
+        if run_is_archive_like_message(clause, helpers=helpers):
+            clause_total += 1
+        elif run_is_completion_like_message(clause, helpers=helpers):
+            clause_total += 1
+        total += max(1, clause_total)
+    return total
 
 
 def run_unresolved_mutation_titles(extraction: Dict[str, Any], *, helpers: Dict[str, Any]) -> List[str]:
@@ -250,34 +358,29 @@ def _run_apply_intent_fallbacks(
         return extraction
 
     inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
-    if inferred_due_date:
-        displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
-        if displayed_match:
-            extraction["tasks"] = [
-                {
-                    "title": displayed_match["title"],
-                    "action": "update",
-                    "target_task_id": displayed_match["id"],
-                    "due_date": inferred_due_date,
-                }
-            ]
-            return extraction
-        best_candidate = helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
-        if best_candidate:
-            extraction["tasks"] = [
-                {
-                    "title": best_candidate["title"],
-                    "action": "update",
-                    "target_task_id": best_candidate["id"],
-                    "due_date": inferred_due_date,
-                }
-            ]
-            return extraction
-
+    inferred_priority = run_extract_priority_value(message, helpers=helpers)
     same_day_update = run_extract_same_day_reference_update(message, grounding, helpers=helpers)
     if same_day_update:
+        if inferred_priority is not None:
+            same_day_update["priority"] = inferred_priority
         extraction["tasks"] = [same_day_update]
         return extraction
+
+    if inferred_due_date or inferred_priority is not None:
+        displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
+        best_candidate = displayed_match or helpers["_best_task_reference_candidate"](message, grounding, open_only=True)
+        if best_candidate:
+            task_update = {
+                "title": best_candidate["title"],
+                "action": "update",
+                "target_task_id": best_candidate["id"],
+            }
+            if inferred_due_date:
+                task_update["due_date"] = inferred_due_date
+            if inferred_priority is not None:
+                task_update["priority"] = inferred_priority
+            extraction["tasks"] = [task_update]
+            return extraction
 
     if run_is_archive_like_message(message, helpers=helpers):
         displayed_match = run_extract_displayed_ordinal_task(message, grounding, helpers=helpers)
@@ -338,15 +441,15 @@ def _run_maybe_clause_split_recovery(
     helpers: Dict[str, Any],
     initial_count: int,
 ) -> Dict[str, Any]:
-    clause_count = run_estimated_action_clause_count(message)
-    current_count = run_extraction_action_count(extraction)
-    if clause_count < 2:
+    requested_change_count = run_estimated_requested_change_count(message, helpers=helpers)
+    current_count = run_extraction_mutation_count(extraction)
+    if requested_change_count < 2:
         return extraction
-    if current_count >= clause_count:
+    if current_count >= requested_change_count:
         return extraction
 
     clause_extraction = _run_clause_split_intent_fallbacks(message, grounding, helpers=helpers)
-    clause_action_count = run_extraction_action_count(clause_extraction)
+    clause_action_count = run_extraction_mutation_count(clause_extraction)
     if clause_action_count > current_count and clause_action_count > initial_count:
         return clause_extraction
     return extraction
@@ -360,13 +463,8 @@ def _run_clause_split_intent_fallbacks(
 ) -> Dict[str, Any]:
     combined = helpers["_empty_extraction"]()
     seen_keys: set[tuple[str, str, str, str]] = set()
-    raw_parts = re.split(r"\n\s*\n+|\n+|(?<=[.!?])\s+", message or "")
-    for part in raw_parts:
-        clause = re.sub(r"^[\s\-*•]+", "", part or "").strip()
-        if not clause:
-            continue
-        if len(re.sub(r"[^A-Za-z0-9]", "", clause)) < 4:
-            continue
+    merged_task_updates: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for clause in _split_action_clauses(message):
         clause_extraction = _run_apply_intent_fallbacks(
             clause,
             helpers["_empty_extraction"](),
@@ -374,7 +472,7 @@ def _run_clause_split_intent_fallbacks(
             helpers=helpers,
             allow_clause_split=False,
         )
-        for key in ("tasks", "reminders", "links"):
+        for key in ("reminders", "links"):
             items = clause_extraction.get(key)
             if not isinstance(items, list):
                 continue
@@ -396,6 +494,46 @@ def _run_clause_split_intent_fallbacks(
                     continue
                 seen_keys.add(dedupe_key)
                 combined[key].append(item)
+        task_items = clause_extraction.get("tasks")
+        if isinstance(task_items, list):
+            for item in task_items:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action") or "").strip().lower()
+                target = str(item.get("target_task_id") or item.get("title") or "").strip().lower()
+                if action == "update" and target:
+                    merge_key = (action, target)
+                    existing = merged_task_updates.get(merge_key)
+                    if existing is None:
+                        existing = dict(item)
+                        merged_task_updates[merge_key] = existing
+                        combined["tasks"].append(existing)
+                    else:
+                        for field in (
+                            "title",
+                            "target_task_id",
+                            "due_date",
+                            "priority",
+                            "notes",
+                            "impact_score",
+                            "urgency_score",
+                            "parent_task_id",
+                            "parent_title",
+                            "kind",
+                        ):
+                            if field in item and item.get(field) not in (None, ""):
+                                existing[field] = item.get(field)
+                    continue
+                dedupe_key = (
+                    "tasks",
+                    action or str(item.get("status") or "").strip().lower(),
+                    target,
+                    str(item.get("due_date") or item.get("priority") or "").strip().lower(),
+                )
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                combined["tasks"].append(item)
     return combined
 
 
@@ -500,6 +638,10 @@ def run_is_completion_like_message(message: str, *, helpers: Dict[str, Any]) -> 
     if not normalized:
         return False
     if re.search(r"\bsame\s+(?:day|date)\s+as\b", normalized):
+        return False
+    if re.search(r"\bwant\s+(?:it|this|that|to)\s+done\b", normalized):
+        return False
+    if re.search(r"\bdone\s+eventually\b", normalized):
         return False
     completion_patterns = (
         r"\bdone\b",
@@ -621,6 +763,8 @@ def run_extract_relative_due_date(message: str, *, helpers: Dict[str, Any]) -> O
     }
     for name, weekday in weekday_map.items():
         if re.search(rf"\b(?:next\s+)?{name}\b", normalized):
+            if not re.search(rf"\b(?:next|this|on|by|for)\s+{name}\b", normalized):
+                continue
             delta_days = (weekday - today.weekday()) % 7
             if delta_days == 0:
                 delta_days = 7
@@ -641,6 +785,8 @@ def run_resolve_relative_due_date_overrides(
         return extraction
     raw_tasks = extraction.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
+        return extraction
+    if len([task for task in raw_tasks if isinstance(task, dict)]) > 1 and run_estimated_requested_change_count(message, helpers=helpers) >= 2:
         return extraction
     normalized_tasks: List[Any] = []
     updated = False

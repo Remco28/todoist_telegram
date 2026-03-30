@@ -376,12 +376,12 @@ async def run_handle_telegram_draft_flow(
             await db.commit()
             extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
         else:
-            clause_count = helpers["_estimated_action_clause_count"](text)
-            extraction_count = helpers["_extraction_action_count"](extraction)
-            if clause_count >= 2 and extraction_count < clause_count:
+            requested_change_count = helpers["_estimated_requested_change_count"](text)
+            extraction_mutation_count = helpers["_extraction_mutation_count"](extraction)
+            if requested_change_count >= 2 and extraction_mutation_count < requested_change_count:
                 recovery_extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
-                recovery_count = helpers["_extraction_action_count"](recovery_extraction)
-                if recovery_count > extraction_count:
+                recovery_count = helpers["_extraction_mutation_count"](recovery_extraction)
+                if recovery_count > extraction_mutation_count:
                     used_extract_fallback = True
                     db.add(
                         helpers["EventLog"](
@@ -472,7 +472,12 @@ async def run_handle_telegram_draft_flow(
         )
         return
 
-    if used_extract_fallback:
+    estimated_requested_change_count = helpers["_estimated_requested_change_count"](text)
+    extraction_mutation_count = helpers["_extraction_mutation_count"](extraction)
+    if used_extract_fallback or (
+        estimated_requested_change_count >= 2
+        and extraction_mutation_count < estimated_requested_change_count
+    ):
         extraction = helpers["_apply_intent_fallbacks"](text, extraction, grounding)
     extraction = helpers["_sanitize_completion_extraction"](extraction, grounding)
     extraction = helpers["_sanitize_create_extraction"](extraction)
@@ -480,8 +485,21 @@ async def run_handle_telegram_draft_flow(
     extraction = helpers["_sanitize_targeted_reminder_actions"](text, extraction, grounding)
     extraction = helpers["_apply_displayed_task_reference_extraction"](extraction, grounding)
     extraction = helpers["_resolve_relative_due_date_overrides"](text, extraction)
+    extraction_mutation_count = helpers["_extraction_mutation_count"](extraction)
     completion_request = helpers["_is_safe_completion_extraction"](extraction)
     unresolved_mutations = helpers["_unresolved_mutation_titles"](extraction)
+    if (
+        estimated_requested_change_count >= 2
+        and extraction_mutation_count > 0
+        and extraction_mutation_count < estimated_requested_change_count
+    ):
+        await helpers["send_message"](
+            chat_id,
+            "I think I only captured part of that request.\n"
+            f"I found {extraction_mutation_count} change(s), but your message looks like {estimated_requested_change_count} requested changes.\n\n"
+            "Please split that into shorter messages, or rephrase the missing part.",
+        )
+        return
     if unresolved_mutations:
         clarification_info = helpers["_candidate_task_clarification_info"](text, extraction, grounding)
         if not clarification_info:

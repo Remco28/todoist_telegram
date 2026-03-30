@@ -1,5 +1,5 @@
 """Phase 4 Telegram formatting tests (spec case 10)."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 from common.telegram import (
@@ -174,21 +174,22 @@ class TestFormattersEscapeHtmlContent:
         assert "Nothing is due today." in rendered
 
     def test_format_due_next_week_lists_tasks_and_reminders(self):
-        rendered = format_due_next_week(
-            [
-                {"id": "wki_1", "title": "Sign up for a Vanguard investment account", "kind": "project", "status": "open", "due_date": "2026-03-31"},
-                {"id": "tsk_2", "title": "Deposit money into Roth IRA account", "kind": "task", "status": "open", "due_date": "2026-03-31"},
-            ],
-            [
-                {
-                    "id": "rem_1",
-                    "title": "Check New York filing deadline",
-                    "remind_at": "2026-04-01T13:00:00Z",
-                    "message": "Confirm whether the state filing is due Wednesday.",
-                }
-            ],
-            week_label="Week of 3/30/2026",
-        )
+        with patch("common.telegram._local_today", return_value=date(2026, 3, 26)):
+            rendered = format_due_next_week(
+                [
+                    {"id": "wki_1", "title": "Sign up for a Vanguard investment account", "kind": "project", "status": "open", "due_date": "2026-03-31"},
+                    {"id": "tsk_2", "title": "Deposit money into Roth IRA account", "kind": "task", "status": "open", "due_date": "2026-03-31"},
+                ],
+                [
+                    {
+                        "id": "rem_1",
+                        "title": "Check New York filing deadline",
+                        "remind_at": "2026-04-01T13:00:00Z",
+                        "message": "Confirm whether the state filing is due Wednesday.",
+                    }
+                ],
+                week_label="Week of 3/30/2026",
+            )
         assert "Due Next Week" in rendered
         assert "Week of 3/30/2026" in rendered
         assert "▣ Sign up for a Vanguard investment account" in rendered
