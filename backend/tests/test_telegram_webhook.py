@@ -1403,6 +1403,77 @@ def test_extract_fallback_recovers_completion_from_recent_visible_task_statement
         ]
 
 
+def test_extract_fallback_recovers_completion_from_hash_ordinal_reference(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 1.0,
+        "needs_confirmation": True,
+        "actions": [{"entity_type": "task", "action": "complete", "target_task_id": "tsk_missing_title"}],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "wki_401k", "title": "Finish registering the 401k account", "status": "open"},
+            {"id": "tsk_workers_comp", "title": "Submit Worker's Compensation form for employee", "status": "open"},
+            {"id": "tsk_doris", "title": "Set up Doris's new workstation", "status": "open"},
+            {"id": "prj_telegram_app", "title": "Telegram Todo app", "status": "open"},
+        ],
+        "recent_task_refs": [
+            {"id": "wki_401k", "title": "Finish registering the 401k account", "status": "open"},
+            {"id": "tsk_workers_comp", "title": "Submit Worker's Compensation form for employee", "status": "open"},
+            {"id": "tsk_doris", "title": "Set up Doris's new workstation", "status": "open"},
+            {"id": "prj_telegram_app", "title": "Telegram Todo app", "status": "open"},
+        ],
+        "displayed_task_refs": [
+            {"ordinal": 1, "id": "wki_401k", "title": "Finish registering the 401k account", "status": "open", "view_name": "today"},
+            {"ordinal": 2, "id": "tsk_workers_comp", "title": "Submit Worker's Compensation form for employee", "status": "open", "view_name": "today"},
+            {"ordinal": 3, "id": "tsk_doris", "title": "Set up Doris's new workstation", "status": "open", "view_name": "today"},
+            {"ordinal": 4, "id": "prj_telegram_app", "title": "Telegram Todo app", "status": "open", "view_name": "today"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock
+    ) as create_draft, patch(
+        "api.main._apply_capture", new_callable=AsyncMock
+    ) as apply_capture, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    ) as extract_fallback:
+        apply_capture.return_value = ("inb_done", AppliedChanges(tasks_completed=1))
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update("#4 is done."),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        extract_fallback.assert_awaited_once()
+        critique_actions.assert_not_awaited()
+        create_draft.assert_not_awaited()
+        send_preview.assert_not_awaited()
+        apply_capture.assert_awaited_once()
+        extraction = apply_capture.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Telegram Todo app",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "prj_telegram_app",
+            }
+        ]
+
+
 def test_extract_fallback_recovers_same_day_due_alignment_from_recent_reference(app_no_db, mock_send):
     planned = {
         "intent": "action",

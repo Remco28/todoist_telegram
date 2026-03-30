@@ -680,6 +680,7 @@ def run_extract_displayed_ordinal_task(
     rows = grounding.get("displayed_task_refs")
     if not isinstance(rows, list) or not rows:
         return None
+    raw_message = str(message or "")
     normalized = helpers["_normalize_query_text"](message)
     if not normalized:
         return None
@@ -721,6 +722,10 @@ def run_extract_displayed_ordinal_task(
         if re.search(rf"\b{re.escape(token)}\b", normalized):
             ordinal = value
             break
+    if ordinal is None:
+        match = re.search(r"(?:^|\s)#\s*(\d{1,2})\b", raw_message)
+        if match:
+            ordinal = int(match.group(1))
     if ordinal is None:
         match = re.search(r"\bitem\s+(\d{1,2})\b", normalized)
         if match:

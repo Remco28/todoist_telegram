@@ -29,12 +29,13 @@ This file is the short handoff summary for the latest meaningful project state.
 - Draft reminder previews now read like human instructions (`Remind me today at 7:00 PM ...`) and the proposal/apply headers are slimmer (`Review changes` / `Done`).
 - Planner hierarchy behavior was tightened so deferred parents and unscheduled subtasks behave more sensibly.
 - Telegram applied-change acknowledgements now support `Show more` and `Show subtasks`.
+- Displayed Telegram ordinal follow-ups now recognize `#<n>` forms like `#4 is done.` against the current `/today` list.
 - Maintenance API idempotency storage now JSON-encodes route responses, which fixes `/app` status changes that committed successfully but returned `Internal Server Error`.
 - Retired `/plan`, `/focus`, and `/ask` command behavior was removed from the live Telegram command path.
 - Completed historical specs were archived so `comms/tasks/` only contains the active rebuild spec.
 
 ## Current Operational Reality
-- Full backend test suite is green at `223 passed, 1 skipped`.
+- Full backend test suite is green at `224 passed, 1 skipped`.
 - Redeploy API for Telegram/runtime-only changes.
 - Redeploy worker only when background reminder/session summary behavior changes.
 
