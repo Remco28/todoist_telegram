@@ -500,6 +500,33 @@ def run_sanitize_targeted_task_actions(
 
         target = row_by_id.get(target_id.strip())
         if not target:
+            candidate_seed = " ".join(
+                part
+                for part in (message, task.get("title"), task.get("notes"))
+                if isinstance(part, str) and part.strip()
+            )
+            best_candidate = run_best_task_reference_candidate(
+                candidate_seed,
+                grounding,
+                open_only=True,
+                helpers=helpers,
+            )
+            if best_candidate and best_candidate.get("id") in row_by_id:
+                normalized = dict(task)
+                normalized["target_task_id"] = best_candidate["id"]
+                normalized["title"] = best_candidate["title"]
+                target = row_by_id[best_candidate["id"]]
+                task = normalized
+                target_id = best_candidate["id"]
+            else:
+                normalized = dict(task)
+                normalized.pop("target_task_id", None)
+                if normalized.get("action") in {"update", "noop"}:
+                    normalized["action"] = "create"
+                sanitized.append(normalized)
+                continue
+
+        if not target:
             normalized = dict(task)
             normalized.pop("target_task_id", None)
             if normalized.get("action") in {"update", "noop"}:

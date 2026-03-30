@@ -15,6 +15,7 @@ This file is the short handoff summary for the latest meaningful project state.
 - Writes are versioned and undoable through action batches
 
 ## Recent Important Changes
+- Planner task-id typos are now repaired against grounded task titles before the critic runs. That keeps obvious title/ID mismatches like a one-character `target_task_id` typo from turning into bogus clarification prompts when the intended task is already unambiguous in recent or displayed context.
 - Telegram query routing now has a first-class overdue path instead of shoving overdue wording into `due_today` or generic query answers. There is a deterministic `overdue` view for explicit overdue/past-due questions, and the deterministic `due_today` view can now include overdue tasks/reminders when the user explicitly asks for both in one message.
 - Task reference resolution now accepts a single strong grounding-only overlap when there is no competing task candidate. This tightens the mixed query+action path for turns like “Do I have any overdue tasks? Also, make the 401k registration high priority.” where the action clause only has one distinctive overlap term (`401k`) and the planner/extractor may still come back empty.
 - Telegram now does a bounded second model extraction for clearly multi-line or 3+ segment action messages when planner actions undercount the user's requested changes, and it also does a clause-wise fallback recovery when both planner and extract come back empty for a multi-clause message. That improves multi-action follow-ups like “move wash car to next week” + “delete the Telegram Todo app task” without reverting to heuristic-first intent routing. Delete/archive follow-ups also now recover cleanly from empty extraction, and stale `goal/problem -> create project` planner conversions no longer override archive intent for project-shaped work items.
@@ -33,7 +34,7 @@ This file is the short handoff summary for the latest meaningful project state.
 - Completed historical specs were archived so `comms/tasks/` only contains the active rebuild spec.
 
 ## Current Operational Reality
-- Full backend test suite is green at `222 passed, 1 skipped`.
+- Full backend test suite is green at `223 passed, 1 skipped`.
 - Redeploy API for Telegram/runtime-only changes.
 - Redeploy worker only when background reminder/session summary behavior changes.
 

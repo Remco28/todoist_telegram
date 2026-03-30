@@ -518,6 +518,7 @@ async def run_handle_telegram_draft_flow(
         and len(actions) > 0
     )
     used_extract_fallback = False
+    planner_actions_repaired_locally = False
     if planner_actions_valid:
         extraction = helpers["_actions_to_extraction"](actions)
         if not helpers["_has_actionable_entities"](extraction):
@@ -535,6 +536,25 @@ async def run_handle_telegram_draft_flow(
             await db.commit()
             extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
         else:
+            repaired_extraction = helpers["_sanitize_completion_extraction"](extraction, grounding)
+            repaired_extraction = helpers["_sanitize_targeted_task_actions"](text, repaired_extraction, grounding)
+            repaired_extraction = helpers["_sanitize_targeted_reminder_actions"](text, repaired_extraction, grounding)
+            repaired_extraction = helpers["_apply_displayed_task_reference_extraction"](repaired_extraction, grounding)
+            repaired_extraction = helpers["_resolve_relative_due_date_overrides"](text, repaired_extraction)
+            if repaired_extraction != extraction and helpers["_has_actionable_entities"](repaired_extraction):
+                planner_actions_repaired_locally = True
+                extraction = repaired_extraction
+                db.add(
+                    helpers["EventLog"](
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="action_extract_fallback_used",
+                        payload_json={"chat_id": chat_id, "reason": "planner_actions_repaired_locally"},
+                        created_at=helpers["utc_now"](),
+                    )
+                )
+                await db.commit()
             requested_change_count = helpers["_estimated_requested_change_count"](text)
             extraction_mutation_count = helpers["_extraction_mutation_count"](extraction)
             if requested_change_count >= 2 and extraction_mutation_count < requested_change_count:
@@ -572,12 +592,12 @@ async def run_handle_telegram_draft_flow(
         await db.commit()
         extraction = await helpers["adapter"].extract_structured_updates(text, grounding=grounding)
 
-    if used_extract_fallback:
+    if used_extract_fallback or planner_actions_repaired_locally:
         critic = {
             "approved": True,
             "issues": [],
             "skipped": True,
-            "reason": "extract_fallback",
+            "reason": "extract_fallback" if used_extract_fallback else "planner_repaired_locally",
         }
     else:
         critic = await helpers["adapter"].critique_actions(

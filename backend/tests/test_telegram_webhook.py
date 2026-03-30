@@ -691,6 +691,106 @@ def test_non_command_bulk_done_without_actionable_plan_requests_clarification(ap
         ]
 
 
+def test_planner_target_id_typo_is_repaired_before_critic(app_no_db, mock_send, mock_extract):
+    mock_extract.interpret_telegram_turn.return_value = {
+        "speech_act": "action",
+        "confidence": 0.96,
+    }
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.89,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "complete",
+                "status": "done",
+                "title": "Pack for tournament",
+                "target_task_id": "tsk_cc1dea3d5b35",
+            },
+            {
+                "entity_type": "task",
+                "action": "complete",
+                "status": "done",
+                "title": "Web apps optimization checklist for Hetzner server",
+                "target_task_id": "prj_webapps",
+            },
+        ],
+    }
+    message = "I finished packing, remove that.\n\nThe webapps are optimized for Hetzner, that's done too."
+    grounding = {
+        "tasks": [
+            {"id": "tsk_cc1dea3d8b35", "title": "Pack for tournament", "status": "open"},
+            {"id": "prj_webapps", "title": "Web apps optimization checklist for Hetzner server", "status": "open", "kind": "project"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_cc1dea3d8b35", "title": "Pack for tournament", "status": "open"},
+            {"id": "prj_webapps", "title": "Web apps optimization checklist for Hetzner server", "status": "open", "kind": "project"},
+        ],
+        "displayed_task_refs": [],
+        "current_date_local": "2026-03-30",
+        "timezone": "America/New_York",
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
+    ) as create_draft, patch(
+        "api.main._apply_capture",
+        new_callable=AsyncMock,
+        return_value=("inb_1", {"items": []}),
+    ) as apply_capture, patch(
+        "api.main._send_capture_ack", new_callable=AsyncMock
+    ) as send_ack, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.adapter.critique_actions",
+        new_callable=AsyncMock,
+        return_value={
+            "approved": False,
+            "issues": [
+                "Incorrect task ID for 'Pack for tournament': proposed 'tsk_cc1dea3d5b35' but actual ID in context is 'tsk_cc1dea3d8b35'"
+            ],
+        },
+    ) as critique_actions, patch(
+        "api.main.adapter.extract_structured_updates",
+        new_callable=AsyncMock,
+        return_value={"tasks": [], "goals": [], "problems": [], "links": [], "reminders": []},
+    ) as extract_fallback:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(message), headers=_headers())
+        assert resp.status_code == 200
+        critique_actions.assert_not_awaited()
+        extract_fallback.assert_not_awaited()
+        assert create_draft.await_count + apply_capture.await_count == 1
+        extraction = (
+            create_draft.await_args.kwargs["extraction"]
+            if create_draft.await_count
+            else apply_capture.await_args.kwargs["extraction"]
+        )
+        assert extraction["tasks"] == [
+            {
+                "title": "Pack for tournament",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "tsk_cc1dea3d8b35",
+            },
+            {
+                "title": "Web apps optimization checklist for Hetzner server",
+                "action": "complete",
+                "status": "done",
+                "target_task_id": "prj_webapps",
+            },
+        ]
+        if create_draft.await_count:
+            send_preview.assert_awaited_once()
+            send_ack.assert_not_awaited()
+        else:
+            send_ack.assert_awaited_once()
+
+
 def test_non_command_reference_completion_without_actionable_plan_requests_clarification(app_no_db, mock_send):
     planned = {
         "intent": "action",
