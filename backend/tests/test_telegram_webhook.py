@@ -427,6 +427,73 @@ def test_natural_language_open_tasks_query_uses_deterministic_view(app_no_db, mo
         build_grounding.assert_not_awaited()
 
 
+def test_mixed_query_and_action_message_answers_query_then_stages_action(app_no_db, mock_send, mock_extract):
+    full_message = "Do I have any overdue tasks?\n\nAlso, make the 401k registration high priority."
+
+    async def _interpret(message, context=None):
+        if message == full_message:
+            return {"speech_act": "unknown", "confidence": 0.4}
+        if "overdue tasks" in message:
+            return {"speech_act": "query", "confidence": 0.95}
+        if "401k registration" in message:
+            return {"speech_act": "action", "confidence": 0.95}
+        return {"speech_act": "unknown", "confidence": 0.0}
+
+    mock_extract.interpret_telegram_turn.side_effect = _interpret
+    mock_extract.plan_actions.return_value = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.92,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "update",
+                "title": "Finish registering the 401k account",
+                "target_task_id": "wki_401k",
+                "priority": 1,
+            }
+        ],
+    }
+    grounding = {
+        "tasks": [
+            {"id": "wki_401k", "title": "Finish registering the 401k account", "status": "open", "kind": "project"},
+        ],
+        "recent_task_refs": [
+            {"id": "wki_401k", "title": "Finish registering the 401k account", "status": "open", "kind": "project"},
+        ],
+    }
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._remember_query_surface_context", new_callable=AsyncMock
+    ) as remember_query, patch(
+        "api.main.query_ask", new_callable=AsyncMock, return_value=QueryResponseV1(answer="You have 1 overdue task.", confidence=0.9)
+    ) as query_ask, patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=_fake_draft()
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update(full_message), headers=_headers())
+        assert resp.status_code == 200
+        query_ask.assert_awaited_once()
+        create_draft.assert_awaited_once()
+        remember_query.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Finish registering the 401k account",
+                "action": "update",
+                "target_task_id": "wki_401k",
+                "priority": 1,
+            }
+        ]
+        send_preview.assert_awaited_once()
+        assert "You have 1 overdue task." in mock_send.await_args_list[0].args[1]
+
+
 def test_non_command_text_low_confidence_requests_clarification(app_no_db, mock_extract, mock_send):
     mock_extract.extract_structured_updates.return_value = {
         "tasks": [{"title": "Task A"}],

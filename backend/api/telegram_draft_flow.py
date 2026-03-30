@@ -3,6 +3,31 @@ from datetime import timedelta
 from typing import Any, Dict, Optional
 
 
+def _split_mixed_turn_clauses(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    if "\n" in text:
+        raw_parts = [part.strip() for part in text.splitlines() if part.strip()]
+    else:
+        import re
+
+        raw_parts = [
+            part.strip()
+            for part in re.split(
+                r"(?<=[.!?])\s+(?=(?:also|and also|then|next|plus|separately)\b)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if part.strip()
+        ]
+    clauses: list[str] = []
+    for part in raw_parts:
+        if len(part) < 4:
+            continue
+        clauses.append(part)
+    return clauses
+
+
 def _looks_like_structured_capture_message(text: str) -> bool:
     if not isinstance(text, str):
         return False
@@ -75,6 +100,117 @@ async def run_handle_telegram_draft_flow(
         )
     )
     await db.commit()
+
+    if not open_draft and speech_act in {"query", "action", "unknown"}:
+        mixed_clauses = _split_mixed_turn_clauses(text)
+        if 2 <= len(mixed_clauses) <= 3:
+            clause_turns = []
+            for clause in mixed_clauses:
+                clause_turn = await helpers["adapter"].interpret_telegram_turn(
+                    clause,
+                    context={
+                        "chat_id": chat_id,
+                        "has_open_draft": False,
+                        "has_pending_clarification": False,
+                        "session_state": session_state,
+                    },
+                )
+                clause_turns.append((clause, clause_turn))
+            query_clauses = [
+                (clause, clause_turn)
+                for clause, clause_turn in clause_turns
+                if isinstance(clause_turn, dict) and clause_turn.get("speech_act") == "query"
+            ]
+            action_clauses = [
+                (clause, clause_turn)
+                for clause, clause_turn in clause_turns
+                if isinstance(clause_turn, dict) and clause_turn.get("speech_act") == "action"
+            ]
+            if (
+                len(query_clauses) == 1
+                and len(action_clauses) >= 1
+                and len(query_clauses) + len(action_clauses) == len(clause_turns)
+            ):
+                db.add(
+                    helpers["EventLog"](
+                        id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=user_id,
+                        event_type="telegram_turn_mixed_split",
+                        payload_json={
+                            "chat_id": chat_id,
+                            "query_clauses": len(query_clauses),
+                            "action_clauses": len(action_clauses),
+                        },
+                        created_at=helpers["utc_now"](),
+                    )
+                )
+                await db.commit()
+
+                query_text, query_turn = query_clauses[0]
+                query_view = query_turn.get("view_name") if isinstance(query_turn, dict) else None
+                if query_view in {"today", "focus"}:
+                    payload, served_from_cache = await helpers["_load_today_plan_payload"](db, user_id, chat_id, require_fresh=True)
+                    await helpers["_send_today_plan_view"](
+                        db,
+                        user_id,
+                        chat_id,
+                        payload,
+                        served_from_cache=served_from_cache,
+                        view_name=query_view,
+                    )
+                elif query_view == "due_today":
+                    await helpers["_send_due_today_view"](db, user_id, chat_id)
+                elif query_view == "due_next_week":
+                    await helpers["_send_due_next_week_view"](db, user_id, chat_id)
+                elif query_view == "open_tasks":
+                    await helpers["_send_open_task_view"](db, user_id, chat_id)
+                elif query_view == "urgent":
+                    await helpers["_send_urgent_task_view"](db, user_id, chat_id)
+                else:
+                    query_grounding = await helpers["_build_extraction_grounding"](
+                        db=db,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message=query_text,
+                    )
+                    query_grounding["session_state"] = session_state
+                    await helpers["_update_session_state"](
+                        db=db,
+                        session=session,
+                        current_mode="query",
+                        active_entity_refs=helpers["_active_entity_refs_from_grounding"](query_grounding),
+                        pending_draft_id=None,
+                        pending_clarification=None,
+                    )
+                    response = await helpers["query_ask"](
+                        helpers["QueryAskRequest"](chat_id=chat_id, query=query_text),
+                        user_id=user_id,
+                        db=db,
+                    )
+                    sent = await helpers["send_message"](
+                        chat_id,
+                        helpers["format_query_answer"](response.answer, response.follow_up_question),
+                    )
+                    if isinstance(sent, dict) and sent.get("ok") is True:
+                        await helpers["_remember_query_surface_context"](
+                            db,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            response=response,
+                            grounding=query_grounding,
+                        )
+
+                text = "\n\n".join(clause for clause, _ in action_clauses)
+                speech_act = "action"
+                requested_view = None
+                draft_action = None
+                draft_edit_text = None
+                turn_confidence = max(
+                    float((clause_turn or {}).get("confidence") or 0.0)
+                    for _, clause_turn in action_clauses
+                    if isinstance(clause_turn, dict)
+                )
 
     if speech_act == "unknown":
         await helpers["send_message"](chat_id, "I could not interpret that confidently. Please rephrase it.")
