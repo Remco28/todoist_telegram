@@ -1334,6 +1334,71 @@ def test_extract_fallback_recovers_due_date_update_from_displayed_ordinal_refere
         ]
 
 
+def test_next_weekday_phrase_overrides_incorrect_planner_due_date(app_no_db, mock_send):
+    planned = {
+        "intent": "action",
+        "scope": "single",
+        "confidence": 0.99,
+        "needs_confirmation": True,
+        "actions": [
+            {
+                "entity_type": "task",
+                "action": "update",
+                "title": "Wash my car",
+                "target_task_id": "tsk_wash",
+                "due_date": "2026-03-31",
+            }
+        ],
+    }
+    fake_draft = _fake_draft(
+        source_message='Move "wash my car" to next Tuesday.',
+        proposal_json={"tasks": [], "goals": [], "problems": [], "links": []},
+    )
+    grounding = {
+        "tasks": [
+            {"id": "tsk_wash", "title": "Wash my car", "status": "open", "due_date": "2026-03-26"},
+        ],
+        "recent_task_refs": [
+            {"id": "tsk_wash", "title": "Wash my car", "status": "open", "due_date": "2026-03-26"},
+        ],
+        "displayed_task_refs": [],
+    }
+    with patch("api.main._local_today", return_value=date(2026, 3, 30)), patch(
+        "api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"
+    ), patch(
+        "api.main._create_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ) as create_draft, patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
+    ), patch(
+        "api.main.adapter.plan_actions", new_callable=AsyncMock, return_value=planned
+    ), patch(
+        "api.main.adapter.critique_actions", new_callable=AsyncMock
+    ) as critique_actions:
+        resp = _post(
+            app_no_db,
+            WEBHOOK_URL,
+            json=_tg_update('Move "wash my car" to next Tuesday.'),
+            headers=_headers(),
+        )
+        assert resp.status_code == 200
+        critique_actions.assert_not_awaited()
+        create_draft.assert_awaited_once()
+        send_preview.assert_awaited_once()
+        extraction = create_draft.await_args.kwargs["extraction"]
+        assert extraction["tasks"] == [
+            {
+                "title": "Wash my car",
+                "action": "update",
+                "target_task_id": "tsk_wash",
+                "due_date": "2026-04-07",
+            }
+        ]
+
+
 def test_extract_fallback_recovers_completion_from_recent_visible_task_statement(app_no_db, mock_send):
     planned = {
         "intent": "action",

@@ -767,14 +767,32 @@ def run_extract_relative_due_date(message: str, *, helpers: Dict[str, Any]) -> O
         "sunday": 6,
     }
     for name, weekday in weekday_map.items():
-        if re.search(rf"\b(?:next\s+)?{name}\b", normalized):
-            if not re.search(rf"\b(?:next|this|on|by|for)\s+{name}\b", normalized):
+        if re.search(rf"\bnext\s+{name}\b", normalized):
+            days_until_next_week_start = 7 - today.weekday()
+            delta_days = days_until_next_week_start + weekday
+            return (today + timedelta(days=delta_days)).isoformat()
+        if re.search(rf"\b{name}\b", normalized):
+            if not re.search(rf"\b(?:this|on|by|for)\s+{name}\b", normalized):
                 continue
             delta_days = (weekday - today.weekday()) % 7
             if delta_days == 0:
                 delta_days = 7
             return (today + timedelta(days=delta_days)).isoformat()
     return None
+
+
+def run_has_strict_relative_due_override(message: str, *, helpers: Dict[str, Any]) -> bool:
+    normalized = helpers["_normalize_query_text"](message)
+    if not normalized:
+        return False
+    if re.search(r"\bnext week\b", normalized):
+        return True
+    return bool(
+        re.search(
+            r"\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+            normalized,
+        )
+    )
 
 
 def run_resolve_relative_due_date_overrides(
@@ -788,6 +806,7 @@ def run_resolve_relative_due_date_overrides(
     inferred_due_date = run_extract_relative_due_date(message, helpers=helpers)
     if not inferred_due_date:
         return extraction
+    force_due_override = run_has_strict_relative_due_override(message, helpers=helpers)
     raw_tasks = extraction.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return extraction
@@ -801,7 +820,7 @@ def run_resolve_relative_due_date_overrides(
             continue
         normalized = dict(task)
         action = str(normalized.get("action") or "").lower()
-        if action in {"create", "update"} and not normalized.get("due_date"):
+        if action in {"create", "update"} and (force_due_override or not normalized.get("due_date")):
             normalized["due_date"] = inferred_due_date
             updated = True
         normalized_tasks.append(normalized)
