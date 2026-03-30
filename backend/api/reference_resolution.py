@@ -183,6 +183,8 @@ def run_best_task_reference_candidate(
         return top
     if top["score"] >= 6 and (top["score"] - runner_up_score) >= 2:
         return top
+    if top["score"] >= 5 and len(ranked) == 1:
+        return top
     return None
 
 
