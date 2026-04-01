@@ -34,6 +34,7 @@ This file is the short handoff summary for the latest meaningful project state.
 - Reminder schedule clarification replies now preserve the pending reminder draft, so replies like `Later today` fill `remind_at` on the original reminder instead of drifting into unrelated task updates.
 - Reminder schedule clarification replies now also support short relative durations like `in 20 minutes` and `in 2 hours` via bounded local parsing, without depending on the model to restate the reminder correctly.
 - The `/app` workbench now has a default `User` mode plus a hidden `Maintenance` mode, collapsible project/task/subtask hierarchy, resilient partial refresh behavior, and a `Load today plan` path that can infer the latest Telegram chat context when no `chat_id` is entered.
+- The `/app` workbench now keeps a dedicated Today panel, adds local search/status/kind/due-window filtering, supports one-click work-item quick actions (`Today`, `Tomorrow`, `+1 week`, `High priority`), and shows undo toasts after edits and status changes so the page feels more like a real primary surface than a brittle admin form.
 - Maintenance API idempotency storage now JSON-encodes route responses, which fixes `/app` status changes that committed successfully but returned `Internal Server Error`.
 - Retired `/plan`, `/focus`, and `/ask` command behavior was removed from the live Telegram command path.
 - Completed historical specs were archived so `comms/tasks/` only contains the active rebuild spec.

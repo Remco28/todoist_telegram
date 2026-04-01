@@ -187,6 +187,22 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       color: var(--muted);
       font-size: 0.9rem;
     }
+    .filter-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 14px;
+      align-items: end;
+    }
+    .filter-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .filter-actions button {
+      white-space: nowrap;
+    }
     .items {
       display: grid;
       gap: 12px;
@@ -280,6 +296,81 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     .tree-children.collapsed {
       display: none;
     }
+    .today-panel {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .today-columns {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+    }
+    .today-column {
+      display: grid;
+      gap: 10px;
+    }
+    .today-column h3 {
+      margin: 0;
+      font-size: 0.96rem;
+      color: var(--muted);
+    }
+    .today-list {
+      display: grid;
+      gap: 10px;
+    }
+    .today-item .item-title {
+      margin-bottom: 4px;
+    }
+    .today-item .actions {
+      margin-top: 10px;
+    }
+    .today-item .notes {
+      margin-bottom: 8px;
+    }
+    .today-panel.is-empty {
+      display: none;
+    }
+    .toast-stack {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 20;
+      display: grid;
+      gap: 10px;
+      width: min(360px, calc(100vw - 24px));
+    }
+    .toast {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 250, 240, 0.98);
+      box-shadow: 0 14px 30px rgba(42, 39, 34, 0.12);
+      padding: 12px 14px;
+      display: grid;
+      gap: 8px;
+    }
+    .toast strong {
+      display: block;
+      margin: 0;
+      font-size: 0.96rem;
+    }
+    .toast .toast-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .toast .toast-actions button {
+      padding: 8px 12px;
+    }
+    .maintenance-summary {
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px dashed var(--line);
+      background: rgba(255,255,255,0.55);
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.4;
+    }
     .maintenance-only {
       display: block;
     }
@@ -312,7 +403,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       .layout {
         grid-template-columns: 1fr;
       }
-      .toolbar, .kpis {
+      .toolbar, .kpis, .filter-grid, .today-columns {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
@@ -320,8 +411,11 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       .shell {
         padding: 18px 14px 42px;
       }
-      .toolbar, .kpis {
+      .toolbar, .kpis, .filter-grid, .today-columns {
         grid-template-columns: 1fr;
+      }
+      .filter-actions {
+        justify-content: stretch;
       }
     }
   </style>
@@ -356,28 +450,12 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
               <input id="token-input" type="password" placeholder="test_token or real bearer token" />
             </label>
             <label>
-              Today plan chat id
-              <input id="chat-id-input" type="text" placeholder="Optional; blank uses your latest Telegram session" />
+              <span class="maintenance-only">Today plan chat id</span>
+              <input class="maintenance-only" id="chat-id-input" type="text" placeholder="Optional; blank uses your latest Telegram session" />
             </label>
-            <label>
-              Work item status filter
-              <select id="status-filter">
-                <option value="">All statuses</option>
-                <option value="open">Open</option>
-                <option value="blocked">Blocked</option>
-                <option value="done">Done</option>
-                <option value="archived">Archived</option>
-              </select>
-            </label>
-            <label>
-              Work item kind filter
-              <select id="kind-filter">
-                <option value="">All kinds</option>
-                <option value="project">Project</option>
-                <option value="task">Task</option>
-                <option value="subtask">Subtask</option>
-              </select>
-            </label>
+            <div class="maintenance-summary user-only">
+              User mode keeps direct task management visible and hides maintenance controls like version history, manual creation, raw dispatch, and advanced Telegram context overrides.
+            </div>
             <button id="refresh-button" type="button">Refresh</button>
           </div>
           <div class="status" id="session-status"></div>
@@ -479,13 +557,73 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
             <button class="secondary" id="load-today-button" type="button">Load today plan</button>
             <button class="secondary" id="load-urgent-button" type="button">Load urgent items</button>
             <button class="secondary" id="load-open-button" type="button">Open work items</button>
-            <button class="warn" id="dispatch-reminders-button" type="button">Dispatch due reminders</button>
+            <button class="warn maintenance-only" id="dispatch-reminders-button" type="button">Dispatch due reminders</button>
+          </div>
+
+          <div class="today-panel is-empty" id="today-panel">
+            <div class="section-head">
+              <div>
+                <h2>Today</h2>
+                <p>Separate from the main list so you can load the live plan without overwriting your broader view.</p>
+              </div>
+              <button class="secondary" id="clear-today-button" type="button">Clear today panel</button>
+            </div>
+            <div class="today-columns">
+              <section class="today-column">
+                <h3>Today plan</h3>
+                <div class="today-list" id="today-plan-items"></div>
+              </section>
+              <section class="today-column">
+                <h3>Due reminders</h3>
+                <div class="today-list" id="today-plan-reminders"></div>
+              </section>
+            </div>
           </div>
 
           <div class="section-head">
             <div>
               <h2>Work Items</h2>
               <p>Fast maintenance layer over the canonical local-first store.</p>
+            </div>
+          </div>
+          <div class="filter-grid">
+            <label>
+              Search
+              <input id="search-filter" type="search" placeholder="Search title or notes" />
+            </label>
+            <label>
+              Status
+              <select id="status-filter">
+                <option value="">All statuses</option>
+                <option value="open">Open</option>
+                <option value="blocked">Blocked</option>
+                <option value="done">Done</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+            <label>
+              Kind
+              <select id="kind-filter">
+                <option value="">All kinds</option>
+                <option value="project">Project</option>
+                <option value="task">Task</option>
+                <option value="subtask">Subtask</option>
+              </select>
+            </label>
+            <label>
+              Due window
+              <select id="due-filter">
+                <option value="">Any date</option>
+                <option value="overdue">Overdue</option>
+                <option value="today">Due today</option>
+                <option value="next7">Next 7 days</option>
+                <option value="next14">Next 14 days</option>
+                <option value="scheduled">Has a due date</option>
+                <option value="unscheduled">No due date</option>
+              </select>
+            </label>
+            <div class="filter-actions">
+              <button class="secondary" id="reset-filters-button" type="button">Reset filters</button>
             </div>
           </div>
           <div class="items" id="work-items"></div>
@@ -523,18 +661,25 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       </main>
     </div>
   </div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
 
   <script>
     const initialToken = __TOKEN_JSON__;
     const tokenInput = document.getElementById("token-input");
     const chatIdInput = document.getElementById("chat-id-input");
+    const searchFilter = document.getElementById("search-filter");
     const statusFilter = document.getElementById("status-filter");
     const kindFilter = document.getElementById("kind-filter");
+    const dueFilter = document.getElementById("due-filter");
     const sessionStatus = document.getElementById("session-status");
     const workItemsEl = document.getElementById("work-items");
     const remindersEl = document.getElementById("reminders");
     const historyEl = document.getElementById("history");
     const versionsEl = document.getElementById("versions");
+    const todayPanel = document.getElementById("today-panel");
+    const todayPlanItemsEl = document.getElementById("today-plan-items");
+    const todayPlanRemindersEl = document.getElementById("today-plan-reminders");
+    const toastStack = document.getElementById("toast-stack");
     const kpiOpen = document.getElementById("kpi-open");
     const kpiUrgent = document.getElementById("kpi-urgent");
     const kpiReminders = document.getElementById("kpi-reminders");
@@ -542,6 +687,8 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     let currentWorkItems = [];
     let currentReminders = [];
     let currentHistory = [];
+    let currentTodayPlan = [];
+    let currentTodayReminders = [];
     const collapsedWorkItemIds = new Set();
     const storedCollapsedIds = window.localStorage.getItem("workbench-collapsed-work-items");
     if (storedCollapsedIds) {
@@ -605,6 +752,113 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
     }
 
+    function parseDate(value) {
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function startOfToday() {
+      const now = new Date();
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    }
+
+    function endOfToday() {
+      const start = startOfToday();
+      return new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999);
+    }
+
+    function addLocalDays(baseDate, days, hour = 12) {
+      return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + days, hour, 0, 0, 0);
+    }
+
+    function dueValue(item) {
+      return item?.due_at || item?.scheduled_for || null;
+    }
+
+    function dueMatchesFilter(item) {
+      const filter = dueFilter.value;
+      if (!filter) return true;
+      const due = parseDate(dueValue(item));
+      if (filter === "unscheduled") return !due;
+      if (filter === "scheduled") return Boolean(due);
+      if (!due) return false;
+      const start = startOfToday();
+      const end = endOfToday();
+      if (filter === "overdue") return due < start;
+      if (filter === "today") return due >= start && due <= end;
+      if (filter === "next7") return due >= start && due <= addLocalDays(start, 7, 23);
+      if (filter === "next14") return due >= start && due <= addLocalDays(start, 14, 23);
+      return true;
+    }
+
+    function filteredWorkItems(items) {
+      const query = searchFilter.value.trim().toLowerCase();
+      return items.filter((item) => {
+        if (statusFilter.value && item.status !== statusFilter.value) return false;
+        if (kindFilter.value && item.kind !== kindFilter.value) return false;
+        if (!dueMatchesFilter(item)) return false;
+        if (!query) return true;
+        return [item.title, item.notes].filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
+      });
+    }
+
+    function applyWorkItemPatchLocally(item, patch) {
+      const next = { ...item, ...patch };
+      if (Object.prototype.hasOwnProperty.call(patch, "due_at")) next.due_at = patch.due_at;
+      if (Object.prototype.hasOwnProperty.call(patch, "priority")) next.priority = patch.priority;
+      if (Object.prototype.hasOwnProperty.call(patch, "parent_id")) next.parent_id = patch.parent_id;
+      return next;
+    }
+
+    function applyReminderPatchLocally(item, patch) {
+      return { ...item, ...patch };
+    }
+
+    function updateWorkItemCollections(itemId, patch) {
+      currentWorkItems = currentWorkItems.map((item) => item.id === itemId ? applyWorkItemPatchLocally(item, patch) : item);
+      currentTodayPlan = currentTodayPlan.map((item) => item.id === itemId ? applyWorkItemPatchLocally(item, patch) : item);
+    }
+
+    function updateReminderCollections(reminderId, patch) {
+      currentReminders = currentReminders.map((item) => item.id === reminderId ? applyReminderPatchLocally(item, patch) : item);
+      currentTodayReminders = currentTodayReminders.map((item) => item.id === reminderId ? applyReminderPatchLocally(item, patch) : item);
+    }
+
+    function showToast(message, options = {}) {
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      const messageHtml = `<strong>${escapeHtml(options.title || "Saved")}</strong><div>${escapeHtml(message)}</div>`;
+      toast.innerHTML = `${messageHtml}<div class="toast-actions"></div>`;
+      const actionsEl = toast.querySelector(".toast-actions");
+      const dismissButton = document.createElement("button");
+      dismissButton.className = "secondary";
+      dismissButton.type = "button";
+      dismissButton.textContent = "Dismiss";
+      dismissButton.addEventListener("click", () => toast.remove());
+      actionsEl.appendChild(dismissButton);
+      if (typeof options.onUndo === "function") {
+        const undoButton = document.createElement("button");
+        undoButton.type = "button";
+        undoButton.textContent = options.undoLabel || "Undo";
+        undoButton.addEventListener("click", async () => {
+          undoButton.disabled = true;
+          try {
+            await options.onUndo();
+            toast.remove();
+          } catch (error) {
+            setStatus(error.message, true);
+            undoButton.disabled = false;
+          }
+        });
+        actionsEl.prepend(undoButton);
+      }
+      toastStack.prepend(toast);
+      window.setTimeout(() => {
+        if (toast.isConnected) toast.remove();
+      }, options.timeoutMs || 7000);
+    }
+
     function escapeHtml(value) {
       return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
@@ -655,16 +909,19 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       kpiReminders.textContent = reminders.filter((item) => item.status === "pending").length;
     }
 
-    function renderWorkItems(items) {
-      currentWorkItems = Array.isArray(items) ? items.slice() : [];
-      if (!currentWorkItems.length) {
+    function renderWorkItems(items = currentWorkItems) {
+      if (Array.isArray(items)) {
+        currentWorkItems = items.slice();
+      }
+      const visibleItems = filteredWorkItems(currentWorkItems);
+      if (!visibleItems.length) {
         workItemsEl.innerHTML = '<div class="empty">No work items matched the current filters.</div>';
         updateKpis(currentWorkItems, currentReminders);
         return;
       }
-      const byId = new Map(currentWorkItems.map((item) => [item.id, item]));
+      const byId = new Map(visibleItems.map((item) => [item.id, item]));
       const childrenByParent = new Map();
-      currentWorkItems.forEach((item) => {
+      visibleItems.forEach((item) => {
         const key = item.parent_id && byId.has(item.parent_id) ? item.parent_id : "__root__";
         if (!childrenByParent.has(key)) childrenByParent.set(key, []);
         childrenByParent.get(key).push(item);
@@ -684,10 +941,10 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         const parentTitle = item.parent_id ? byId.get(item.parent_id)?.title : null;
         const meta = [
           currentMode === "maintenance" ? item.kind : null,
-          item.status,
+          item.status !== "open" ? item.status : null,
           item.priority ? `p${item.priority}` : null,
           currentMode === "maintenance" && parentTitle ? `under ${parentTitle}` : null,
-          item.due_at ? `due ${fmtDate(item.due_at)}` : null,
+          dueValue(item) ? `due ${fmtDate(dueValue(item))}` : null,
         ].filter(Boolean).map((value) => `<span class="pill">${escapeHtml(value)}</span>`).join("");
         const notes = item.notes ? `<p class="notes">${escapeHtml(item.notes)}</p>` : "";
         const showChildren = children.length > 0 && !collapsedWorkItemIds.has(item.id);
@@ -697,6 +954,12 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         const versionsButton = currentMode === "maintenance"
           ? `<button class="secondary" type="button" data-item-versions="${item.id}">Versions</button>`
           : "";
+        const statusButton = item.status === "done"
+          ? `<button class="secondary" type="button" data-item-id="${item.id}" data-status="open">Reopen</button>`
+          : `<button class="warn" type="button" data-item-id="${item.id}" data-status="done">Done</button>`;
+        const priorityButton = item.priority === 1
+          ? `<button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="normal-priority">Normal priority</button>`
+          : `<button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="high-priority">High priority</button>`;
         return `
           <article class="item">
             <div class="tree-head">
@@ -709,10 +972,13 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
             ${notes}
             <div class="actions">
               <button class="secondary" type="button" data-item-edit="${item.id}">Edit</button>
-              <button class="secondary" type="button" data-item-id="${item.id}" data-status="open">Open</button>
-              <button class="secondary" type="button" data-item-id="${item.id}" data-status="blocked">Blocked</button>
-              <button class="warn" type="button" data-item-id="${item.id}" data-status="done">Done</button>
-              <button class="danger" type="button" data-item-id="${item.id}" data-status="archived">Archive</button>
+              ${statusButton}
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="today">Today</button>
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="tomorrow">Tomorrow</button>
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="next-week">+1 week</button>
+              ${priorityButton}
+              <button class="secondary maintenance-only" type="button" data-item-id="${item.id}" data-status="blocked">Blocked</button>
+              <button class="danger maintenance-only" type="button" data-item-id="${item.id}" data-status="archived">Archive</button>
               ${versionsButton}
             </div>
             ${children.length ? `<div class="tree-children ${showChildren ? "" : "collapsed"}">${children.map(renderWorkItemNode).join("")}</div>` : ""}
@@ -727,6 +993,57 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         </section>
       `).join("");
       updateKpis(currentWorkItems, currentReminders);
+    }
+
+    function renderTodayPanel() {
+      if (!currentTodayPlan.length && !currentTodayReminders.length) {
+        todayPanel.classList.add("is-empty");
+        todayPlanItemsEl.innerHTML = '<div class="empty">Load the live plan when you want a Telegram-grounded view of today.</div>';
+        todayPlanRemindersEl.innerHTML = '<div class="empty">No due reminders loaded into the today panel.</div>';
+        return;
+      }
+      todayPanel.classList.remove("is-empty");
+      if (!currentTodayPlan.length) {
+        todayPlanItemsEl.innerHTML = '<div class="empty">No work items in the loaded today plan.</div>';
+      } else {
+        todayPlanItemsEl.innerHTML = currentTodayPlan.map((item) => `
+          <article class="item today-item">
+            <h3 class="item-title">${escapeHtml(item.title)}</h3>
+            <div class="meta">
+              ${item.kind ? `<span class="pill">${escapeHtml(item.kind)}</span>` : ""}
+              ${item.parent_title ? `<span class="pill">under ${escapeHtml(item.parent_title)}</span>` : ""}
+              ${dueValue(item) ? `<span class="pill">due ${escapeHtml(fmtDate(dueValue(item)) || dueValue(item))}</span>` : ""}
+            </div>
+            ${item.notes ? `<p class="notes">${escapeHtml(item.notes)}</p>` : ""}
+            <div class="actions">
+              <button class="warn" type="button" data-item-id="${item.id}" data-status="done">Done</button>
+              <button class="secondary" type="button" data-item-edit="${item.id}">Edit</button>
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="today">Today</button>
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="tomorrow">Tomorrow</button>
+              <button class="secondary" type="button" data-item-quick="${item.id}" data-quick-action="next-week">+1 week</button>
+            </div>
+          </article>
+        `).join("");
+      }
+      if (!currentTodayReminders.length) {
+        todayPlanRemindersEl.innerHTML = '<div class="empty">No due reminders in the loaded today panel.</div>';
+      } else {
+        todayPlanRemindersEl.innerHTML = currentTodayReminders.map((item) => `
+          <article class="item today-item">
+            <h3 class="item-title">${escapeHtml(item.title)}</h3>
+            <div class="meta">
+              <span class="pill">${escapeHtml(item.status || "pending")}</span>
+              <span class="pill">${escapeHtml(fmtDate(item.remind_at) || item.remind_at)}</span>
+            </div>
+            ${item.message ? `<p class="notes">${escapeHtml(item.message)}</p>` : ""}
+            <div class="actions">
+              <button class="warn" type="button" data-reminder-id="${item.id}" data-reminder-status="completed">Completed</button>
+              <button class="secondary" type="button" data-reminder-snooze="${item.id}" data-snooze-preset="1h">+1h</button>
+              <button class="secondary" type="button" data-reminder-snooze="${item.id}" data-snooze-preset="tomorrow_morning">Tomorrow AM</button>
+            </div>
+          </article>
+        `).join("");
+      }
     }
 
     function renderReminders(items) {
@@ -806,14 +1123,14 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       `).join("");
     }
 
-    async function loadDashboard() {
-      setStatus("Refreshing workbench...");
-      const params = new URLSearchParams();
-      if (statusFilter.value) params.set("status", statusFilter.value);
-      if (kindFilter.value) params.set("kind", kindFilter.value);
+    async function loadDashboard(options = {}) {
+      if (!options.quiet) {
+        setStatus("Refreshing workbench...");
+      }
+      const params = new URLSearchParams({ limit: "200" });
       const [itemsResult, remindersResult, historyResult] = await Promise.allSettled([
         api(`/v1/work_items?${params.toString()}`),
-        api("/v1/reminders?limit=20"),
+        api("/v1/reminders?limit=50"),
         api("/v1/history/action_batches?limit=12"),
       ]);
       const failures = [];
@@ -837,7 +1154,9 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         setStatus(`Workbench refreshed with partial errors: ${failures.join(" | ")}`, true);
         return;
       }
-      setStatus(`Loaded ${currentWorkItems.length} work items, ${currentReminders.length} reminders, and ${currentHistory.length} recent changes.`);
+      if (!options.quiet) {
+        setStatus(`Loaded ${currentWorkItems.length} work items, ${currentReminders.length} reminders, and ${currentHistory.length} recent changes.`);
+      }
     }
 
     async function loadToday() {
@@ -846,7 +1165,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       if (workbenchChatId()) params.set("chat_id", workbenchChatId());
       const suffix = params.toString() ? `?${params.toString()}` : "";
       const plan = await api(`/v1/plan/get_today${suffix}`);
-      renderWorkItems((plan.today_plan || []).map((item) => ({
+      currentTodayPlan = (plan.today_plan || []).map((item) => ({
         id: item.task_id,
         title: item.title,
         kind: item.kind || "task",
@@ -854,9 +1173,11 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         priority: null,
         parent_id: item.parent_id || null,
         due_at: null,
+        scheduled_for: null,
+        parent_title: item.parent_title || null,
         notes: item.parent_title ? `Under ${item.parent_title}` : "",
-      })));
-      renderReminders((plan.due_reminders || []).map((item) => ({
+      }));
+      currentTodayReminders = (plan.due_reminders || []).map((item) => ({
         id: item.reminder_id,
         title: item.title,
         status: "pending",
@@ -864,7 +1185,8 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         remind_at: item.remind_at,
         message: item.message || "",
         work_item_id: item.work_item_id || null,
-      })));
+      }));
+      renderTodayPanel();
       setStatus(`Loaded today plan with ${(plan.today_plan || []).length} items.`);
     }
 
@@ -938,7 +1260,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     }
 
     async function editWorkItem(itemId) {
-      let item = currentWorkItems.find((row) => row.id === itemId);
+      let item = currentWorkItems.find((row) => row.id === itemId) || currentTodayPlan.find((row) => row.id === itemId);
       if (!item || item.notes === undefined) {
         const items = await api("/v1/work_items?limit=200");
         item = items.find((row) => row.id === itemId);
@@ -966,25 +1288,28 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         throw new Error("Priority must be 1-4 or blank.");
       }
 
-      await api(`/v1/work_items/${itemId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `ui-work-item-edit-${itemId}-${Date.now()}`,
+      const patch = {
+        title: title.trim(),
+        notes: notes.trim() || null,
+        priority: normalizedPriority,
+        due_at: isoFromLocal(due.trim()),
+        parent_id: parentId.trim() || null,
+      };
+      await patchWorkItem(itemId, patch, {
+        successMessage: `Saved changes to ${patch.title || item.title}.`,
+        undoPatch: {
+          title: item.title,
+          notes: item.notes || null,
+          priority: item.priority || null,
+          due_at: item.due_at || null,
+          parent_id: item.parent_id || null,
         },
-        body: JSON.stringify({
-          title: title.trim(),
-          notes: notes.trim() || null,
-          priority: normalizedPriority,
-          due_at: isoFromLocal(due.trim()),
-          parent_id: parentId.trim() || null,
-        }),
+        undoMessage: `Reverted changes to ${item.title}.`,
       });
-      await loadDashboard();
     }
 
     async function editReminder(reminderId) {
-      let reminder = currentReminders.find((row) => row.id === reminderId);
+      let reminder = currentReminders.find((row) => row.id === reminderId) || currentTodayReminders.find((row) => row.id === reminderId);
       if (!reminder) {
         const reminders = await api("/v1/reminders?limit=200");
         reminder = reminders.find((row) => row.id === reminderId);
@@ -1010,68 +1335,178 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       const workItemId = window.prompt("Linked work item id (blank clears)", reminder.work_item_id || "");
       if (workItemId === null) return;
 
-      await api(`/v1/reminders/${reminderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `ui-reminder-edit-${reminderId}-${Date.now()}`,
+      const patch = {
+        title: title.trim(),
+        message: message.trim() || null,
+        remind_at: isoFromLocal(remindAt.trim()),
+        recurrence_rule: recurrence.trim() || null,
+        kind: recurrence.trim() ? "recurring" : "one_off",
+        work_item_id: workItemId.trim() || null,
+      };
+      await patchReminder(reminderId, patch, {
+        successMessage: `Saved changes to reminder ${patch.title || reminder.title}.`,
+        undoPatch: {
+          title: reminder.title,
+          message: reminder.message || null,
+          remind_at: reminder.remind_at || null,
+          recurrence_rule: reminder.recurrence_rule || null,
+          kind: reminder.kind || "one_off",
+          work_item_id: reminder.work_item_id || null,
         },
-        body: JSON.stringify({
-          title: title.trim(),
-          message: message.trim() || null,
-          remind_at: isoFromLocal(remindAt.trim()),
-          recurrence_rule: recurrence.trim() || null,
-          kind: recurrence.trim() ? "recurring" : "one_off",
-          work_item_id: workItemId.trim() || null,
-        }),
+        undoMessage: `Reverted changes to reminder ${reminder.title}.`,
       });
-      await loadDashboard();
     }
 
-    async function updateWorkItemStatus(itemId, nextStatus) {
+    async function patchWorkItem(itemId, patch, options = {}) {
+      const existing = currentWorkItems.find((item) => item.id === itemId) || currentTodayPlan.find((item) => item.id === itemId);
+      if (!existing) {
+        throw new Error("Work item not found.");
+      }
       const previousItems = currentWorkItems.slice();
-      currentWorkItems = currentWorkItems
-        .map((item) => item.id === itemId ? { ...item, status: nextStatus } : item)
-        .filter((item) => !statusFilter.value || item.status === statusFilter.value);
-      renderWorkItems(currentWorkItems);
-      setStatus(`Updating ${itemId}...`);
+      const previousToday = currentTodayPlan.slice();
+      updateWorkItemCollections(itemId, patch);
+      renderWorkItems();
+      renderTodayPanel();
+      setStatus(options.pendingMessage || `Updating ${existing.title || itemId}...`);
       try {
-        await api(`/v1/work_items/${itemId}`, {
+        const updated = await api(`/v1/work_items/${itemId}`, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
             "Idempotency-Key": `ui-work-item-update-${itemId}-${Date.now()}`,
           },
-          body: JSON.stringify({ status: nextStatus }),
+          body: JSON.stringify(patch),
         });
+        updateWorkItemCollections(itemId, updated);
+        renderWorkItems();
+        renderTodayPanel();
+        await loadDashboard({ quiet: true });
+        if (options.successMessage) {
+          setStatus(options.successMessage);
+        }
+        if (options.allowUndo !== false && options.undoPatch) {
+          showToast(options.successMessage || `Updated ${updated.title || existing.title}.`, {
+            onUndo: () => patchWorkItem(itemId, options.undoPatch, {
+              successMessage: options.undoMessage || `Reverted ${updated.title || existing.title}.`,
+              allowUndo: false,
+            }),
+          });
+        }
       } catch (error) {
         currentWorkItems = previousItems;
-        renderWorkItems(currentWorkItems);
+        currentTodayPlan = previousToday;
+        renderWorkItems();
+        renderTodayPanel();
         throw error;
       }
-      await loadDashboard();
     }
 
-    async function updateReminderStatus(reminderId, nextStatus) {
+    async function updateWorkItemStatus(itemId, nextStatus) {
+      const item = currentWorkItems.find((row) => row.id === itemId) || currentTodayPlan.find((row) => row.id === itemId);
+      if (!item || item.status === nextStatus) return;
+      await patchWorkItem(itemId, { status: nextStatus }, {
+        successMessage: `${nextStatus === "done" ? "Marked" : nextStatus === "open" ? "Reopened" : "Updated"} ${item.title}.`,
+        undoPatch: { status: item.status },
+        undoMessage: `Reverted ${item.title} to ${item.status}.`,
+      });
+    }
+
+    async function patchReminder(reminderId, patch, options = {}) {
+      const existing = currentReminders.find((item) => item.id === reminderId) || currentTodayReminders.find((item) => item.id === reminderId);
+      if (!existing) {
+        throw new Error("Reminder not found.");
+      }
       const previousReminders = currentReminders.slice();
-      currentReminders = currentReminders.map((item) => item.id === reminderId ? { ...item, status: nextStatus } : item);
+      const previousTodayReminders = currentTodayReminders.slice();
+      updateReminderCollections(reminderId, patch);
       renderReminders(currentReminders);
-      setStatus(`Updating ${reminderId}...`);
+      renderTodayPanel();
+      setStatus(options.pendingMessage || `Updating ${existing.title || reminderId}...`);
       try {
-        await api(`/v1/reminders/${reminderId}`, {
+        const updated = await api(`/v1/reminders/${reminderId}`, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
             "Idempotency-Key": `ui-reminder-update-${reminderId}-${Date.now()}`,
           },
-          body: JSON.stringify({ status: nextStatus }),
+          body: JSON.stringify(patch),
         });
+        updateReminderCollections(reminderId, updated);
+        renderReminders(currentReminders);
+        renderTodayPanel();
+        await loadDashboard({ quiet: true });
+        if (options.successMessage) {
+          setStatus(options.successMessage);
+        }
+        if (options.allowUndo !== false && options.undoPatch) {
+          showToast(options.successMessage || `Updated reminder ${updated.title || existing.title}.`, {
+            onUndo: () => patchReminder(reminderId, options.undoPatch, {
+              successMessage: options.undoMessage || `Reverted reminder ${updated.title || existing.title}.`,
+              allowUndo: false,
+            }),
+          });
+        }
       } catch (error) {
         currentReminders = previousReminders;
+        currentTodayReminders = previousTodayReminders;
         renderReminders(currentReminders);
+        renderTodayPanel();
         throw error;
       }
-      await loadDashboard();
+    }
+
+    async function updateReminderStatus(reminderId, nextStatus) {
+      const reminder = currentReminders.find((row) => row.id === reminderId) || currentTodayReminders.find((row) => row.id === reminderId);
+      if (!reminder || reminder.status === nextStatus) return;
+      await patchReminder(reminderId, { status: nextStatus }, {
+        successMessage: `${nextStatus === "completed" ? "Completed" : "Updated"} reminder ${reminder.title}.`,
+        undoPatch: { status: reminder.status },
+        undoMessage: `Reverted reminder ${reminder.title}.`,
+      });
+    }
+
+    async function applyQuickAction(itemId, action) {
+      const item = currentWorkItems.find((row) => row.id === itemId) || currentTodayPlan.find((row) => row.id === itemId);
+      if (!item) {
+        throw new Error("Work item not found.");
+      }
+      const today = addLocalDays(startOfToday(), 0);
+      const tomorrow = addLocalDays(startOfToday(), 1);
+      const nextWeek = addLocalDays(startOfToday(), 7);
+      const actions = {
+        "today": {
+          patch: { due_at: today.toISOString() },
+          message: `Scheduled ${item.title} for today.`,
+        },
+        "tomorrow": {
+          patch: { due_at: tomorrow.toISOString() },
+          message: `Scheduled ${item.title} for tomorrow.`,
+        },
+        "next-week": {
+          patch: { due_at: nextWeek.toISOString() },
+          message: `Scheduled ${item.title} for next week.`,
+        },
+        "high-priority": {
+          patch: { priority: 1 },
+          message: `Marked ${item.title} high priority.`,
+        },
+        "normal-priority": {
+          patch: { priority: null },
+          message: `Cleared priority for ${item.title}.`,
+        },
+      };
+      const selected = actions[action];
+      if (!selected) {
+        throw new Error("Unsupported quick action.");
+      }
+      await patchWorkItem(itemId, selected.patch, {
+        successMessage: selected.message,
+        undoPatch: {
+          due_at: Object.prototype.hasOwnProperty.call(selected.patch, "due_at") ? dueValue(item) : undefined,
+          priority: Object.prototype.hasOwnProperty.call(selected.patch, "priority") ? (item.priority || null) : undefined,
+        },
+        undoMessage: `Reverted quick action on ${item.title}.`,
+      });
     }
 
     async function snoozeReminder(reminderId, preset) {
@@ -1083,7 +1518,8 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         },
         body: JSON.stringify({ preset }),
       });
-      await loadDashboard();
+      await loadDashboard({ quiet: true });
+      showToast(`Snoozed reminder using ${preset.replaceAll("_", " ")}.`, { title: "Reminder updated" });
     }
 
     async function undoBatch(batchId) {
@@ -1095,7 +1531,8 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         },
         body: JSON.stringify({}),
       });
-      await loadDashboard();
+      await loadDashboard({ quiet: true });
+      showToast("Reverted the selected action batch.", { title: "Undo complete" });
     }
 
     async function loadWorkItemVersions(itemId) {
@@ -1117,7 +1554,8 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     document.getElementById("load-urgent-button").addEventListener("click", () => loadUrgent().catch((error) => setStatus(error.message, true)));
     document.getElementById("load-open-button").addEventListener("click", () => {
       statusFilter.value = "open";
-      loadDashboard().catch((error) => setStatus(error.message, true));
+      renderWorkItems();
+      setStatus("Showing open work items.");
     });
     document.getElementById("dispatch-reminders-button").addEventListener("click", async () => {
       try {
@@ -1140,8 +1578,25 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     chatIdInput.addEventListener("change", () => {
       window.localStorage.setItem("workbench-chat-id", workbenchChatId());
     });
+    document.getElementById("reset-filters-button").addEventListener("click", () => {
+      searchFilter.value = "";
+      statusFilter.value = "";
+      kindFilter.value = "";
+      dueFilter.value = "";
+      renderWorkItems();
+      setStatus("Reset work item filters.");
+    });
+    document.getElementById("clear-today-button").addEventListener("click", () => {
+      currentTodayPlan = [];
+      currentTodayReminders = [];
+      renderTodayPanel();
+      setStatus("Cleared the today panel.");
+    });
     modeButtons.forEach((button) => {
       button.addEventListener("click", () => setMode(button.dataset.modeToggle));
+    });
+    [searchFilter, statusFilter, kindFilter, dueFilter].forEach((input) => {
+      input.addEventListener(input.tagName === "INPUT" ? "input" : "change", () => renderWorkItems());
     });
 
     workItemsEl.addEventListener("click", (event) => {
@@ -1167,9 +1622,41 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         updateWorkItemStatus(button.dataset.itemId, button.dataset.status).catch((error) => setStatus(error.message, true));
         return;
       }
+      const quickButton = event.target.closest("button[data-item-quick]");
+      if (quickButton) {
+        applyQuickAction(quickButton.dataset.itemQuick, quickButton.dataset.quickAction).catch((error) => setStatus(error.message, true));
+        return;
+      }
       const versionsButton = event.target.closest("button[data-item-versions]");
       if (!versionsButton) return;
       loadWorkItemVersions(versionsButton.dataset.itemVersions).catch((error) => setStatus(error.message, true));
+    });
+
+    todayPanel.addEventListener("click", (event) => {
+      const itemStatusButton = event.target.closest("button[data-item-id]");
+      if (itemStatusButton) {
+        updateWorkItemStatus(itemStatusButton.dataset.itemId, itemStatusButton.dataset.status).catch((error) => setStatus(error.message, true));
+        return;
+      }
+      const itemEditButton = event.target.closest("button[data-item-edit]");
+      if (itemEditButton) {
+        editWorkItem(itemEditButton.dataset.itemEdit).catch((error) => setStatus(error.message, true));
+        return;
+      }
+      const quickButton = event.target.closest("button[data-item-quick]");
+      if (quickButton) {
+        applyQuickAction(quickButton.dataset.itemQuick, quickButton.dataset.quickAction).catch((error) => setStatus(error.message, true));
+        return;
+      }
+      const reminderStatusButton = event.target.closest("button[data-reminder-id]");
+      if (reminderStatusButton) {
+        updateReminderStatus(reminderStatusButton.dataset.reminderId, reminderStatusButton.dataset.reminderStatus).catch((error) => setStatus(error.message, true));
+        return;
+      }
+      const reminderSnoozeButton = event.target.closest("button[data-reminder-snooze]");
+      if (reminderSnoozeButton) {
+        snoozeReminder(reminderSnoozeButton.dataset.reminderSnooze, reminderSnoozeButton.dataset.snoozePreset).catch((error) => setStatus(error.message, true));
+      }
     });
 
     remindersEl.addEventListener("click", (event) => {
@@ -1200,6 +1687,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     });
 
     setMode(currentMode);
+    renderTodayPanel();
     if (bearerToken()) {
       loadDashboard().catch((error) => setStatus(error.message, true));
     }

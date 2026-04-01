@@ -46,10 +46,17 @@ def test_maintenance_workbench_renders_without_auth_header(app_no_db):
     assert "chat-id-input" in body
     assert "data-mode-toggle" in body
     assert "data-item-toggle" in body
+    assert "search-filter" in body
+    assert "due-filter" in body
+    assert "today-panel" in body
+    assert "today-plan-items" in body
+    assert "toast-stack" in body
+    assert "data-item-quick" in body
+    assert "clear-today-button" in body
     assert "data-item-edit" in body
-    assert "ui-work-item-edit-" in body
+    assert "ui-work-item-update-" in body
     assert "data-reminder-edit" in body
-    assert "ui-reminder-edit-" in body
+    assert "ui-reminder-update-" in body
 
 
 def test_maintenance_workbench_embeds_token_for_client_side_api_calls(app_no_db):
