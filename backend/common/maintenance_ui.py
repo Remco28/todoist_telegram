@@ -792,6 +792,25 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       return true;
     }
 
+    function workItemIsActive(item) {
+      return item.status !== "done" && item.status !== "archived";
+    }
+
+    function reminderIsActive(item) {
+      return item.status === "pending" || item.status === "sent";
+    }
+
+    function visibleWorkItemsForMode(items) {
+      if (currentMode === "maintenance") return items;
+      if (statusFilter.value) return items;
+      return items.filter(workItemIsActive);
+    }
+
+    function visibleRemindersForMode(items) {
+      if (currentMode === "maintenance") return items;
+      return items.filter(reminderIsActive);
+    }
+
     function filteredWorkItems(items) {
       const query = searchFilter.value.trim().toLowerCase();
       return items.filter((item) => {
@@ -913,9 +932,9 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       if (Array.isArray(items)) {
         currentWorkItems = items.slice();
       }
-      const visibleItems = filteredWorkItems(currentWorkItems);
+      const visibleItems = filteredWorkItems(visibleWorkItemsForMode(currentWorkItems));
       if (!visibleItems.length) {
-        workItemsEl.innerHTML = '<div class="empty">No work items matched the current filters.</div>';
+        workItemsEl.innerHTML = `<div class="empty">${currentMode === "maintenance" ? "No work items matched the current filters." : "No active work items matched the current filters."}</div>`;
         updateKpis(currentWorkItems, currentReminders);
         return;
       }
@@ -996,17 +1015,19 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     }
 
     function renderTodayPanel() {
-      if (!currentTodayPlan.length && !currentTodayReminders.length) {
+      const visibleTodayPlan = currentMode === "maintenance" ? currentTodayPlan : currentTodayPlan.filter(workItemIsActive);
+      const visibleTodayReminders = currentMode === "maintenance" ? currentTodayReminders : currentTodayReminders.filter(reminderIsActive);
+      if (!visibleTodayPlan.length && !visibleTodayReminders.length) {
         todayPanel.classList.add("is-empty");
         todayPlanItemsEl.innerHTML = '<div class="empty">Load the live plan when you want a Telegram-grounded view of today.</div>';
         todayPlanRemindersEl.innerHTML = '<div class="empty">No due reminders loaded into the today panel.</div>';
         return;
       }
       todayPanel.classList.remove("is-empty");
-      if (!currentTodayPlan.length) {
-        todayPlanItemsEl.innerHTML = '<div class="empty">No work items in the loaded today plan.</div>';
+      if (!visibleTodayPlan.length) {
+        todayPlanItemsEl.innerHTML = `<div class="empty">${currentMode === "maintenance" ? "No work items in the loaded today plan." : "No active work items remain in the loaded today plan."}</div>`;
       } else {
-        todayPlanItemsEl.innerHTML = currentTodayPlan.map((item) => `
+        todayPlanItemsEl.innerHTML = visibleTodayPlan.map((item) => `
           <article class="item today-item">
             <h3 class="item-title">${escapeHtml(item.title)}</h3>
             <div class="meta">
@@ -1025,10 +1046,10 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
           </article>
         `).join("");
       }
-      if (!currentTodayReminders.length) {
-        todayPlanRemindersEl.innerHTML = '<div class="empty">No due reminders in the loaded today panel.</div>';
+      if (!visibleTodayReminders.length) {
+        todayPlanRemindersEl.innerHTML = `<div class="empty">${currentMode === "maintenance" ? "No due reminders in the loaded today panel." : "No active reminders remain in the loaded today panel."}</div>`;
       } else {
-        todayPlanRemindersEl.innerHTML = currentTodayReminders.map((item) => `
+        todayPlanRemindersEl.innerHTML = visibleTodayReminders.map((item) => `
           <article class="item today-item">
             <h3 class="item-title">${escapeHtml(item.title)}</h3>
             <div class="meta">
@@ -1048,13 +1069,14 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
 
     function renderReminders(items) {
       currentReminders = Array.isArray(items) ? items.slice() : [];
-      if (!items.length) {
-        remindersEl.innerHTML = '<div class="empty">No reminders yet.</div>';
+      const visibleReminders = visibleRemindersForMode(currentReminders);
+      if (!visibleReminders.length) {
+        remindersEl.innerHTML = `<div class="empty">${currentMode === "maintenance" ? "No reminders yet." : "No active reminders right now."}</div>`;
         updateKpis(currentWorkItems, currentReminders);
         return;
       }
       const workItemTitleById = new Map(currentWorkItems.map((item) => [item.id, item.title]));
-      remindersEl.innerHTML = items.map((item) => `
+      remindersEl.innerHTML = visibleReminders.map((item) => `
         <article class="item">
           <h3 class="item-title">${escapeHtml(item.title)}</h3>
           <div class="meta">
