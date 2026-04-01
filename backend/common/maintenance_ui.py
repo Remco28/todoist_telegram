@@ -84,6 +84,23 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       font-size: 1.05rem;
       letter-spacing: -0.01em;
     }
+    .mode-toggle {
+      display: inline-flex;
+      gap: 8px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.7);
+    }
+    .mode-toggle button {
+      padding: 8px 12px;
+      background: transparent;
+      color: var(--muted);
+    }
+    .mode-toggle button.active {
+      background: var(--accent);
+      color: #fff;
+    }
     .stack {
       display: grid;
       gap: 12px;
@@ -209,6 +226,69 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       flex-wrap: wrap;
       gap: 8px;
     }
+    .tree-section {
+      display: grid;
+      gap: 10px;
+    }
+    .tree-section + .tree-section {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(215, 207, 190, 0.7);
+    }
+    .tree-section-title {
+      margin: 0;
+      font-size: 0.96rem;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+    .tree-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+    .tree-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .tree-label .item-title {
+      margin: 0;
+    }
+    .tree-toggle {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      font: 700 12px/1.2 var(--mono);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .tree-toggle:hover {
+      transform: none;
+      opacity: 0.82;
+    }
+    .tree-children {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      padding-left: 16px;
+      border-left: 1px solid rgba(215, 207, 190, 0.8);
+    }
+    .tree-children.collapsed {
+      display: none;
+    }
+    .maintenance-only {
+      display: block;
+    }
+    body[data-mode="user"] .maintenance-only {
+      display: none !important;
+    }
+    body[data-mode="maintenance"] .user-only {
+      display: none !important;
+    }
     .status {
       min-height: 24px;
       color: var(--muted);
@@ -265,9 +345,19 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         <section class="panel">
           <h2>Session</h2>
           <div class="stack">
+            <div>
+              <div class="mode-toggle" role="tablist" aria-label="Workbench mode">
+                <button class="secondary" id="mode-user-button" type="button" data-mode-toggle="user">User</button>
+                <button class="secondary" id="mode-maintenance-button" type="button" data-mode-toggle="maintenance">Maintenance</button>
+              </div>
+            </div>
             <label>
               API token
               <input id="token-input" type="password" placeholder="test_token or real bearer token" />
+            </label>
+            <label>
+              Today plan chat id
+              <input id="chat-id-input" type="text" placeholder="Optional; blank uses your latest Telegram session" />
             </label>
             <label>
               Work item status filter
@@ -293,7 +383,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
           <div class="status" id="session-status"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel maintenance-only">
           <h2>Create Work Item</h2>
           <div class="stack">
             <label>
@@ -334,7 +424,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
           </div>
         </section>
 
-        <section class="panel">
+        <section class="panel maintenance-only">
           <h2>Create Reminder</h2>
           <div class="stack">
             <label>
@@ -411,7 +501,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
           <div class="items" id="reminders"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel maintenance-only">
           <div class="section-head">
             <div>
               <h2>Recent Changes</h2>
@@ -421,7 +511,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
           <div class="items" id="history"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel maintenance-only">
           <div class="section-head">
             <div>
               <h2>Version Details</h2>
@@ -437,6 +527,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
   <script>
     const initialToken = __TOKEN_JSON__;
     const tokenInput = document.getElementById("token-input");
+    const chatIdInput = document.getElementById("chat-id-input");
     const statusFilter = document.getElementById("status-filter");
     const kindFilter = document.getElementById("kind-filter");
     const sessionStatus = document.getElementById("session-status");
@@ -447,14 +538,48 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     const kpiOpen = document.getElementById("kpi-open");
     const kpiUrgent = document.getElementById("kpi-urgent");
     const kpiReminders = document.getElementById("kpi-reminders");
+    const modeButtons = Array.from(document.querySelectorAll("button[data-mode-toggle]"));
     let currentWorkItems = [];
     let currentReminders = [];
+    let currentHistory = [];
+    const collapsedWorkItemIds = new Set();
+    const storedCollapsedIds = window.localStorage.getItem("workbench-collapsed-work-items");
+    if (storedCollapsedIds) {
+      try {
+        JSON.parse(storedCollapsedIds).forEach((id) => {
+          if (typeof id === "string" && id) collapsedWorkItemIds.add(id);
+        });
+      } catch (_) {}
+    }
+    let currentMode = window.localStorage.getItem("workbench-mode") || "user";
 
     tokenInput.value = initialToken;
+    chatIdInput.value = window.localStorage.getItem("workbench-chat-id") || "";
     versionsEl.innerHTML = '<div class="empty">Select a work item or reminder to inspect its version history.</div>';
+    document.body.dataset.mode = currentMode;
 
     function bearerToken() {
       return tokenInput.value.trim();
+    }
+
+    function workbenchChatId() {
+      return chatIdInput.value.trim();
+    }
+
+    function persistCollapsedState() {
+      window.localStorage.setItem("workbench-collapsed-work-items", JSON.stringify(Array.from(collapsedWorkItemIds)));
+    }
+
+    function setMode(mode) {
+      currentMode = mode === "maintenance" ? "maintenance" : "user";
+      document.body.dataset.mode = currentMode;
+      window.localStorage.setItem("workbench-mode", currentMode);
+      modeButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.modeToggle === currentMode);
+      });
+      renderWorkItems(currentWorkItems);
+      renderReminders(currentReminders);
+      renderHistory(currentHistory);
     }
 
     function authHeaders(extra = {}) {
@@ -495,73 +620,91 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
         headers: authHeaders(options.headers || {}),
       });
       if (!response.ok) {
-        const detail = await response.text();
+        const contentType = response.headers.get("content-type") || "";
+        let detail = "";
+        if (contentType.includes("application/json")) {
+          try {
+            const body = await response.json();
+            if (Array.isArray(body.detail)) {
+              detail = body.detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+            } else if (typeof body.detail === "string") {
+              detail = body.detail;
+            } else {
+              detail = JSON.stringify(body);
+            }
+          } catch (_) {
+            detail = "";
+          }
+        }
+        if (!detail) {
+          detail = await response.text();
+        }
         throw new Error(detail || `HTTP ${response.status}`);
       }
       const contentType = response.headers.get("content-type") || "";
       return contentType.includes("application/json") ? response.json() : response.text();
     }
 
-    function hierarchyDepth(item, byId) {
-      let depth = 0;
-      let current = item;
-      const seen = new Set();
-      while (current && current.parent_id && byId.has(current.parent_id) && !seen.has(current.parent_id) && depth < 6) {
-        seen.add(current.parent_id);
-        current = byId.get(current.parent_id);
-        depth += 1;
-      }
-      return depth;
+    function sortWorkItemsForHierarchy(items) {
+      return items.slice().sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")));
     }
 
-    function sortWorkItemsForHierarchy(items) {
-      const byId = new Map(items.map((item) => [item.id, item]));
+    function updateKpis(items = currentWorkItems, reminders = currentReminders) {
+      kpiOpen.textContent = items.filter((item) => item.status === "open").length;
+      kpiUrgent.textContent = items.filter((item) => item.priority === 1 && item.status === "open").length;
+      kpiReminders.textContent = reminders.filter((item) => item.status === "pending").length;
+    }
+
+    function renderWorkItems(items) {
+      currentWorkItems = Array.isArray(items) ? items.slice() : [];
+      if (!currentWorkItems.length) {
+        workItemsEl.innerHTML = '<div class="empty">No work items matched the current filters.</div>';
+        updateKpis(currentWorkItems, currentReminders);
+        return;
+      }
+      const byId = new Map(currentWorkItems.map((item) => [item.id, item]));
       const childrenByParent = new Map();
-      items.forEach((item) => {
+      currentWorkItems.forEach((item) => {
         const key = item.parent_id && byId.has(item.parent_id) ? item.parent_id : "__root__";
         if (!childrenByParent.has(key)) childrenByParent.set(key, []);
         childrenByParent.get(key).push(item);
       });
       for (const rows of childrenByParent.values()) {
-        rows.sort((left, right) => String(left.title || "").localeCompare(String(right.title || "")));
+        rows.splice(0, rows.length, ...sortWorkItemsForHierarchy(rows));
       }
-      const ordered = [];
-      const seen = new Set();
-      function walk(item) {
-        if (!item || seen.has(item.id)) return;
-        seen.add(item.id);
-        ordered.push(item);
-        const children = childrenByParent.get(item.id) || [];
-        children.forEach(walk);
-      }
-      (childrenByParent.get("__root__") || []).forEach(walk);
-      items.forEach(walk);
-      return ordered;
-    }
+      const rootItems = childrenByParent.get("__root__") || [];
+      const sections = [
+        { title: "Projects", rows: rootItems.filter((item) => item.kind === "project") },
+        { title: "Tasks", rows: rootItems.filter((item) => item.kind === "task") },
+        { title: "Subtasks", rows: rootItems.filter((item) => item.kind === "subtask") },
+      ].filter((section) => section.rows.length > 0);
 
-    function renderWorkItems(items) {
-      currentWorkItems = Array.isArray(items) ? items.slice() : [];
-      if (!items.length) {
-        workItemsEl.innerHTML = '<div class="empty">No work items matched the current filters.</div>';
-        return;
-      }
-      const titleById = new Map(items.map((item) => [item.id, item.title]));
-      const byId = new Map(items.map((item) => [item.id, item]));
-      const orderedItems = sortWorkItemsForHierarchy(items);
-      workItemsEl.innerHTML = orderedItems.map((item) => {
-        const depth = hierarchyDepth(item, byId);
-        const parentTitle = item.parent_id ? titleById.get(item.parent_id) : null;
+      function renderWorkItemNode(item) {
+        const children = childrenByParent.get(item.id) || [];
+        const parentTitle = item.parent_id ? byId.get(item.parent_id)?.title : null;
         const meta = [
-          item.kind,
+          currentMode === "maintenance" ? item.kind : null,
           item.status,
           item.priority ? `p${item.priority}` : null,
-          parentTitle ? `under ${parentTitle}` : null,
+          currentMode === "maintenance" && parentTitle ? `under ${parentTitle}` : null,
           item.due_at ? `due ${fmtDate(item.due_at)}` : null,
         ].filter(Boolean).map((value) => `<span class="pill">${escapeHtml(value)}</span>`).join("");
         const notes = item.notes ? `<p class="notes">${escapeHtml(item.notes)}</p>` : "";
+        const showChildren = children.length > 0 && !collapsedWorkItemIds.has(item.id);
+        const toggle = children.length
+          ? `<button class="tree-toggle" type="button" data-item-toggle="${item.id}">${showChildren ? "▾" : "▸"} ${showChildren ? "Hide" : "Show"} children (${children.length})</button>`
+          : "";
+        const versionsButton = currentMode === "maintenance"
+          ? `<button class="secondary" type="button" data-item-versions="${item.id}">Versions</button>`
+          : "";
         return `
-          <article class="item" style="margin-left: ${Math.min(depth, 3) * 18}px">
-            <h3 class="item-title">${escapeHtml(item.title)}</h3>
+          <article class="item">
+            <div class="tree-head">
+              <div class="tree-label">
+                <h3 class="item-title">${escapeHtml(item.title)}</h3>
+              </div>
+              ${toggle}
+            </div>
             <div class="meta">${meta}</div>
             ${notes}
             <div class="actions">
@@ -570,17 +713,27 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
               <button class="secondary" type="button" data-item-id="${item.id}" data-status="blocked">Blocked</button>
               <button class="warn" type="button" data-item-id="${item.id}" data-status="done">Done</button>
               <button class="danger" type="button" data-item-id="${item.id}" data-status="archived">Archive</button>
-              <button class="secondary" type="button" data-item-versions="${item.id}">Versions</button>
+              ${versionsButton}
             </div>
+            ${children.length ? `<div class="tree-children ${showChildren ? "" : "collapsed"}">${children.map(renderWorkItemNode).join("")}</div>` : ""}
           </article>
         `;
-      }).join("");
+      }
+
+      workItemsEl.innerHTML = sections.map((section) => `
+        <section class="tree-section">
+          <h3 class="tree-section-title">${escapeHtml(section.title)}</h3>
+          ${section.rows.map(renderWorkItemNode).join("")}
+        </section>
+      `).join("");
+      updateKpis(currentWorkItems, currentReminders);
     }
 
     function renderReminders(items) {
       currentReminders = Array.isArray(items) ? items.slice() : [];
       if (!items.length) {
         remindersEl.innerHTML = '<div class="empty">No reminders yet.</div>';
+        updateKpis(currentWorkItems, currentReminders);
         return;
       }
       const workItemTitleById = new Map(currentWorkItems.map((item) => [item.id, item.title]));
@@ -603,13 +756,15 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
             <button class="secondary" type="button" data-reminder-snooze="${item.id}" data-snooze-preset="1h">+1h</button>
             <button class="secondary" type="button" data-reminder-snooze="${item.id}" data-snooze-preset="tomorrow_morning">Tomorrow AM</button>
             <button class="secondary" type="button" data-reminder-snooze="${item.id}" data-snooze-preset="next_week">+1 week</button>
-            <button class="secondary" type="button" data-reminder-versions="${item.id}">Versions</button>
+            ${currentMode === "maintenance" ? `<button class="secondary" type="button" data-reminder-versions="${item.id}">Versions</button>` : ""}
           </div>
         </article>
       `).join("");
+      updateKpis(currentWorkItems, currentReminders);
     }
 
     function renderHistory(items) {
+      currentHistory = Array.isArray(items) ? items.slice() : [];
       if (!items.length) {
         historyEl.innerHTML = '<div class="empty">No action history yet.</div>';
         return;
@@ -656,32 +811,59 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       const params = new URLSearchParams();
       if (statusFilter.value) params.set("status", statusFilter.value);
       if (kindFilter.value) params.set("kind", kindFilter.value);
-      const [items, reminders, history] = await Promise.all([
+      const [itemsResult, remindersResult, historyResult] = await Promise.allSettled([
         api(`/v1/work_items?${params.toString()}`),
         api("/v1/reminders?limit=20"),
         api("/v1/history/action_batches?limit=12"),
       ]);
-      renderWorkItems(items);
-      renderReminders(reminders);
-      renderHistory(history);
-      kpiOpen.textContent = items.filter((item) => item.status === "open").length;
-      kpiUrgent.textContent = items.filter((item) => item.priority === 1 && item.status === "open").length;
-      kpiReminders.textContent = reminders.filter((item) => item.status === "pending").length;
-      setStatus(`Loaded ${items.length} work items, ${reminders.length} reminders, and ${history.length} recent changes.`);
+      const failures = [];
+      if (itemsResult.status === "fulfilled") {
+        renderWorkItems(itemsResult.value);
+      } else {
+        failures.push(`work items: ${itemsResult.reason.message}`);
+      }
+      if (remindersResult.status === "fulfilled") {
+        renderReminders(remindersResult.value);
+      } else {
+        failures.push(`reminders: ${remindersResult.reason.message}`);
+      }
+      if (historyResult.status === "fulfilled") {
+        renderHistory(historyResult.value);
+      } else {
+        failures.push(`history: ${historyResult.reason.message}`);
+      }
+      updateKpis(currentWorkItems, currentReminders);
+      if (failures.length) {
+        setStatus(`Workbench refreshed with partial errors: ${failures.join(" | ")}`, true);
+        return;
+      }
+      setStatus(`Loaded ${currentWorkItems.length} work items, ${currentReminders.length} reminders, and ${currentHistory.length} recent changes.`);
     }
 
     async function loadToday() {
       setStatus("Loading today plan...");
-      const plan = await api("/v1/plan/get_today");
+      const params = new URLSearchParams();
+      if (workbenchChatId()) params.set("chat_id", workbenchChatId());
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const plan = await api(`/v1/plan/get_today${suffix}`);
       renderWorkItems((plan.today_plan || []).map((item) => ({
         id: item.task_id,
         title: item.title,
-        kind: "task",
+        kind: item.kind || "task",
         status: "open",
         priority: null,
-        parent_id: null,
+        parent_id: item.parent_id || null,
         due_at: null,
-        notes: item.reason || "",
+        notes: item.parent_title ? `Under ${item.parent_title}` : "",
+      })));
+      renderReminders((plan.due_reminders || []).map((item) => ({
+        id: item.reminder_id,
+        title: item.title,
+        status: "pending",
+        kind: "one_off",
+        remind_at: item.remind_at,
+        message: item.message || "",
+        work_item_id: item.work_item_id || null,
       })));
       setStatus(`Loaded today plan with ${(plan.today_plan || []).length} items.`);
     }
@@ -847,26 +1029,48 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     }
 
     async function updateWorkItemStatus(itemId, nextStatus) {
-      await api(`/v1/work_items/${itemId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `ui-work-item-update-${itemId}-${Date.now()}`,
-        },
-        body: JSON.stringify({ status: nextStatus }),
-      });
+      const previousItems = currentWorkItems.slice();
+      currentWorkItems = currentWorkItems
+        .map((item) => item.id === itemId ? { ...item, status: nextStatus } : item)
+        .filter((item) => !statusFilter.value || item.status === statusFilter.value);
+      renderWorkItems(currentWorkItems);
+      setStatus(`Updating ${itemId}...`);
+      try {
+        await api(`/v1/work_items/${itemId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": `ui-work-item-update-${itemId}-${Date.now()}`,
+          },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+      } catch (error) {
+        currentWorkItems = previousItems;
+        renderWorkItems(currentWorkItems);
+        throw error;
+      }
       await loadDashboard();
     }
 
     async function updateReminderStatus(reminderId, nextStatus) {
-      await api(`/v1/reminders/${reminderId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `ui-reminder-update-${reminderId}-${Date.now()}`,
-        },
-        body: JSON.stringify({ status: nextStatus }),
-      });
+      const previousReminders = currentReminders.slice();
+      currentReminders = currentReminders.map((item) => item.id === reminderId ? { ...item, status: nextStatus } : item);
+      renderReminders(currentReminders);
+      setStatus(`Updating ${reminderId}...`);
+      try {
+        await api(`/v1/reminders/${reminderId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": `ui-reminder-update-${reminderId}-${Date.now()}`,
+          },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+      } catch (error) {
+        currentReminders = previousReminders;
+        renderReminders(currentReminders);
+        throw error;
+      }
       await loadDashboard();
     }
 
@@ -933,8 +1137,26 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
     });
     document.getElementById("create-work-item-button").addEventListener("click", () => createWorkItem().catch((error) => setStatus(error.message, true)));
     document.getElementById("create-reminder-button").addEventListener("click", () => createReminder().catch((error) => setStatus(error.message, true)));
+    chatIdInput.addEventListener("change", () => {
+      window.localStorage.setItem("workbench-chat-id", workbenchChatId());
+    });
+    modeButtons.forEach((button) => {
+      button.addEventListener("click", () => setMode(button.dataset.modeToggle));
+    });
 
     workItemsEl.addEventListener("click", (event) => {
+      const toggleButton = event.target.closest("button[data-item-toggle]");
+      if (toggleButton) {
+        const itemId = toggleButton.dataset.itemToggle;
+        if (collapsedWorkItemIds.has(itemId)) {
+          collapsedWorkItemIds.delete(itemId);
+        } else {
+          collapsedWorkItemIds.add(itemId);
+        }
+        persistCollapsedState();
+        renderWorkItems(currentWorkItems);
+        return;
+      }
       const editButton = event.target.closest("button[data-item-edit]");
       if (editButton) {
         editWorkItem(editButton.dataset.itemEdit).catch((error) => setStatus(error.message, true));
@@ -977,6 +1199,7 @@ _MAINTENANCE_UI_TEMPLATE = """<!DOCTYPE html>
       undoBatch(button.dataset.batchId).catch((error) => setStatus(error.message, true));
     });
 
+    setMode(currentMode);
     if (bearerToken()) {
       loadDashboard().catch((error) => setStatus(error.message, true));
     }

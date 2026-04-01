@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select, text
 
 from api.schemas import PlanRefreshRequest, PlanRefreshResponse, PlanResponseV1
-from common.models import EventLog, PromptRun
+from common.models import EventLog, PromptRun, Session
 from common.maintenance_ui import render_maintenance_ui
 
 
@@ -209,8 +209,24 @@ def register_platform_routes(
         return resp
 
     @app.get("/v1/plan/get_today", response_model=PlanResponseV1, dependencies=[Depends(get_authenticated_user)])
-    async def get_today_plan(chat_id: str, user_id: str = Depends(get_authenticated_user), db=Depends(get_db)):
-        payload, _ = await helpers["_load_today_plan_payload"](db, user_id, chat_id, require_fresh=True)
+    async def get_today_plan(chat_id: Optional[str] = None, user_id: str = Depends(get_authenticated_user), db=Depends(get_db)):
+        resolved_chat_id = str(chat_id or "").strip()
+        if not resolved_chat_id:
+            latest_session = (
+                await db.execute(
+                    select(Session)
+                    .where(Session.user_id == user_id)
+                    .order_by(Session.last_activity_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if not isinstance(latest_session, Session) or not str(latest_session.chat_id or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="chat_id required because no recent Telegram session was found for this user",
+                )
+            resolved_chat_id = str(latest_session.chat_id).strip()
+        payload, _ = await helpers["_load_today_plan_payload"](db, user_id, resolved_chat_id, require_fresh=True)
         return PlanResponseV1(**payload)
 
     @app.get("/v1/memory/context", dependencies=[Depends(get_authenticated_user)])
