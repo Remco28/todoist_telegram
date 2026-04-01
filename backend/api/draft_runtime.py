@@ -1,7 +1,7 @@
 import copy
 import uuid
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select, update
@@ -1211,6 +1211,29 @@ def _copy_with_filled_reminder_schedule(
     return resolved
 
 
+def _fill_reminder_schedule_directly(
+    base_extraction: Dict[str, Any],
+    reminder_index: Optional[int],
+    remind_at: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(base_extraction, dict):
+        return None
+    reminders = base_extraction.get("reminders")
+    if not isinstance(reminders, list):
+        return None
+    if not isinstance(reminder_index, int) or reminder_index < 0 or reminder_index >= len(reminders):
+        return None
+    reminder = reminders[reminder_index]
+    if not isinstance(reminder, dict):
+        return None
+    if not isinstance(remind_at, str) or not remind_at.strip():
+        return None
+    resolved = copy.deepcopy(base_extraction)
+    resolved_reminders = resolved.get("reminders") if isinstance(resolved.get("reminders"), list) else []
+    resolved_reminders[reminder_index]["remind_at"] = remind_at.strip()
+    return resolved
+
+
 def _build_reminder_schedule_clarification_message(
     base_extraction: Dict[str, Any],
     reminder_index: Optional[int],
@@ -1235,6 +1258,31 @@ def _build_reminder_schedule_clarification_message(
     return synthetic
 
 
+def _parse_relative_reminder_schedule_reply(edit_text: str, *, helpers: Dict[str, Any]) -> Optional[str]:
+    normalized = helpers["_normalize_query_text"](edit_text)
+    if not normalized:
+        return None
+    now_local = helpers["_local_now"]() if "_local_now" in helpers else datetime.now(timezone.utc)
+    if not isinstance(now_local, datetime):
+        return None
+    if now_local.tzinfo is None:
+        now_local = now_local.replace(tzinfo=timezone.utc)
+
+    minute_match = re.search(r"\bin\s+(\d{1,3})\s*(?:minutes?|mins?|min)\b", normalized)
+    if minute_match:
+        minutes = int(minute_match.group(1))
+        if 1 <= minutes <= 720:
+            return (now_local + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    hour_match = re.search(r"\bin\s+(\d{1,2})\s*(?:hours?|hrs?|hr)\b", normalized)
+    if hour_match:
+        hours = int(hour_match.group(1))
+        if 1 <= hours <= 72:
+            return (now_local + timedelta(hours=hours)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    return None
+
+
 async def _run_apply_reminder_schedule_clarification(
     prior_extraction: Dict[str, Any],
     extraction: Dict[str, Any],
@@ -1250,6 +1298,11 @@ async def _run_apply_reminder_schedule_clarification(
     resolved = _copy_with_filled_reminder_schedule(prior_extraction, extraction, reminder_index)
     if resolved is not None:
         return resolved
+    local_remind_at = _parse_relative_reminder_schedule_reply(edit_text, helpers=helpers)
+    if isinstance(local_remind_at, str) and local_remind_at.strip():
+        resolved = _fill_reminder_schedule_directly(prior_extraction, reminder_index, local_remind_at)
+        if resolved is not None:
+            return resolved
     synthetic_message = _build_reminder_schedule_clarification_message(prior_extraction, reminder_index, edit_text)
     if not isinstance(synthetic_message, str) or not synthetic_message.strip():
         return extraction

@@ -3979,6 +3979,65 @@ def test_clarification_reply_preserves_reminder_schedule_intent(app_no_db, mock_
         ]
 
 
+def test_clarification_reply_supports_relative_duration_reminder_schedule(app_no_db, mock_send, mock_extract):
+    fake_draft = _fake_draft(
+        source_message="Remind me to talk to Callum about AI saving humanity.",
+        proposal_json={
+            "tasks": [],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [
+                {
+                    "title": "Talk to Callum about AI saving humanity",
+                    "action": "create",
+                    "message": "When we try to reason through ideas of progressives AI pushes back.",
+                }
+            ],
+            "_meta": {
+                "clarification_state": {
+                    "kind": "reminder_schedule",
+                    "reminder_index": 0,
+                }
+            },
+        },
+    )
+    mock_extract.extract_structured_updates.side_effect = [
+        {
+            "tasks": [],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [],
+        }
+    ]
+    with patch("api.main._local_now", return_value=datetime(2026, 4, 1, 8, 1, tzinfo=timezone.utc)), patch(
+        "api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"
+    ), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": [], "reminders": []}
+    ), patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as query_ask:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("in 20 minutes"), headers=_headers())
+        assert resp.status_code == 200
+        assert mock_extract.extract_structured_updates.await_count == 1
+        query_ask.assert_not_awaited()
+        send_preview.assert_awaited_once()
+        assert fake_draft.proposal_json["tasks"] == []
+        assert fake_draft.proposal_json["reminders"] == [
+            {
+                "title": "Talk to Callum about AI saving humanity",
+                "action": "create",
+                "message": "When we try to reason through ideas of progressives AI pushes back.",
+                "remind_at": "2026-04-01T08:21:00Z",
+            }
+        ]
+
+
 def test_non_command_recent_reminder_resolution_statement_stages_completion(app_no_db, mock_extract):
     planned = {
         "intent": "action",
