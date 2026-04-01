@@ -3902,6 +3902,83 @@ def test_non_command_unresolved_reminder_update_requests_reminder_clarification(
         assert len(kwargs["clarification_state"]["candidates"]) == 2
 
 
+def test_clarification_reply_preserves_reminder_schedule_intent(app_no_db, mock_send, mock_extract):
+    fake_draft = _fake_draft(
+        source_message="Remind me to talk to Callum about AI saving humanity.",
+        proposal_json={
+            "tasks": [],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [
+                {
+                    "title": "Talk to Callum about AI saving humanity",
+                    "action": "create",
+                    "message": "When we try to reason through ideas of progressives AI pushes back.",
+                }
+            ],
+            "_meta": {
+                "clarification_state": {
+                    "kind": "reminder_schedule",
+                    "reminder_index": 0,
+                }
+            },
+        },
+    )
+    mock_extract.extract_structured_updates.side_effect = [
+        {
+            "tasks": [
+                {
+                    "title": "Call Jason to schedule a meeting regarding Asia Supply",
+                    "action": "update",
+                    "due_date": "2026-04-01",
+                }
+            ],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [],
+        },
+        {
+            "tasks": [],
+            "goals": [],
+            "problems": [],
+            "links": [],
+            "reminders": [
+                {
+                    "title": "Talk to Callum about AI saving humanity",
+                    "action": "create",
+                    "message": "When we try to reason through ideas of progressives AI pushes back.",
+                    "remind_at": "2026-04-01T16:00:00Z",
+                }
+            ],
+        },
+    ]
+    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+        "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=fake_draft
+    ), patch(
+        "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value={"tasks": [], "reminders": []}
+    ), patch(
+        "api.main._send_or_edit_draft_preview", new_callable=AsyncMock
+    ) as send_preview, patch(
+        "api.main.query_ask", new_callable=AsyncMock
+    ) as query_ask:
+        resp = _post(app_no_db, WEBHOOK_URL, json=_tg_update("Later today"), headers=_headers())
+        assert resp.status_code == 200
+        assert mock_extract.extract_structured_updates.await_count == 2
+        query_ask.assert_not_awaited()
+        send_preview.assert_awaited_once()
+        assert fake_draft.proposal_json["tasks"] == []
+        assert fake_draft.proposal_json["reminders"] == [
+            {
+                "title": "Talk to Callum about AI saving humanity",
+                "action": "create",
+                "message": "When we try to reason through ideas of progressives AI pushes back.",
+                "remind_at": "2026-04-01T16:00:00Z",
+            }
+        ]
+
+
 def test_non_command_recent_reminder_resolution_statement_stages_completion(app_no_db, mock_extract):
     planned = {
         "intent": "action",
@@ -4132,7 +4209,9 @@ def test_multi_field_and_multi_task_priority_message_augments_incomplete_planner
         "timezone": "America/New_York",
     }
     message = "Make the worker's comp form high priority and due today.\n\nAlso make the 401k registration high priority."
-    with patch("api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"), patch(
+    with patch("api.main._local_today", return_value=date(2026, 3, 30)), patch(
+        "api.main._resolve_telegram_user", new_callable=AsyncMock, return_value="usr_123"
+    ), patch(
         "api.main._get_open_action_draft", new_callable=AsyncMock, return_value=None
     ), patch(
         "api.main._build_extraction_grounding", new_callable=AsyncMock, return_value=grounding

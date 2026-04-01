@@ -1121,6 +1121,15 @@ async def run_revise_action_draft(draft, user_id: str, request_id: str, edit_tex
     extraction = helpers["_sanitize_targeted_reminder_actions"](revised_message, extraction, grounding)
     extraction = helpers["_apply_displayed_task_reference_extraction"](extraction, grounding)
     extraction = helpers["_resolve_relative_due_date_overrides"](revised_message, extraction)
+    if clarification_kind == "reminder_schedule":
+        extraction = await _run_apply_reminder_schedule_clarification(
+            prior_extraction,
+            extraction,
+            clarification_state,
+            edit_text,
+            grounding,
+            helpers=helpers,
+        )
     if isinstance(clarification_candidates, list) and clarification_candidates:
         selected_candidate = helpers["_select_clarification_candidate"](edit_text, clarification_candidates)
         if selected_candidate and (
@@ -1160,6 +1169,96 @@ async def run_revise_action_draft(draft, user_id: str, request_id: str, edit_tex
             pending_draft_id=draft.id,
             pending_clarification=helpers["_draft_get_clarification_state"](draft),
         )
+    return extraction
+
+
+def _copy_with_filled_reminder_schedule(
+    base_extraction: Dict[str, Any],
+    schedule_extraction: Dict[str, Any],
+    reminder_index: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(base_extraction, dict) or not isinstance(schedule_extraction, dict):
+        return None
+    base_reminders = base_extraction.get("reminders")
+    extracted_reminders = schedule_extraction.get("reminders")
+    if not isinstance(base_reminders, list) or not isinstance(extracted_reminders, list) or not extracted_reminders:
+        return None
+    if not isinstance(reminder_index, int) or reminder_index < 0 or reminder_index >= len(base_reminders):
+        return None
+    base_reminder = base_reminders[reminder_index]
+    if not isinstance(base_reminder, dict):
+        return None
+    scheduled_reminder = next(
+        (
+            reminder
+            for reminder in extracted_reminders
+            if isinstance(reminder, dict)
+            and isinstance(reminder.get("remind_at"), str)
+            and reminder.get("remind_at").strip()
+        ),
+        None,
+    )
+    if not isinstance(scheduled_reminder, dict):
+        return None
+    resolved = copy.deepcopy(base_extraction)
+    resolved_reminders = resolved.get("reminders") if isinstance(resolved.get("reminders"), list) else []
+    reminder = resolved_reminders[reminder_index]
+    reminder["remind_at"] = scheduled_reminder["remind_at"].strip()
+    for key in ("recurrence_rule", "kind"):
+        value = scheduled_reminder.get(key)
+        if isinstance(value, str) and value.strip():
+            reminder[key] = value.strip()
+    return resolved
+
+
+def _build_reminder_schedule_clarification_message(
+    base_extraction: Dict[str, Any],
+    reminder_index: Optional[int],
+    edit_text: str,
+) -> Optional[str]:
+    reminders = base_extraction.get("reminders") if isinstance(base_extraction, dict) else None
+    if not isinstance(reminders, list):
+        return None
+    if not isinstance(reminder_index, int) or reminder_index < 0 or reminder_index >= len(reminders):
+        return None
+    reminder = reminders[reminder_index]
+    if not isinstance(reminder, dict):
+        return None
+    schedule_text = str(edit_text or "").strip()
+    title = str(reminder.get("title") or "").strip()
+    if not schedule_text or not title:
+        return None
+    message = str(reminder.get("message") or "").strip()
+    synthetic = f"Remind me {schedule_text}: {title}"
+    if message and message.lower() != title.lower():
+        synthetic = f"{synthetic}. {message}"
+    return synthetic
+
+
+async def _run_apply_reminder_schedule_clarification(
+    prior_extraction: Dict[str, Any],
+    extraction: Dict[str, Any],
+    clarification_state: Any,
+    edit_text: str,
+    grounding: Dict[str, Any],
+    *,
+    helpers: Dict[str, Any],
+) -> Dict[str, Any]:
+    reminder_index = clarification_state.get("reminder_index") if isinstance(clarification_state, dict) else None
+    if not isinstance(prior_extraction, dict):
+        return extraction
+    resolved = _copy_with_filled_reminder_schedule(prior_extraction, extraction, reminder_index)
+    if resolved is not None:
+        return resolved
+    synthetic_message = _build_reminder_schedule_clarification_message(prior_extraction, reminder_index, edit_text)
+    if not isinstance(synthetic_message, str) or not synthetic_message.strip():
+        return extraction
+    schedule_extraction = await helpers["adapter"].extract_structured_updates(synthetic_message, grounding=grounding)
+    schedule_extraction = helpers["_apply_intent_fallbacks"](synthetic_message, schedule_extraction, grounding)
+    schedule_extraction = helpers["_sanitize_targeted_reminder_actions"](synthetic_message, schedule_extraction, grounding)
+    resolved = _copy_with_filled_reminder_schedule(prior_extraction, schedule_extraction, reminder_index)
+    if resolved is not None:
+        return resolved
     return extraction
 
 

@@ -31,12 +31,13 @@ This file is the short handoff summary for the latest meaningful project state.
 - Telegram applied-change acknowledgements now support `Show more` and `Show subtasks`.
 - Displayed Telegram ordinal follow-ups now recognize `#<n>` forms like `#4 is done.` against the current `/today` list.
 - Explicit `next week` / `next <weekday>` phrases now override incorrect planner due dates in Telegram drafts, so `next Tuesday` resolves to the next calendar week's Tuesday rather than the nearest occurrence.
+- Reminder schedule clarification replies now preserve the pending reminder draft, so replies like `Later today` fill `remind_at` on the original reminder instead of drifting into unrelated task updates.
 - Maintenance API idempotency storage now JSON-encodes route responses, which fixes `/app` status changes that committed successfully but returned `Internal Server Error`.
 - Retired `/plan`, `/focus`, and `/ask` command behavior was removed from the live Telegram command path.
 - Completed historical specs were archived so `comms/tasks/` only contains the active rebuild spec.
 
 ## Current Operational Reality
-- Full backend test suite is green at `225 passed, 1 skipped`.
+- Full backend test suite is green at `226 passed, 1 skipped`.
 - Redeploy API for Telegram/runtime-only changes.
 - Redeploy worker only when background reminder/session summary behavior changes.
 
